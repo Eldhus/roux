@@ -22,7 +22,14 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("host/tests.zig"),
             .target = target,
             .optimize = .debug,
-            .imports = &.{.{ .name = "tidy", .module = fourneau.module("tidy") }},
+            .imports = &.{
+                .{ .name = "tidy", .module = fourneau.module("tidy") },
+                .{ .name = "sqlite", .module = sqlite_module(b, .{
+                    .target = target,
+                    .optimize = .debug,
+                    .pic = null,
+                }) },
+            },
         }),
     });
     const run_tests = b.addRunArtifact(tests);
