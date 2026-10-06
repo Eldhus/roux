@@ -1,0 +1,13 @@
+.{
+    .name = .roux,
+    .version = "0.1.0",
+    .fingerprint = 0xaf6f4fab96f74033,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // fourneau, the server the host runs on: the checkout beside this
+        // one (../fourneau), so a change there is built here at once. Both
+        // are Eldhus repositories, developed together.
+        .fourneau = .{ .path = "../fourneau" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "host", "platform" },
+}
