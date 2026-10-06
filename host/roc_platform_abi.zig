@@ -703,45 +703,51 @@ pub const RocEnv = struct {
     roc_io: RocIo,
 };
 
-/// Element type for __AnonStruct_f38d15cf0787900e
-pub const __AnonStruct_f38d15cf0787900e = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct_2a70a3dd551fa8a1
+pub const __AnonStruct_2a70a3dd551fa8a1 = if (@sizeOf(usize) == 4) extern struct {
     @"context": RocBox,
+    @"static_dir": RocStr,
     @"port": u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefBox(@ptrCast(value.@"context"), roc_host);
+        value.@"static_dir".decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         increfBox(@ptrCast(value.@"context"), amount);
+        value.@"static_dir".incref(amount);
     }
 } else extern struct {
     @"context": RocBox,
+    @"static_dir": RocStr,
     @"port": u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefBox(@ptrCast(value.@"context"), roc_host);
+        value.@"static_dir".decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         increfBox(@ptrCast(value.@"context"), amount);
+        value.@"static_dir".incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_f38d15cf0787900e) != 16) @compileError("__AnonStruct_f38d15cf0787900e size mismatch");
-        if (@alignOf(__AnonStruct_f38d15cf0787900e) != 8) @compileError("__AnonStruct_f38d15cf0787900e alignment mismatch");
+        if (@sizeOf(__AnonStruct_2a70a3dd551fa8a1) != 40) @compileError("__AnonStruct_2a70a3dd551fa8a1 size mismatch");
+        if (@alignOf(__AnonStruct_2a70a3dd551fa8a1) != 8) @compileError("__AnonStruct_2a70a3dd551fa8a1 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_f38d15cf0787900e) != 8) @compileError("__AnonStruct_f38d15cf0787900e size mismatch");
-        if (@alignOf(__AnonStruct_f38d15cf0787900e) != 4) @compileError("__AnonStruct_f38d15cf0787900e alignment mismatch");
+        if (@sizeOf(__AnonStruct_2a70a3dd551fa8a1) != 20) @compileError("__AnonStruct_2a70a3dd551fa8a1 size mismatch");
+        if (@alignOf(__AnonStruct_2a70a3dd551fa8a1) != 4) @compileError("__AnonStruct_2a70a3dd551fa8a1 alignment mismatch");
     }
 }
 
@@ -894,6 +900,101 @@ comptime {
 }
 
 /// Tag discriminant for Try.
+pub const HostFile_read_utf8ResultTag = enum(u8) {
+    @"Err" = 0,
+    @"Ok" = 1,
+};
+
+/// Payload union for Try.
+pub const HostFile_read_utf8ResultPayload = extern union {
+        @"err": FileNotFoundOrFileTooLargeOrFileUnreadable,
+        @"ok": RocStr,
+};
+
+/// Tag union: Try
+pub const HostFile_read_utf8Result = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: HostFile_read_utf8ResultTag,
+    pub fn payload_err(self: *const @This()) FileNotFoundOrFileTooLargeOrFileUnreadable {
+        const ptr: *const FileNotFoundOrFileTooLargeOrFileUnreadable = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostFile_read_utf8Result(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostFile_read_utf8Result(self, amount);
+    }
+} else extern struct {
+    payload: HostFile_read_utf8ResultPayload,
+    tag: HostFile_read_utf8ResultTag,
+    pub fn payload_err(self: *const @This()) FileNotFoundOrFileTooLargeOrFileUnreadable {
+        return self.payload.@"err";
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        return self.payload.@"ok";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostFile_read_utf8Result(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostFile_read_utf8Result(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostFile_read_utf8Result) != 32) @compileError("HostFile_read_utf8Result size mismatch");
+        if (@alignOf(HostFile_read_utf8Result) != 8) @compileError("HostFile_read_utf8Result alignment mismatch");
+        if (@offsetOf(HostFile_read_utf8Result, "tag") != 24) @compileError("HostFile_read_utf8Result tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostFile_read_utf8Result) != 16) @compileError("HostFile_read_utf8Result size mismatch");
+        if (@alignOf(HostFile_read_utf8Result) != 4) @compileError("HostFile_read_utf8Result alignment mismatch");
+        if (@offsetOf(HostFile_read_utf8Result, "tag") != 12) @compileError("HostFile_read_utf8Result tag offset mismatch");
+    }
+}
+
+/// Tag union: FileNotFoundOrFileTooLargeOrFileUnreadable
+pub const FileNotFoundOrFileTooLargeOrFileUnreadable = enum(u8) {
+    @"file_not_found" = 0,
+    @"file_too_large" = 1,
+    @"file_unreadable" = 2,
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        _ = self;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        _ = self;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(FileNotFoundOrFileTooLargeOrFileUnreadable) != 1) @compileError("FileNotFoundOrFileTooLargeOrFileUnreadable size mismatch");
+        if (@alignOf(FileNotFoundOrFileTooLargeOrFileUnreadable) != 1) @compileError("FileNotFoundOrFileTooLargeOrFileUnreadable alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(FileNotFoundOrFileTooLargeOrFileUnreadable) != 1) @compileError("FileNotFoundOrFileTooLargeOrFileUnreadable size mismatch");
+        if (@alignOf(FileNotFoundOrFileTooLargeOrFileUnreadable) != 1) @compileError("FileNotFoundOrFileTooLargeOrFileUnreadable alignment mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
 pub const HostRequest_body_read_allResultTag = enum(u8) {
     @"Err" = 0,
     @"Ok" = 1,
@@ -997,19 +1098,19 @@ pub const Init_for_hostResultTag = enum(u8) {
 /// Payload union for Try.
 pub const Init_for_hostResultPayload = extern union {
         @"err": i64,
-        @"ok": __AnonStruct_f38d15cf0787900e,
+        @"ok": __AnonStruct_2a70a3dd551fa8a1,
 };
 
 /// Tag union: Try
 pub const Init_for_hostResult = if (@sizeOf(usize) == 4) extern struct {
-    payload: [8]u8 align(8),
+    payload: [20]u8 align(8),
     tag: Init_for_hostResultTag,
     pub fn payload_err(self: *const @This()) i64 {
         const ptr: *const i64 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_ok(self: *const @This()) __AnonStruct_f38d15cf0787900e {
-        const ptr: *const __AnonStruct_f38d15cf0787900e = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_ok(self: *const @This()) __AnonStruct_2a70a3dd551fa8a1 {
+        const ptr: *const __AnonStruct_2a70a3dd551fa8a1 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -1027,7 +1128,7 @@ pub const Init_for_hostResult = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_err(self: *const @This()) i64 {
         return self.payload.@"err";
     }
-    pub fn payload_ok(self: *const @This()) __AnonStruct_f38d15cf0787900e {
+    pub fn payload_ok(self: *const @This()) __AnonStruct_2a70a3dd551fa8a1 {
         return self.payload.@"ok";
     }
     /// Recursively decrement Roc-owned payloads.
@@ -1043,14 +1144,14 @@ pub const Init_for_hostResult = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(Init_for_hostResult) != 24) @compileError("Init_for_hostResult size mismatch");
+        if (@sizeOf(Init_for_hostResult) != 48) @compileError("Init_for_hostResult size mismatch");
         if (@alignOf(Init_for_hostResult) != 8) @compileError("Init_for_hostResult alignment mismatch");
-        if (@offsetOf(Init_for_hostResult, "tag") != 16) @compileError("Init_for_hostResult tag offset mismatch");
+        if (@offsetOf(Init_for_hostResult, "tag") != 40) @compileError("Init_for_hostResult tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(Init_for_hostResult) != 16) @compileError("Init_for_hostResult size mismatch");
+        if (@sizeOf(Init_for_hostResult) != 24) @compileError("Init_for_hostResult size mismatch");
         if (@alignOf(Init_for_hostResult) != 8) @compileError("Init_for_hostResult alignment mismatch");
-        if (@offsetOf(Init_for_hostResult, "tag") != 8) @compileError("Init_for_hostResult tag offset mismatch");
+        if (@offsetOf(Init_for_hostResult, "tag") != 20) @compileError("Init_for_hostResult tag offset mismatch");
     }
 }
 
@@ -1068,6 +1169,14 @@ pub const HostStderr_lineArgs = extern struct {
     arg0: RocStr,
 };
 
+/// Arguments for Host.file_read_utf8!
+/// Roc signature: Str, U64 => Try(Str, [FileNotFound, FileTooLarge, FileUnreadable])
+/// Refcounted fields are owned by the hosted function.
+pub const HostFile_read_utf8Args = extern struct {
+    arg0: RocStr,
+    arg1: u64,
+};
+
 /// Arguments for Host.request_body_read_all!
 /// Roc signature: U64, U64 => Try(List(U8), [BodyDisconnected, BodyInvalid, BodyTooLarge])
 /// Refcounted fields are owned by the hosted function.
@@ -1078,14 +1187,43 @@ pub const HostRequest_body_read_allArgs = extern struct {
 
 // Platform Type Aliases
 
+pub const HostFile_read_utf8Err = FileNotFoundOrFileTooLargeOrFileUnreadable;
 pub const HostRequest_body_read_allErr = BodyDisconnectedOrBodyInvalidOrBodyTooLarge;
-pub const Init_for_hostOk = __AnonStruct_f38d15cf0787900e;
+pub const Init_for_hostOk = __AnonStruct_2a70a3dd551fa8a1;
 pub const Respond_for_hostArg0 = __AnonStruct_28781edfe447a702;
 pub const Respond_for_hostArg0Headers = __AnonStruct_82a96c5d55d63488;
 pub const Respond_for_host = __AnonStruct_a14cd3b7d5755441;
 pub const Respond_for_hostHeaders = __AnonStruct_82a96c5d55d63488;
 
 // Generated Refcount Helpers
+
+fn decrefHostFile_read_utf8Result(value: HostFile_read_utf8Result, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().decref(roc_host);
+        },
+        .@"Ok" => {
+        value.payload_ok().decref(roc_host);
+        },
+    }
+}
+
+fn increfHostFile_read_utf8Result(value: HostFile_read_utf8Result, amount: isize) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().incref(amount);
+        },
+        .@"Ok" => {
+        value.payload_ok().incref(amount);
+        },
+    }
+}
+
+pub const HostFile_read_utf8ResultRelease = struct {
+    pub fn release(value: HostFile_read_utf8Result, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
 
 fn decrefHostRequest_body_read_allResult(value: HostRequest_body_read_allResult, roc_host: *RocHost) void {
     switch (value.tag) {
@@ -1139,8 +1277,8 @@ pub const Init_for_hostResultRelease = struct {
     }
 };
 
-pub const __AnonStruct_f38d15cf0787900eRelease = struct {
-    pub fn release(value: __AnonStruct_f38d15cf0787900e, roc_host: *RocHost) void {
+pub const __AnonStruct_2a70a3dd551fa8a1Release = struct {
+    pub fn release(value: __AnonStruct_2a70a3dd551fa8a1, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -1174,8 +1312,11 @@ pub fn decrefListOf__AnonStruct_82a96c5d55d63488(value: RocList(__AnonStruct_82a
 
 fn rocReleasePolicy(comptime T: type) type {
     if (T == RocStr) return RocStrRelease;
+    if (T == HostFile_read_utf8Result) return HostFile_read_utf8ResultRelease;
     if (T == HostRequest_body_read_allResult) return HostRequest_body_read_allResultRelease;
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
+    if (T == Init_for_hostResult) return Init_for_hostResultRelease;
+    if (T == __AnonStruct_2a70a3dd551fa8a1) return __AnonStruct_2a70a3dd551fa8a1Release;
     if (T == __AnonStruct_a14cd3b7d5755441) return __AnonStruct_a14cd3b7d5755441Release;
     if (T == RocList(__AnonStruct_82a96c5d55d63488)) return RocListRelease(RocList(__AnonStruct_82a96c5d55d63488), __AnonStruct_82a96c5d55d63488Release);
     if (T == __AnonStruct_82a96c5d55d63488) return __AnonStruct_82a96c5d55d63488Release;
@@ -1219,6 +1360,14 @@ pub extern fn hosted_stdout_line(arg0: RocStr) callconv(.c) void;
 /// moved into storage or into the result:
 ///     arg0.decref(roc_host);
 pub extern fn hosted_stderr_line(arg0: RocStr) callconv(.c) void;
+
+/// Hosted symbol for Host.file_read_utf8!
+/// Roc signature: Str, U64 => Try(Str, [FileNotFound, FileTooLarge, FileUnreadable])
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     arg0.decref(roc_host);
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_file_read_utf8(arg0: RocStr, arg1: u64) callconv(.c) HostFile_read_utf8Result;
 
 /// Hosted symbol for Host.request_body_read_all!
 /// Roc signature: U64, U64 => Try(List(U8), [BodyDisconnected, BodyInvalid, BodyTooLarge])

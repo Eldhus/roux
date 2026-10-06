@@ -11,3 +11,5 @@ examples/*
 examples/*/*
 !examples/*/*.roc
 !examples/*/*.rocstache
+!examples/*/*.txt
+!examples/*/public/

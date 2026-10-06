@@ -17,6 +17,9 @@ Host := [].{
 		body : List(U8),
 	}
 
+	## The file's bytes as text, at most `limit_bytes`.
+	file_read_utf8! : Str, U64 => Try(Str, [FileNotFound, FileTooLarge, FileUnreadable])
+
 	stdout_line! : Str => {}
 	stderr_line! : Str => {}
 

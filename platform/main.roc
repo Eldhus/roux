@@ -5,7 +5,7 @@ platform "roux"
 			respond! : Server.Request, context => Try(Server.Response, _err),
 		}
 	}
-	exposes [Server, Stdout, Stderr, Rocstache]
+	exposes [Server, Stdout, Stderr, Rocstache, File]
 	packages {}
 	provides {
 		"roc_init_for_host": init_for_host!,
@@ -14,6 +14,7 @@ platform "roux"
 	hosted {
 		"hosted_stdout_line": Host.stdout_line!,
 		"hosted_stderr_line": Host.stderr_line!,
+		"hosted_file_read_utf8": Host.file_read_utf8!,
 		"hosted_request_body_read_all": Host.request_body_read_all!,
 	}
 	targets: {
@@ -26,13 +27,14 @@ import Server
 import Stdout
 import Stderr
 import Rocstache
+import File
 
 ## Called once, before the listener opens: the app's configuration and its
 ## immutable context, which every handler on every fiber shares.
-init_for_host! : () => Try({ port : U16, context : Box(Context) }, I64)
+init_for_host! : () => Try({ port : U16, static_dir : Str, context : Box(Context) }, I64)
 init_for_host! = ||
 	match (program.init!)() {
-		Ok({ config, context }) => Ok({ port: config.port, context: Box.box(context) })
+		Ok({ config, context }) => Ok({ port: config.port, static_dir: config.static_dir, context: Box.box(context) })
 		Err(Exit(code)) => Err(code)
 		Err(other) => {
 			Stderr.line!("ERROR init!: ${Str.inspect(other)}")
