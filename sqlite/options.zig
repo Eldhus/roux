@@ -48,6 +48,9 @@ pub const options = [_]Option{
     // No memory-mapped I/O: every read goes through the VFS, and a disk
     // error is an error, not a SIGBUS.
     .{ .define = "SQLITE_MAX_MMAP_SIZE=0", .reported = "MAX_MMAP_SIZE=0" },
+    // A statement's journal in memory, never spilled to a temporary file:
+    // roux's VFS opens only the database, its WAL and its journal.
+    .{ .define = "SQLITE_STMTJRNL_SPILL=-1", .reported = "STMTJRNL_SPILL=-1" },
     // Temporary tables and indices in memory: no temporary files.
     .{ .define = "SQLITE_TEMP_STORE=3", .reported = "TEMP_STORE=3" },
     // The generator types a result column by its origin table and column.

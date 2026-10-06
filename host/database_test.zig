@@ -13,7 +13,8 @@ const Database = database_module.Database;
 const Description = database_module.Description;
 const Report = database_module.Report;
 const Value = database_module.Value;
-const types = @import("sqlite").types;
+const sqlite = @import("sqlite");
+const types = sqlite.types;
 
 const schema =
     \\CREATE TABLE dish (
@@ -129,6 +130,8 @@ const Fixture = struct {
     path: []const u8,
 
     fn init() !Fixture {
+        // roux's VFS waits through the testing Io.
+        sqlite.vfs.thread_io = testing.io;
         var fixture: Fixture = .{
             .arena_state = .init(testing.allocator),
             .dir = testing.tmpDir(.{}),
