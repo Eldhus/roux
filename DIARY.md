@@ -541,3 +541,28 @@ writers past their 1 s wait (503). Each commit cost 350-500 us of
 kernel CPU on the server's cores: btrfs's fsync is CPU too, not only
 waiting. With SQLite's own VFS that wait holds the shard's thread: step
 5 measures what it does to the reads beside it.
+
+## 2026-10-06: SQLite, step 5: a commit stalls its shard
+
+One shard (CPU 0), examples/sqlite; reads of one dish at a fixed 1,000
+a second for 10 s (oha `-q 1000 -c 4`, CPUs 2-5), alone, then beside
+writes at a fixed 100 a second (`-q 100 -c 4`, CPUs 6-7); three rounds,
+`synchronous=FULL` (the host's) interleaved with a `NORMAL` build made
+from a temporary edit (reverted at once). btrfs on the NVMe, the laptop
+quiet (load 0.7). The scratchpad's stall.sh.
+
+| reads | p50 | p99 | p99.9 | max |
+|---|---:|---:|---:|---:|
+| FULL, alone | 0.12 ms | 0.24-0.31 ms | 0.5-1.8 ms | 2.3-3.2 ms |
+| FULL, beside writes | 0.14 ms | 3.6-6.7 ms | 6.5-16 ms | 9-29 ms |
+| NORMAL, alone | 0.12 ms | 0.25-0.29 ms | 0.4-1.6 ms | 2.9-4.6 ms |
+| NORMAL, beside writes | 0.12 ms | 0.25-0.29 ms | 1.7-4.7 ms | 16-17 ms |
+
+With SQLite's own VFS a commit's fdatasync (~3 ms here) holds the
+shard's thread, and every read that arrives meanwhile waits behind it:
+at 100 commits a second, 30% of the shard's time, and the reads' p99
+grows fifteen times. NORMAL skips the sync per commit, but a checkpoint
+still syncs, and the reads beside it wait 16-17 ms. Neither is the
+answer: the wait must yield the fiber, not the thread. That is step 6,
+a VFS over the shard's `std.Io` (io_uring), measured against these
+numbers. `synchronous` stays FULL.

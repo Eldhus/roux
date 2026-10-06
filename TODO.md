@@ -57,8 +57,9 @@
      `examples/sqlite` checked by curl and under the checked heap;
      experiment 21 measured (DIARY): a point read costs roux +7,600
      instructions over the floor (19,023 against 11,399), writes are the
-     disk's (~300/s). Next: step 5, the stall a commit puts on its
-     shard's reads.
+     disk's (~300/s). Step 5 measured: at 100 commits a second a shard's
+     reads go from p99 0.3 ms to 3.6-6.7 ms (the fdatasync holds the
+     thread). Next: step 6, a VFS over the shard's `std.Io`.
 
 ## Plan
 
