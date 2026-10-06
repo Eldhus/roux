@@ -12,7 +12,11 @@
      effect, Roc leak counting per shard. Split into its own repository
      on 2026-10-06, building against `../fourneau` as a Zig package
      (DIARY). Next: the examples' spec as a Zig step (M4), then crt1/libc
-     from Zig's musl. SQLite (M5) waits for fourneau's base.
+     from Zig's musl. SQLite (M5) waits for fourneau's base. HTTPS
+     (2026-10-06): the host serves TLS 1.3 with a certificate from files
+     or from ACME at startup, and redirects plain HTTP, all from its
+     environment; the templates example ran so against Pebble. Next for
+     M10: a roux app on the internet (where: the owner's call).
 
 2. **Templates: rocstache in roux, no database yet.** (owner,
    2026-10-06) The template compiler (`rocstache-gen`, in the old fork)

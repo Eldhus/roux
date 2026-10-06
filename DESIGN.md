@@ -94,7 +94,14 @@ respond! : Server.Request, Context => Try(Server.Response, _err)
 
 The modules apps use, and only those: `Server`, `Stdout`, `Stderr` and
 `Rocstache` (template escaping and formatters) today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
-`Path`, `UnixTime` and `Sleep` (M6). The pages under `/_dev` (DevTools, M6) are answered by
+`Path`, `UnixTime` and `Sleep` (M6).
+
+HTTPS is the deployment's, like the address (`ROUX_ADDRESS`): the host
+reads `ROUX_TLS_CERT` and `ROUX_TLS_KEY`, or `ROUX_ACME_DIRECTORY`,
+`ROUX_ACME_IDENTIFIER` and `ROUX_ACME_STATE` (and `_PROFILE`,
+`_HTTP_PORT`, `_CA`) to obtain a certificate at startup, and
+`ROUX_REDIRECT_PORT` (with `ROUX_HTTPS_HOST`) for plain HTTP redirecting
+beside it; fourneau's https.zig does the work, as for fourneau-static. The pages under `/_dev` (DevTools, M6) are answered by
 the platform. A module returns
 when an app needs it, not before.
 

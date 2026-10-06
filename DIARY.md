@@ -206,3 +206,14 @@ The page escapes `<menu>`, quotes and `&`; an unknown path is 404; oha
 
 Not yet TigerStyle: the compiler has no assertions, `usize` throughout
 and recursion; tidy does not look at `tools/` yet (TODO).
+
+## 2026-10-06: HTTPS for roux apps
+
+fourneau's certificate and redirect code moved into its `https.zig`, which
+the host now uses: the deployment's environment says HTTPS
+(`ROUX_TLS_CERT`/`ROUX_TLS_KEY`, or `ROUX_ACME_*` to obtain a certificate
+at startup, and `ROUX_REDIRECT_PORT`). `examples/templates` with Pebble:
+the host obtained a certificate for 127.0.0.1 before its shards started,
+served the escaped menu over TLS 1.3 on 8 shards (curl verifying through
+Pebble's root), and redirected plain HTTP to it. The static musl binary
+does ACME with Zig's `std.http.Client`.
