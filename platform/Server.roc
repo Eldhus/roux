@@ -23,7 +23,10 @@ Server := [].{
 	}
 
 	## `BodyAfterStream`: read after `Sse.start!`, when it no longer can be.
-	BodyErr : [BodyTooLarge, BodyInvalid, BodyDisconnected, BodyAfterStream]
+	## `BodyDuringWrite`: read while the request holds the database's
+	## writer (`Sqlite.write!`), which would wait on the client with every
+	## other writer waiting too: read the body first.
+	BodyErr : [BodyTooLarge, BodyInvalid, BodyDisconnected, BodyAfterStream, BodyDuringWrite]
 
 	from_host : Host.RequestFromHost -> Request
 	from_host = |request| request

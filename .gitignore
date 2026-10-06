@@ -13,3 +13,4 @@ examples/*/*
 !examples/*/*.rocstache
 !examples/*/*.txt
 !examples/*/public/
+!examples/*/db/

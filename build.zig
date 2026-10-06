@@ -4,7 +4,7 @@
 //!   zig build test         tidy over the host (fourneau's rules)
 //!   zig build tools        rocstache-gen, the template compiler (tools-test),
 //!                          and roux-db, the typed-query generator
-//!   zig build examples     the examples' templates, regenerated
+//!   zig build examples     the examples' templates and databases, regenerated
 //!   zig build sqlite-floor SQLite alone, timed (sqlite/floor.zig)
 //!
 //! fourneau (../fourneau) is a dependency: the server, our port of
@@ -137,6 +137,11 @@ const example_templates = [_][]const u8{
     "examples/templates/Page.rocstache",
 };
 
+/// The examples' database directories, each compiled by roux-db.
+const example_databases = [_][]const u8{
+    "examples/sqlite/db",
+};
+
 /// `zig build tools`: rocstache-gen, the template compiler and its language
 /// server (zig-out/bin), and `zig build tools-test`, its tests.
 fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
@@ -179,13 +184,20 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
     tools.dependOn(&b.addInstallArtifact(roux_db, .{}).step);
     // Every example's templates, compiled next to them (the generated .roc
     // is committed, so `roc build` needs nothing else; this keeps it current).
-    const examples = b.step("examples", "Regenerate the examples' templates");
+    const examples = b.step("examples", "Regenerate the examples' templates and databases");
     for (example_templates) |template| {
         const run = b.addRunArtifact(generator);
         run.setCwd(b.path(std.fs.path.dirname(template).?));
         run.addArgs(&.{ "-u", "-o" });
         run.addArg(b.fmt("{s}.roc", .{std.fs.path.stem(template)}));
         run.addArg(std.fs.path.basename(template));
+        examples.dependOn(&run.step);
+    }
+    for (example_databases) |directory| {
+        const run = b.addRunArtifact(roux_db);
+        run.addArgs(&.{ "gen", directory });
+        // roux-db reads the directory, which the build cannot see.
+        run.has_side_effects = true;
         examples.dependOn(&run.step);
     }
     const tests = b.addTest(.{ .root_module = library });
@@ -233,6 +245,11 @@ fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
                 .{ .name = "fourneau", .module = fourneau },
                 .{ .name = "zig_io_evented", .module = evented },
                 .{ .name = "build_options", .module = host_options.createModule() },
+                .{ .name = "sqlite", .module = sqlite_module(b, .{
+                    .target = target,
+                    .optimize = optimize,
+                    .pic = true,
+                }) },
             },
         }),
     });

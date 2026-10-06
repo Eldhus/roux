@@ -5,7 +5,7 @@ platform "roux"
 			respond! : Server.Request, context => Try(Server.Response, _err),
 		}
 	}
-	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url]
+	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url, Sqlite]
 	packages {}
 	provides {
 		"roc_init_for_host": init_for_host!,
@@ -20,6 +20,10 @@ platform "roux"
 		"hosted_response_stream_send": Host.response_stream_send!,
 		"hosted_response_stream_flush": Host.response_stream_flush!,
 		"hosted_response_stream_end": Host.response_stream_end!,
+		"hosted_sqlite_open": Host.sqlite_open!,
+		"hosted_sqlite_run": Host.sqlite_run!,
+		"hosted_sqlite_write_begin": Host.sqlite_write_begin!,
+		"hosted_sqlite_commit": Host.sqlite_commit!,
 	}
 	targets: {
 		inputs_dir: "targets/",
@@ -34,6 +38,7 @@ import Rocstache
 import File
 import Sse
 import Url
+import Sqlite
 
 ## Called once, before the listener opens: the app's configuration and its
 ## immutable context, which every handler on every fiber shares.
@@ -65,13 +70,16 @@ respond_for_host! = |request, boxed_context| {
 }
 
 ## The status for an error `respond!` returns, by its tag: `NotFound` is
-## 404, `BadRequest` 400, anything else 500.
+## 404, `BadRequest` 400, the database's writer busy 503, anything else
+## 500.
 error_status : Str -> U16
 error_status = |inspected|
 	if is_tag(inspected, "NotFound") {
 		404
 	} else if is_tag(inspected, "BadRequest") {
 		400
+	} else if Str.starts_with(inspected, "DbErr(WriterBusy(") {
+		503
 	} else {
 		500
 	}
@@ -83,3 +91,5 @@ expect error_status("NotFound") == 404
 expect error_status("NotFound(\"post\")") == 404
 expect error_status("NotFoundish") == 500
 expect error_status("BadRequest(\"no id\")") == 400
+expect error_status("DbErr(WriterBusy(\"64 requests wait\"))") == 503
+expect error_status("DbErr(Failed(\"disk I/O error\"))") == 500

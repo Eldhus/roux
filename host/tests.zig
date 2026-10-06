@@ -11,6 +11,7 @@ const tidy = @import("tidy");
 test {
     _ = @import("database.zig");
     _ = @import("database_test.zig");
+    _ = @import("requests.zig");
 }
 
 const trees = [_]tidy.Tree{
