@@ -70,9 +70,10 @@ app builds and runs.
 
 ### M6. Everything an app needs
 
-Server-sent events; multipart uploads (streamed, through effects);
-`/_dev`; graceful shutdown (fourneau serves the static files and
-compression). **Proves it:** every example passes; the load test runs.
+Server-sent events (done 2026-10-06: `Sse`, `examples/sse`); multipart
+uploads (streamed, through effects); `/_dev`; graceful shutdown
+(fourneau serves the static files and compression). **Proves it:**
+every example passes; the load test runs.
 
 ### M10. Deploy
 

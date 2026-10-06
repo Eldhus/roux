@@ -703,6 +703,52 @@ pub const RocEnv = struct {
     roc_io: RocIo,
 };
 
+/// Element type for __AnonStruct_82a96c5d55d63488
+pub const __AnonStruct_82a96c5d55d63488 = if (@sizeOf(usize) == 4) extern struct {
+    @"name": RocStr,
+    @"value": RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"name".decref(roc_host);
+        value.@"value".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"name".incref(amount);
+        value.@"value".incref(amount);
+    }
+} else extern struct {
+    @"name": RocStr,
+    @"value": RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"name".decref(roc_host);
+        value.@"value".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"name".incref(amount);
+        value.@"value".incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_82a96c5d55d63488) != 48) @compileError("__AnonStruct_82a96c5d55d63488 size mismatch");
+        if (@alignOf(__AnonStruct_82a96c5d55d63488) != 8) @compileError("__AnonStruct_82a96c5d55d63488 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_82a96c5d55d63488) != 24) @compileError("__AnonStruct_82a96c5d55d63488 size mismatch");
+        if (@alignOf(__AnonStruct_82a96c5d55d63488) != 4) @compileError("__AnonStruct_82a96c5d55d63488 alignment mismatch");
+    }
+}
+
 /// Element type for __AnonStruct_2a70a3dd551fa8a1
 pub const __AnonStruct_2a70a3dd551fa8a1 = if (@sizeOf(usize) == 4) extern struct {
     @"context": RocBox,
@@ -796,52 +842,6 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(__AnonStruct_a14cd3b7d5755441) != 28) @compileError("__AnonStruct_a14cd3b7d5755441 size mismatch");
         if (@alignOf(__AnonStruct_a14cd3b7d5755441) != 4) @compileError("__AnonStruct_a14cd3b7d5755441 alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct_82a96c5d55d63488
-pub const __AnonStruct_82a96c5d55d63488 = if (@sizeOf(usize) == 4) extern struct {
-    @"name": RocStr,
-    @"value": RocStr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.@"name".decref(roc_host);
-        value.@"value".decref(roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.@"name".incref(amount);
-        value.@"value".incref(amount);
-    }
-} else extern struct {
-    @"name": RocStr,
-    @"value": RocStr,
-    /// Recursively decrement Roc-owned fields.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        const value = self;
-        value.@"name".decref(roc_host);
-        value.@"value".decref(roc_host);
-    }
-
-    /// Increment Roc-owned fields.
-    pub fn incref(self: @This(), amount: isize) void {
-        const value = self;
-        value.@"name".incref(amount);
-        value.@"value".incref(amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_82a96c5d55d63488) != 48) @compileError("__AnonStruct_82a96c5d55d63488 size mismatch");
-        if (@alignOf(__AnonStruct_82a96c5d55d63488) != 8) @compileError("__AnonStruct_82a96c5d55d63488 alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_82a96c5d55d63488) != 24) @compileError("__AnonStruct_82a96c5d55d63488 size mismatch");
-        if (@alignOf(__AnonStruct_82a96c5d55d63488) != 4) @compileError("__AnonStruct_82a96c5d55d63488 alignment mismatch");
     }
 }
 
@@ -1002,7 +1002,7 @@ pub const HostRequest_body_read_allResultTag = enum(u8) {
 
 /// Payload union for Try.
 pub const HostRequest_body_read_allResultPayload = extern union {
-        @"err": BodyDisconnectedOrBodyInvalidOrBodyTooLarge,
+        @"err": BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge,
         @"ok": RocListWith(u8, false),
 };
 
@@ -1010,8 +1010,8 @@ pub const HostRequest_body_read_allResultPayload = extern union {
 pub const HostRequest_body_read_allResult = if (@sizeOf(usize) == 4) extern struct {
     payload: [12]u8 align(4),
     tag: HostRequest_body_read_allResultTag,
-    pub fn payload_err(self: *const @This()) BodyDisconnectedOrBodyInvalidOrBodyTooLarge {
-        const ptr: *const BodyDisconnectedOrBodyInvalidOrBodyTooLarge = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge {
+        const ptr: *const BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
@@ -1030,7 +1030,7 @@ pub const HostRequest_body_read_allResult = if (@sizeOf(usize) == 4) extern stru
 } else extern struct {
     payload: HostRequest_body_read_allResultPayload,
     tag: HostRequest_body_read_allResultTag,
-    pub fn payload_err(self: *const @This()) BodyDisconnectedOrBodyInvalidOrBodyTooLarge {
+    pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge {
         return self.payload.@"err";
     }
     pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
@@ -1060,11 +1060,12 @@ comptime {
     }
 }
 
-/// Tag union: BodyDisconnectedOrBodyInvalidOrBodyTooLarge
-pub const BodyDisconnectedOrBodyInvalidOrBodyTooLarge = enum(u8) {
-    @"body_disconnected" = 0,
-    @"body_invalid" = 1,
-    @"body_too_large" = 2,
+/// Tag union: BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge
+pub const BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge = enum(u8) {
+    @"body_after_stream" = 0,
+    @"body_disconnected" = 1,
+    @"body_invalid" = 2,
+    @"body_too_large" = 3,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -1080,12 +1081,99 @@ pub const BodyDisconnectedOrBodyInvalidOrBodyTooLarge = enum(u8) {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(BodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyDisconnectedOrBodyInvalidOrBodyTooLarge size mismatch");
-        if (@alignOf(BodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyDisconnectedOrBodyInvalidOrBodyTooLarge alignment mismatch");
+        if (@sizeOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge size mismatch");
+        if (@alignOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(BodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyDisconnectedOrBodyInvalidOrBodyTooLarge size mismatch");
-        if (@alignOf(BodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyDisconnectedOrBodyInvalidOrBodyTooLarge alignment mismatch");
+        if (@sizeOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge size mismatch");
+        if (@alignOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge alignment mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const HostResponse_stream_startResultTag = enum(u8) {
+    @"Err" = 0,
+    @"Ok" = 1,
+};
+
+/// Payload union for Try.
+pub const HostResponse_stream_startResultPayload = extern union {
+        @"err": StreamDisconnectedOrStreamRefused,
+        @"ok": [0]u8,
+};
+
+/// Tag union: Try
+pub const HostResponse_stream_startResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [1]u8 align(1),
+    tag: HostResponse_stream_startResultTag,
+    pub fn payload_err(self: *const @This()) StreamDisconnectedOrStreamRefused {
+        const ptr: *const StreamDisconnectedOrStreamRefused = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostResponse_stream_startResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostResponse_stream_startResult(self, amount);
+    }
+} else extern struct {
+    payload: HostResponse_stream_startResultPayload,
+    tag: HostResponse_stream_startResultTag,
+    pub fn payload_err(self: *const @This()) StreamDisconnectedOrStreamRefused {
+        return self.payload.@"err";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostResponse_stream_startResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostResponse_stream_startResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostResponse_stream_startResult) != 2) @compileError("HostResponse_stream_startResult size mismatch");
+        if (@alignOf(HostResponse_stream_startResult) != 1) @compileError("HostResponse_stream_startResult alignment mismatch");
+        if (@offsetOf(HostResponse_stream_startResult, "tag") != 1) @compileError("HostResponse_stream_startResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostResponse_stream_startResult) != 2) @compileError("HostResponse_stream_startResult size mismatch");
+        if (@alignOf(HostResponse_stream_startResult) != 1) @compileError("HostResponse_stream_startResult alignment mismatch");
+        if (@offsetOf(HostResponse_stream_startResult, "tag") != 1) @compileError("HostResponse_stream_startResult tag offset mismatch");
+    }
+}
+
+/// Tag union: StreamDisconnectedOrStreamRefused
+pub const StreamDisconnectedOrStreamRefused = enum(u8) {
+    @"stream_disconnected" = 0,
+    @"stream_refused" = 1,
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        _ = self;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        _ = self;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(StreamDisconnectedOrStreamRefused) != 1) @compileError("StreamDisconnectedOrStreamRefused size mismatch");
+        if (@alignOf(StreamDisconnectedOrStreamRefused) != 1) @compileError("StreamDisconnectedOrStreamRefused alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(StreamDisconnectedOrStreamRefused) != 1) @compileError("StreamDisconnectedOrStreamRefused size mismatch");
+        if (@alignOf(StreamDisconnectedOrStreamRefused) != 1) @compileError("StreamDisconnectedOrStreamRefused alignment mismatch");
     }
 }
 
@@ -1178,17 +1266,61 @@ pub const HostFile_read_utf8Args = extern struct {
 };
 
 /// Arguments for Host.request_body_read_all!
-/// Roc signature: U64, U64 => Try(List(U8), [BodyDisconnected, BodyInvalid, BodyTooLarge])
+/// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyInvalid, BodyTooLarge])
 /// Refcounted fields are owned by the hosted function.
 pub const HostRequest_body_read_allArgs = extern struct {
     arg0: u64,
     arg1: u64,
 };
 
+/// Arguments for Host.response_stream_start!
+/// Roc signature: U64, List({ name : Str, value : Str }) => Try({}, [StreamDisconnected, StreamRefused])
+/// Refcounted fields are owned by the hosted function.
+pub const HostResponse_stream_startArgs = extern struct {
+    arg0: u64,
+    arg1: RocList(__AnonStruct_82a96c5d55d63488),
+};
+
+/// Arguments for Host.response_stream_send!
+/// Roc signature: U64, List(U8) => Try({}, [StreamDisconnected, StreamRefused])
+/// Refcounted fields are owned by the hosted function.
+pub const HostResponse_stream_sendArgs = extern struct {
+    arg0: u64,
+    arg1: RocListWith(u8, false),
+};
+
+/// Arguments for Host.response_stream_flush!
+/// Roc signature: U64 => Try({}, [StreamDisconnected, StreamRefused])
+/// Refcounted fields are owned by the hosted function.
+pub const HostResponse_stream_flushArgs = extern struct {
+    arg0: u64,
+};
+
+/// Arguments for Host.response_stream_end!
+/// Roc signature: U64 => Try({}, [StreamDisconnected, StreamRefused])
+/// Refcounted fields are owned by the hosted function.
+pub const HostResponse_stream_endArgs = extern struct {
+    arg0: u64,
+};
+
 // Platform Type Aliases
 
 pub const HostFile_read_utf8Err = FileNotFoundOrFileTooLargeOrFileUnreadable;
-pub const HostRequest_body_read_allErr = BodyDisconnectedOrBodyInvalidOrBodyTooLarge;
+pub const HostRequest_body_read_allErr = BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge;
+pub const HostResponse_stream_startArg1 = __AnonStruct_82a96c5d55d63488;
+pub const HostResponse_stream_startErr = StreamDisconnectedOrStreamRefused;
+pub const HostResponse_stream_sendResult = HostResponse_stream_startResult;
+pub const HostResponse_stream_sendResultPayload = HostResponse_stream_startResultPayload;
+pub const HostResponse_stream_sendResultTag = HostResponse_stream_startResultTag;
+pub const HostResponse_stream_sendErr = StreamDisconnectedOrStreamRefused;
+pub const HostResponse_stream_flushResult = HostResponse_stream_startResult;
+pub const HostResponse_stream_flushResultPayload = HostResponse_stream_startResultPayload;
+pub const HostResponse_stream_flushResultTag = HostResponse_stream_startResultTag;
+pub const HostResponse_stream_flushErr = StreamDisconnectedOrStreamRefused;
+pub const HostResponse_stream_endResult = HostResponse_stream_startResult;
+pub const HostResponse_stream_endResultPayload = HostResponse_stream_startResultPayload;
+pub const HostResponse_stream_endResultTag = HostResponse_stream_startResultTag;
+pub const HostResponse_stream_endErr = StreamDisconnectedOrStreamRefused;
 pub const Init_for_hostOk = __AnonStruct_2a70a3dd551fa8a1;
 pub const Respond_for_hostArg0 = __AnonStruct_28781edfe447a702;
 pub const Respond_for_hostArg0Headers = __AnonStruct_82a96c5d55d63488;
@@ -1253,6 +1385,36 @@ pub const HostRequest_body_read_allResultRelease = struct {
     }
 };
 
+fn decrefHostResponse_stream_startResult(value: HostResponse_stream_startResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().decref(roc_host);
+        },
+        .@"Ok" => {},
+    }
+}
+
+fn increfHostResponse_stream_startResult(value: HostResponse_stream_startResult, amount: isize) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().incref(amount);
+        },
+        .@"Ok" => {},
+    }
+}
+
+pub const HostResponse_stream_startResultRelease = struct {
+    pub fn release(value: HostResponse_stream_startResult, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_82a96c5d55d63488Release = struct {
+    pub fn release(value: __AnonStruct_82a96c5d55d63488, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 fn decrefInit_for_hostResult(value: Init_for_hostResult, roc_host: *RocHost) void {
     switch (value.tag) {
         .@"Err" => {},
@@ -1289,12 +1451,6 @@ pub const __AnonStruct_a14cd3b7d5755441Release = struct {
     }
 };
 
-pub const __AnonStruct_82a96c5d55d63488Release = struct {
-    pub fn release(value: __AnonStruct_82a96c5d55d63488, roc_host: *RocHost) void {
-        value.decref(roc_host);
-    }
-};
-
 pub const __AnonStruct_28781edfe447a702Release = struct {
     pub fn release(value: __AnonStruct_28781edfe447a702, roc_host: *RocHost) void {
         value.decref(roc_host);
@@ -1315,11 +1471,11 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == HostFile_read_utf8Result) return HostFile_read_utf8ResultRelease;
     if (T == HostRequest_body_read_allResult) return HostRequest_body_read_allResultRelease;
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
+    if (T == RocList(__AnonStruct_82a96c5d55d63488)) return RocListRelease(RocList(__AnonStruct_82a96c5d55d63488), __AnonStruct_82a96c5d55d63488Release);
+    if (T == __AnonStruct_82a96c5d55d63488) return __AnonStruct_82a96c5d55d63488Release;
     if (T == Init_for_hostResult) return Init_for_hostResultRelease;
     if (T == __AnonStruct_2a70a3dd551fa8a1) return __AnonStruct_2a70a3dd551fa8a1Release;
     if (T == __AnonStruct_a14cd3b7d5755441) return __AnonStruct_a14cd3b7d5755441Release;
-    if (T == RocList(__AnonStruct_82a96c5d55d63488)) return RocListRelease(RocList(__AnonStruct_82a96c5d55d63488), __AnonStruct_82a96c5d55d63488Release);
-    if (T == __AnonStruct_82a96c5d55d63488) return __AnonStruct_82a96c5d55d63488Release;
     if (T == __AnonStruct_28781edfe447a702) return __AnonStruct_28781edfe447a702Release;
     @compileError("generated glue has no recursive release policy for " ++ @typeName(T));
 }
@@ -1370,9 +1526,31 @@ pub extern fn hosted_stderr_line(arg0: RocStr) callconv(.c) void;
 pub extern fn hosted_file_read_utf8(arg0: RocStr, arg1: u64) callconv(.c) HostFile_read_utf8Result;
 
 /// Hosted symbol for Host.request_body_read_all!
-/// Roc signature: U64, U64 => Try(List(U8), [BodyDisconnected, BodyInvalid, BodyTooLarge])
+/// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyInvalid, BodyTooLarge])
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_request_body_read_all(arg0: u64, arg1: u64) callconv(.c) HostRequest_body_read_allResult;
+
+/// Hosted symbol for Host.response_stream_start!
+/// Roc signature: U64, List({ name : Str, value : Str }) => Try({}, [StreamDisconnected, StreamRefused])
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     decrefListOf__AnonStruct_82a96c5d55d63488(arg1, roc_host);
+pub extern fn hosted_response_stream_start(arg0: u64, arg1: RocList(__AnonStruct_82a96c5d55d63488)) callconv(.c) HostResponse_stream_startResult;
+
+/// Hosted symbol for Host.response_stream_send!
+/// Roc signature: U64, List(U8) => Try({}, [StreamDisconnected, StreamRefused])
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     arg1.decref(roc_host);
+pub extern fn hosted_response_stream_send(arg0: u64, arg1: RocListWith(u8, false)) callconv(.c) HostResponse_stream_startResult;
+
+/// Hosted symbol for Host.response_stream_flush!
+/// Roc signature: U64 => Try({}, [StreamDisconnected, StreamRefused])
+pub extern fn hosted_response_stream_flush(arg0: u64) callconv(.c) HostResponse_stream_startResult;
+
+/// Hosted symbol for Host.response_stream_end!
+/// Roc signature: U64 => Try({}, [StreamDisconnected, StreamRefused])
+pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_stream_startResult;
 
 
 /// Default memory management functions for Roc platforms.

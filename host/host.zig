@@ -180,6 +180,11 @@ const BodyResult = @typeInfo(@TypeOf(abi.hosted_request_body_read_all)).@"fn".re
 /// it only while `respond!` runs.
 export fn hosted_request_body_read_all(handle: u64, limit_bytes: u64) callconv(.c) BodyResult {
     const request: *Server.Request = @ptrFromInt(handle);
+    // fourneau reads no body once a stream has started (its 100 Continue
+    // would be a second head): refused here, not left to its assertion.
+    if (request.stream_state() != .none) {
+        return .{ .tag = .Err, .payload = .{ .err = .body_after_stream } };
+    }
     const result = read_body(request, limit_bytes) catch |err| return .{
         .tag = .Err,
         .payload = .{ .err = switch (err) {
@@ -208,6 +213,78 @@ fn read_body(request: *Server.Request, limit_bytes: u64) !BodyBytes {
     } else unreachable;
     if (bytes.items.len > limit_bytes) return error.ContentTooLarge;
     return .fromSlice(bytes.items, host());
+}
+
+// --- streamed responses (Sse) -----------------------------------------------------
+
+const StreamResult = @typeInfo(@TypeOf(abi.hosted_response_stream_start)).@"fn".return_type.?;
+const StreamHeaders = @typeInfo(@TypeOf(abi.hosted_response_stream_start)).@"fn".param_types[1].?;
+const StreamBytes = @typeInfo(@TypeOf(abi.hosted_response_stream_send)).@"fn".param_types[1].?;
+const StreamError = @FieldType(@FieldType(StreamResult, "payload"), "err");
+
+/// The largest event: the platform's `Sse.event_bytes_max`, checked again
+/// here. Each effect checks where the stream is, too: the host never lets
+/// what a Roc app does reach one of fourneau's assertions.
+const stream_event_bytes_max = 64 * 1024;
+
+/// A 200 head with the app's headers; the stream's chunks follow.
+export fn hosted_response_stream_start(
+    handle: u64,
+    headers: StreamHeaders,
+) callconv(.c) StreamResult {
+    defer headers.deinit(host());
+    const request: *Server.Request = @ptrFromInt(handle);
+    if (request.stream_state() != .none) return stream_error(.stream_refused);
+    // As fourneau wants them, in the scratch memory, which nothing uses
+    // while `respond!` runs; the head is written before this returns.
+    const roc_headers = headers.items();
+    const table: [*]Header = @ptrCast(@alignCast(request.scratch.ptr));
+    const capacity = @min(response_headers_max, request.scratch.len / @sizeOf(Header));
+    if (roc_headers.len > capacity) return stream_error(.stream_refused);
+    for (roc_headers, table[0..roc_headers.len]) |*roc_header, *header| {
+        header.* = .{ .name = roc_header.name.asSlice(), .value = roc_header.value.asSlice() };
+    }
+    request.stream_start(200, table[0..roc_headers.len]) catch |err| {
+        return stream_error(switch (err) {
+            error.Disconnected => .stream_disconnected,
+            error.HeadRefused => .stream_refused,
+        });
+    };
+    assert(request.stream_state() == .streaming);
+    return stream_ok();
+}
+
+/// One event, a chunk; its bytes are copied or sent before this returns.
+export fn hosted_response_stream_send(handle: u64, bytes: StreamBytes) callconv(.c) StreamResult {
+    defer bytes.decref(host());
+    const request: *Server.Request = @ptrFromInt(handle);
+    if (request.stream_state() != .streaming) return stream_error(.stream_refused);
+    if (bytes.len() > stream_event_bytes_max) return stream_error(.stream_refused);
+    request.stream_send(bytes.items()) catch return stream_error(.stream_disconnected);
+    return stream_ok();
+}
+
+export fn hosted_response_stream_flush(handle: u64) callconv(.c) StreamResult {
+    const request: *Server.Request = @ptrFromInt(handle);
+    if (request.stream_state() != .streaming) return stream_error(.stream_refused);
+    request.stream_flush() catch return stream_error(.stream_disconnected);
+    return stream_ok();
+}
+
+export fn hosted_response_stream_end(handle: u64) callconv(.c) StreamResult {
+    const request: *Server.Request = @ptrFromInt(handle);
+    if (request.stream_state() != .streaming) return stream_error(.stream_refused);
+    request.stream_end() catch return stream_error(.stream_disconnected);
+    assert(request.stream_state() == .ended);
+    return stream_ok();
+}
+
+fn stream_ok() StreamResult {
+    return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+fn stream_error(err: StreamError) StreamResult {
+    return .{ .tag = .Err, .payload = .{ .err = err } };
 }
 
 // --- the application, for fourneau ------------------------------------------------
@@ -239,13 +316,24 @@ const App = struct {
         const roc_request = request_to_roc(request);
         abi.increfBox(@ptrCast(app.context), 1); // Roc consumes its arguments
         const roc = abi.roc_respond_for_host(roc_request, app.context);
+        const streamed = fourneau.server.streamed_status;
+        if (request.stream_state() != .none) {
+            // Streamed (`Sse`): whatever `respond!` returned after, the
+            // response is on its way; ended or not, fourneau finishes it.
+            return .{ .status = streamed, .headers = &.{}, .body = "", .roc = roc };
+        }
+        if (roc.status == streamed) {
+            // `Server.streamed` with no stream: there is nothing to send.
+            write_line(2, "roux: respond! returned Server.streamed without a stream: 500");
+            return .{ .status = 500, .headers = &.{}, .body = "", .roc = roc };
+        }
         // The response's headers, as fourneau wants them, in this
         // connection's scratch memory; their bytes stay Roc's until release.
         const table: [*]Header = @ptrCast(@alignCast(request.scratch.ptr));
         const capacity = @min(response_headers_max, request.scratch.len / @sizeOf(Header));
         const roc_headers = roc.headers.items();
         const count = @min(roc_headers.len, capacity);
-        for (roc_headers[0..count], table[0..count]) |roc_header, *header| {
+        for (roc_headers[0..count], table[0..count]) |*roc_header, *header| {
             header.* = .{ .name = roc_header.name.asSlice(), .value = roc_header.value.asSlice() };
         }
         return .{

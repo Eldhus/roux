@@ -88,16 +88,28 @@ respond! : Server.Request, Context => Try(Server.Response, _err)
 - Static files: the app names a directory in its config (`static_dir`);
   the host loads it at startup and serves its files before `respond!`
   (fourneau's site.zig: gzip copies, ETags, byte ranges).
+- **A response may be a stream** (server-sent events, `Sse`): effects
+  on the handler's own fiber, as reading the body is (`start!`, `send!`,
+  `flush!`, `end!`), each a call into fourneau's stream, so a handler
+  that waits between events yields its fiber. No retained state machine
+  as in basic-webserver's `Sse.unfold!`: a fiber already is one. Events
+  made together leave together; `flush!` before any other wait. The
+  handler then returns `Server.streamed` (`end!` gives it). The host
+  trusts none of it: an effect out of order, an event over 64 KiB or a
+  body read after the start is refused, never left to fourneau's
+  assertions; whatever `respond!` returns after a stream started is
+  ignored, and a stream not ended closes cut short.
 - Planned (M5, M6): `shutdown!`; responses that are a file served by the
-  host or an SSE stream; a body streamed to a file and multipart fields
-  one at a time; state in SQLite (no mutable process state in Roc).
+  host; a body streamed to a file and multipart fields one at a time;
+  state in SQLite (no mutable process state in Roc).
 
 ## What the platform provides
 
 The modules apps use, and only those: `Server`, `Stdout`, `Stderr`,
-`Rocstache` (template escaping and formatters) and `File` (`read_utf8!`:
+`Rocstache` (template escaping and formatters), `File` (`read_utf8!`:
 a whole file, bounded, read through the shard's `Io` so the fiber
-yields) today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
+yields), `Sse` (server-sent events) and `Url` (`query_value`, form
+decoding) today; planned, `Sqlite` (M5), `MultipartFormData`, `Env`,
 `Path`, `UnixTime` and `Sleep` (M6).
 
 The port is the app's (`Server.Config.port`) unless the deployment sets

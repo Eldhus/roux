@@ -234,3 +234,43 @@ committed file byte for byte; then the new fields and result types
 appeared, nothing else. `examples/files`: style.css from `public/`, the
 notes read per request (an edit shows at once), a missing file and an
 oversized one as 500 with the typed error logged.
+
+## 2026-10-06: server-sent events
+
+For fourneau-dragrace's new SSE workload (a Datastar action) and M6.
+`Sse` is effects on the handler's fiber: `start!(request, headers)`,
+`send!(stream, event)`, `flush!`, `end!`, which returns
+`Server.streamed` for `respond!` to return. Each is a call into
+fourneau's new streamed responses (its DIARY). basic-webserver's `Sse`
+keeps a state machine (`Sse.unfold!`) that its host advances between
+wakes; a roux handler is already on its own fiber, so it simply waits
+where it is. `Sse.Event.named` refuses a type with a line break, and
+data's lines become `data:` lines (CRLF and CR too). `Url.query_value`
+form-decodes a query value (a three-state walk over the bytes; `%` with
+no two hex digits after it, or bytes that are not UTF-8, is
+`BadEncoding`).
+
+The host trusts the app with none of it: each effect asks fourneau
+where the stream is (`Request.stream_state`, new) and refuses what is
+out of order (`Refused`); an event over 64 KiB is refused; a body read
+after the start is the new `BodyAfterStream` (its 100 Continue would be
+a second head); whatever `respond!` returns once a stream started is
+ignored, and `Server.streamed` without one is a 500. `examples/sse`
+shows each by curl: a stream, one cut short by an error (curl: exit 18,
+the transfer closed mid-body), the body after the start, a send after
+the end, the marker without a stream, a HEAD, and the next request on
+the same connection after a stream. The glue regenerated with
+ZigGlue.roc at the nightly's commit (from the unchanged platform first:
+byte for byte the committed file).
+
+A bug found on the way, in the existing code too: the host made
+fourneau's response headers from Roc's with a by-value loop capture,
+`|roc_header, *header|`, then `roc_header.name.asSlice()`. `asSlice`
+takes `*const RocStr`, and a small string's bytes live inside the
+struct, so the slice pointed into the loop's copy. In `handle` it had
+worked by luck of code generation; the stream's head came out as
+garbage and was refused. Both loops now capture by pointer.
+
+The tests, tested: three bugs put into `Url` (a hex digit off by one,
+an escape appending the `%` instead of decoding, a lone `%` accepted),
+each failed two or three of its expects.

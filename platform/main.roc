@@ -5,7 +5,7 @@ platform "roux"
 			respond! : Server.Request, context => Try(Server.Response, _err),
 		}
 	}
-	exposes [Server, Stdout, Stderr, Rocstache, File]
+	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url]
 	packages {}
 	provides {
 		"roc_init_for_host": init_for_host!,
@@ -16,6 +16,10 @@ platform "roux"
 		"hosted_stderr_line": Host.stderr_line!,
 		"hosted_file_read_utf8": Host.file_read_utf8!,
 		"hosted_request_body_read_all": Host.request_body_read_all!,
+		"hosted_response_stream_start": Host.response_stream_start!,
+		"hosted_response_stream_send": Host.response_stream_send!,
+		"hosted_response_stream_flush": Host.response_stream_flush!,
+		"hosted_response_stream_end": Host.response_stream_end!,
 	}
 	targets: {
 		inputs_dir: "targets/",
@@ -28,6 +32,8 @@ import Stdout
 import Stderr
 import Rocstache
 import File
+import Sse
+import Url
 
 ## Called once, before the listener opens: the app's configuration and its
 ## immutable context, which every handler on every fiber shares.
