@@ -57,10 +57,11 @@ pub const options = [_]Option{
     .{ .define = "SQLITE_ENABLE_MEMSYS5", .reported = "ENABLE_MEMSYS5" },
     // The generator types a result column by its origin table and column.
     .{ .define = "SQLITE_ENABLE_COLUMN_METADATA", .reported = "ENABLE_COLUMN_METADATA" },
-    // Without it the unix VFS syncs data with fsync, flushing metadata too.
-    .{ .define = "HAVE_FDATASYNC=1", .reported = null },
-    // Without it the unix VFS sleeps in whole seconds when it waits.
-    .{ .define = "HAVE_USLEEP=1", .reported = null },
+    // No OS code of SQLite's own: roux's VFS (vfs.zig) and mutexes
+    // (mutex.zig) are the only way to the system, so nothing bypasses the
+    // shard's Io. SQLite reports it as the no-op mutexes it then defaults
+    // to, which roux replaces (a test checks both).
+    .{ .define = "SQLITE_OS_OTHER=1", .reported = "MUTEX_NOOP" },
 };
 
 pub const flags = flags: {
