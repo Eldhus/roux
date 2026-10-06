@@ -100,7 +100,8 @@ a whole file, bounded, read through the shard's `Io` so the fiber
 yields) today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
 `Path`, `UnixTime` and `Sleep` (M6).
 
-HTTPS is the deployment's, like the address (`ROUX_ADDRESS`): the host
+The port is the app's (`Server.Config.port`) unless the deployment sets
+`ROUX_PORT`. HTTPS is the deployment's, like the address (`ROUX_ADDRESS`): the host
 reads `ROUX_TLS_CERT` and `ROUX_TLS_KEY`, or `ROUX_ACME_DIRECTORY`,
 `ROUX_ACME_IDENTIFIER` and `ROUX_ACME_STATE` (and `_PROFILE`,
 `_HTTP_PORT`, `_CA`) to obtain a certificate at startup, and

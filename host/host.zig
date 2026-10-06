@@ -333,7 +333,10 @@ fn run() !void {
         std.process.exit(@intCast(@max(0, @min(code, 255))));
     }
     const started = init.payload_ok();
-    const port = if (started.port == 0) port_default else started.port;
+    // The app names its port; the deployment may say otherwise (ROUX_PORT),
+    // as it says the address: a local run of an app that asks for 443.
+    const app_port = if (started.port == 0) port_default else started.port;
+    const port = port_from(environment("ROUX_PORT")) orelse app_port;
     const startup_io = std.Io.Threaded.global_single_threaded.io();
     const shards = shard_count();
     assert(shards >= 1);
