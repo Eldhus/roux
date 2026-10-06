@@ -244,6 +244,17 @@ const App = struct {
 
 const Server = fourneau.server.ServerType(App, .{ .send_then_receive = Evented.sendThenReceive });
 
+/// Plain HTTP beside HTTPS: redirects (fourneau's https.zig).
+const Redirect = fourneau.https.RedirectType(.{ .send_then_receive = Evented.sendThenReceive });
+
+fn run_redirect(redirect_server: *Redirect.Server) void {
+    redirect_server.run() catch |err| {
+        var buffer: [128]u8 = undefined;
+        write_line(2, std.fmt.bufPrint(&buffer, "roux: redirect: {t}", .{err}) catch "roux");
+        std.process.exit(1);
+    };
+}
+
 // --- the program ---------------------------------------------------------------
 
 export fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
@@ -283,18 +294,63 @@ fn run() !void {
     assert(shards >= 1);
     assert(shards <= shards_max);
 
+    // HTTPS is the deployment's to say, as the address is: a certificate,
+    // or a CA to obtain one from now, before any shard (https.zig).
+    var https_options = https_from_environment();
+    try https_options.check();
+    const startup_io = std.Io.Threaded.global_single_threaded.io();
+    const tls = try fourneau.https.context(std.heap.page_allocator, startup_io, https_options);
+
     var app: App = .{ .context = started.context };
+    const listen: Listen = .{ .port = port, .shards = shards, .tls = tls, .https = https_options };
     var threads: [shards_max]std.Thread = undefined;
     for (threads[1..shards]) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, run_shard, .{ &app, port, shards });
+        thread.* = try std.Thread.spawn(.{}, run_shard, .{ &app, listen });
     }
     var banner: [128]u8 = undefined;
-    write_line(1, std.fmt.bufPrint(&banner, "roux on http://{s}:{d} ({d} shards)", .{
+    write_line(1, std.fmt.bufPrint(&banner, "roux on {s}://{s}:{d} ({d} shards)", .{
+        if (tls != null) "https" else "http",
         listen_address(),
         port,
         shards,
     }) catch "");
-    run_shard(&app, port, shards);
+    run_shard(&app, listen);
+}
+
+/// What every shard listens with, read-only.
+const Listen = struct {
+    port: u16,
+    shards: u32,
+    tls: ?*const fourneau.tls.Context,
+    https: fourneau.https.Options,
+};
+
+/// The deployment's HTTPS, from `ROUX_TLS_CERT` and `ROUX_TLS_KEY`, or
+/// `ROUX_ACME_DIRECTORY`, `_IDENTIFIER`, `_STATE` (and `_PROFILE`,
+/// `_HTTP_PORT`, `_CA`), with `ROUX_REDIRECT_PORT` and `ROUX_HTTPS_HOST`
+/// for plain HTTP beside it. None set: plain HTTP.
+fn https_from_environment() fourneau.https.Options {
+    return .{
+        .cert = environment("ROUX_TLS_CERT"),
+        .key = environment("ROUX_TLS_KEY"),
+        .acme_directory = environment("ROUX_ACME_DIRECTORY"),
+        .acme_identifier = environment("ROUX_ACME_IDENTIFIER"),
+        .acme_state = environment("ROUX_ACME_STATE"),
+        .acme_profile = environment("ROUX_ACME_PROFILE"),
+        .acme_http_port = port_from(environment("ROUX_ACME_HTTP_PORT")) orelse 80,
+        .acme_ca = environment("ROUX_ACME_CA"),
+        .redirect_port = port_from(environment("ROUX_REDIRECT_PORT")),
+        .https_host = environment("ROUX_HTTPS_HOST"),
+    };
+}
+
+fn environment(name: [*:0]const u8) ?[]const u8 {
+    const value = std.c.getenv(name) orelse return null;
+    return std.mem.span(value);
+}
+
+fn port_from(text: ?[]const u8) ?u16 {
+    return std.fmt.parseInt(u16, text orelse return null, 10) catch null;
 }
 
 /// One shard per CPU this process may run on (its affinity mask, so
@@ -310,16 +366,16 @@ fn shard_count() u32 {
     return @min(count, shards_max);
 }
 
-fn run_shard(app: *App, port: u16, shards: u32) void {
-    run_shard_or_fail(app, port, shards) catch |err| {
+fn run_shard(app: *App, listen: Listen) void {
+    run_shard_or_fail(app, listen) catch |err| {
         var buffer: [128]u8 = undefined;
         write_line(2, std.fmt.bufPrint(&buffer, "roux: shard: {t}", .{err}) catch "roux");
         std.process.exit(1);
     };
 }
 
-fn run_shard_or_fail(app: *App, port: u16, shards: u32) !void {
-    assert(shards >= 1);
+fn run_shard_or_fail(app: *App, listen: Listen) !void {
+    assert(listen.shards >= 1);
     assert(requests_in_flight == 0);
     roc_allocations_idle = roc_allocations_live;
 
@@ -334,11 +390,21 @@ fn run_shard_or_fail(app: *App, port: u16, shards: u32) !void {
     defer runtime.deinit();
 
     const io = runtime.io();
-    const address = try std.Io.net.IpAddress.parse(listen_address(), port);
+    const address = try std.Io.net.IpAddress.parse(listen_address(), listen.port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
     var server = try Server.init(gpa, io, app, listener, .{
-        .connections_max = @max(1, connections_max / shards),
+        .connections_max = @max(1, connections_max / listen.shards),
+        .tls = listen.tls,
     });
+    var group: std.Io.Group = .init;
+    var redirect: Redirect = undefined;
+    var redirect_server: Redirect.Server = undefined;
+    if (listen.https.redirect_port) |port| {
+        assert(listen.tls != null); // redirecting to HTTPS
+        redirect = .{ .host = listen.https.https_host.? };
+        redirect_server = try redirect.listen(gpa, io, listen_address(), port);
+        try group.concurrent(io, run_redirect, .{&redirect_server});
+    }
     try server.run();
 }
 
