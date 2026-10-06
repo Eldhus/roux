@@ -217,3 +217,20 @@ the host obtained a certificate for 127.0.0.1 before its shards started,
 served the escaped menu over TLS 1.3 on 8 shards (curl verifying through
 Pebble's root), and redirected plain HTTP to it. The static musl binary
 does ACME with Zig's `std.http.Client`.
+
+## 2026-10-06: static files and file reads
+
+For the dragrace site to run on roux (owner: the site becomes the demo).
+`Server.Config` gains `static_dir`: the host loads it at startup with
+fourneau's site.zig (moved out of fourneau-static for this) and serves
+its files before `respond!`. `File.read_utf8!(path, limit)` reads a whole
+file through the shard's `Io`, so a fiber waiting on the disk yields;
+not UTF-8 is `FileUnreadable`, past the limit `FileTooLarge`.
+
+Both cross the boundary, so the glue was regenerated: `roc glue
+ZigGlue.roc OUT main.roc`, the spec from roc-lang/roc at the nightly's
+commit. Regenerated from the unchanged platform first, it matched the
+committed file byte for byte; then the new fields and result types
+appeared, nothing else. `examples/files`: style.css from `public/`, the
+notes read per request (an edit shows at once), a missing file and an
+oversized one as 500 with the typed error logged.

@@ -73,6 +73,12 @@ threadlocal var requests_in_flight: u32 = 0;
 /// `roc_allocations_live` when this thread's shard started: what it holds
 /// with no request in flight.
 threadlocal var roc_allocations_idle: u64 = 0;
+/// This shard's `Io`, for effects that wait (file reads): a fiber waiting
+/// on the disk yields like one waiting on the network.
+threadlocal var shard_io: ?std.Io = null;
+/// The app's static files (`static_dir`), served before `respond!`; read
+/// once at startup and shared read-only by every shard.
+var static_site: ?*const fourneau.site.Site = null;
 
 // Roc's compiled code calls the exported functions; the glue (lists and
 // strings the host builds) calls the `RocHost` table. Both reach the counted
@@ -140,6 +146,33 @@ fn write_line(fd: i32, bytes: []const u8) void {
     _ = std.os.linux.writev(fd, &parts, parts.len);
 }
 
+const FileResult = @typeInfo(@TypeOf(abi.hosted_file_read_utf8)).@"fn".return_type.?;
+
+/// A file read whole through the shard's `Io`, at most `limit_bytes`.
+export fn hosted_file_read_utf8(path: abi.RocStr, limit_bytes: u64) callconv(.c) FileResult {
+    defer path.decref(host());
+    const io = shard_io orelse return file_error(.file_unreadable); // not on a shard
+    const gpa = std.heap.smp_allocator;
+    const limit: std.Io.Limit = .limited(@intCast(@min(limit_bytes, file_bytes_max) + 1));
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path.asSlice(), gpa, limit) catch |err|
+        return file_error(switch (err) {
+            error.FileNotFound => .file_not_found,
+            error.StreamTooLong => .file_too_large,
+            else => .file_unreadable,
+        });
+    defer gpa.free(bytes);
+    if (bytes.len > limit_bytes) return file_error(.file_too_large);
+    if (!std.unicode.utf8ValidateSlice(bytes)) return file_error(.file_unreadable);
+    return .{ .tag = .Ok, .payload = .{ .ok = .fromSlice(bytes, host()) } };
+}
+
+fn file_error(err: abi.FileNotFoundOrFileTooLargeOrFileUnreadable) FileResult {
+    return .{ .tag = .Err, .payload = .{ .err = err } };
+}
+
+/// The largest file an app may read whole, whatever limit it asks for.
+const file_bytes_max = 64 * 1024 * 1024;
+
 const BodyResult = @typeInfo(@TypeOf(abi.hosted_request_body_read_all)).@"fn".return_type.?;
 
 /// The request body, read now that the handler asks, up to `limit_bytes`.
@@ -187,11 +220,22 @@ const App = struct {
         status: u16,
         headers: []const Header,
         body: []const u8,
-        roc: ResponseToHost,
+        /// Roc's response, released after the send; null for a static file.
+        roc: ?ResponseToHost,
     };
 
     pub fn handle(app: *App, request: *Server.Request) Response {
         requests_in_flight += 1;
+        if (static_site) |site| {
+            if (site.respond(request.head, request.scratch)) |file| {
+                return .{
+                    .status = file.status,
+                    .headers = file.headers,
+                    .body = file.body,
+                    .roc = null,
+                };
+            }
+        }
         const roc_request = request_to_roc(request);
         abi.increfBox(@ptrCast(app.context), 1); // Roc consumes its arguments
         const roc = abi.roc_respond_for_host(roc_request, app.context);
@@ -214,7 +258,7 @@ const App = struct {
 
     pub fn release(app: *App, response: *Response) void {
         _ = app;
-        response.roc.decref(host());
+        if (response.roc) |roc| roc.decref(host());
         response.* = undefined;
         assert(requests_in_flight > 0);
         requests_in_flight -= 1;
@@ -290,6 +334,7 @@ fn run() !void {
     }
     const started = init.payload_ok();
     const port = if (started.port == 0) port_default else started.port;
+    const startup_io = std.Io.Threaded.global_single_threaded.io();
     const shards = shard_count();
     assert(shards >= 1);
     assert(shards <= shards_max);
@@ -298,8 +343,14 @@ fn run() !void {
     // or a CA to obtain one from now, before any shard (https.zig).
     var https_options = https_from_environment();
     try https_options.check();
-    const startup_io = std.Io.Threaded.global_single_threaded.io();
     const tls = try fourneau.https.context(std.heap.page_allocator, startup_io, https_options);
+    const static_dir = started.static_dir.asSlice();
+    if (static_dir.len > 0) {
+        const site = try std.heap.page_allocator.create(fourneau.site.Site);
+        const gpa = std.heap.page_allocator;
+        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, "", tls != null);
+        static_site = site;
+    }
 
     var app: App = .{ .context = started.context };
     const listen: Listen = .{ .port = port, .shards = shards, .tls = tls, .https = https_options };
@@ -390,6 +441,7 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     defer runtime.deinit();
 
     const io = runtime.io();
+    shard_io = io;
     const address = try std.Io.net.IpAddress.parse(listen_address(), listen.port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
     var server = try Server.init(gpa, io, app, listener, .{

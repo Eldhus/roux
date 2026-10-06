@@ -85,15 +85,19 @@ respond! : Server.Request, Context => Try(Server.Response, _err)
   `Server.read_body!(request, limit_bytes)`. Each route decides its own
   limit, and a handler can refuse before the body is read at all: the
   connection reads body bytes only when the handler asks.
+- Static files: the app names a directory in its config (`static_dir`);
+  the host loads it at startup and serves its files before `respond!`
+  (fourneau's site.zig: gzip copies, ETags, byte ranges).
 - Planned (M5, M6): `shutdown!`; responses that are a file served by the
   host or an SSE stream; a body streamed to a file and multipart fields
-  one at a time; static files declared in `init!` and served by fourneau
-  before `respond!`; state in SQLite (no mutable process state in Roc).
+  one at a time; state in SQLite (no mutable process state in Roc).
 
 ## What the platform provides
 
-The modules apps use, and only those: `Server`, `Stdout`, `Stderr` and
-`Rocstache` (template escaping and formatters) today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
+The modules apps use, and only those: `Server`, `Stdout`, `Stderr`,
+`Rocstache` (template escaping and formatters) and `File` (`read_utf8!`:
+a whole file, bounded, read through the shard's `Io` so the fiber
+yields) today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
 `Path`, `UnixTime` and `Sleep` (M6).
 
 HTTPS is the deployment's, like the address (`ROUX_ADDRESS`): the host

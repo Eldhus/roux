@@ -2,7 +2,10 @@ import Host
 
 ## Requests, responses and the server's configuration.
 Server := [].{
-	Config : { port : U16 }
+	## `static_dir`: a directory whose files the host serves itself, before
+	## `respond!` (gzip copies, ETags, ranges: fourneau's site.zig), at the
+	## root of the URL space; "" for none. Relative to the working directory.
+	Config : { port : U16, static_dir : Str }
 
 	Header : { name : Str, value : Str }
 

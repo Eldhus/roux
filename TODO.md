@@ -33,11 +33,13 @@
 
 3. **What the dragrace site needs to run on roux.** (owner, 2026-10-06:
    the site becomes the roux demo; fourneau-dragrace's TODO, WIP 3)
-   - Where it stands (2026-10-06): planned. Static files the app names in
-     `init!`, served by the host before `respond!` (fourneau's loader:
-     gzip, ETags, ranges); a `File` module with a bounded `read_utf8!`
-     effect (new hosted functions: the glue regenerated). Next: both,
-     with an example each.
+   - Where it stands (2026-10-06): done: `Server.Config.static_dir`, served
+     by the host before `respond!` (fourneau's site.zig), and
+     `File.read_utf8!` (bounded, through the shard's `Io`);
+     `examples/files` shows both, a file edited while the app runs shows
+     on the next request. The glue regenerated with `roc glue` and
+     ZigGlue.roc at the nightly's commit (unchanged platform first: byte
+     for byte the committed file). Remove once the site runs on roux.
 
 ## Plan
 
@@ -92,7 +94,8 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - **Roc glue**, with each nightly: regenerate `host/roc_platform_abi.zig`
   with `roc glue` and the matching `ZigGlue.roc` from the roc repository at
   the nightly's commit; build and run the examples.
-  - Last done: 2026-10-04 (first light, with the nightly above).
+  - Last done: 2026-10-06 (new hosted function and config field; the
+    spec from roc-lang/roc 130536d, src/glue/src/ZigGlue.roc).
 - **Vendored sources**, monthly and when a security release appears:
   `vendor/sqlite/` (sqlite.org/changes.html) once vendored.
   - Last done: never (not vendored yet).

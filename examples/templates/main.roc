@@ -12,7 +12,7 @@ program = { init!, respond! }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({
-	config: { port: 8080 },
+	config: { port: 8080, static_dir: "" },
 	context: {
 		title: "Eldhús <menu>",
 		items: [
