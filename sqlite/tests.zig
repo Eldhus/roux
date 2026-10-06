@@ -11,6 +11,8 @@ const options = @import("options.zig");
 test {
     _ = @import("authorizer.zig");
     _ = @import("types.zig");
+    _ = @import("vfs.zig");
+    _ = @import("mutex.zig");
 }
 
 test "sqlite: the linked SQLite is the vendored release" {
@@ -78,5 +80,104 @@ fn count_rows(db: *c.Db) !i64 {
     defer _ = c.sqlite3_finalize(stmt);
     if (c.sqlite3_step(stmt.?) != c.row) return error.Sqlite;
     assert(c.sqlite3_column_count(stmt.?) == 1);
+    return c.sqlite3_column_int64(stmt.?, 0);
+}
+
+// --- roux's VFS (vfs.zig) -----------------------------------------------------
+
+const Io = std.Io;
+
+fn open_file(path: [:0]const u8) !*c.Db {
+    var db: ?*c.Db = null;
+    const flags = c.open_readwrite | c.open_create | c.open_exrescode;
+    if (c.sqlite3_open_v2(path, &db, flags, null) != c.ok) {
+        _ = c.sqlite3_close_v2(db);
+        return error.Sqlite;
+    }
+    return db.?;
+}
+
+fn temporary_path(dir: *testing_dir, buffer: []u8, file_name: []const u8) ![:0]const u8 {
+    var dir_buffer: [512]u8 = undefined;
+    const length = try dir.dir.realPath(std.testing.io, &dir_buffer);
+    return std.fmt.bufPrintSentinel(buffer, "{s}/{s}", .{ dir_buffer[0..length], file_name }, 0);
+}
+
+const testing_dir = std.testing.TmpDir;
+
+test "vfs: another process's lock on the database is refused" {
+    try sqlite.initialize();
+    sqlite.vfs.thread_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var path_buffer: [512]u8 = undefined;
+    const path = try temporary_path(&dir, &path_buffer, "owned.db");
+    const db = try open_file(path);
+    defer _ = c.sqlite3_close_v2(db);
+    try sqlite.exec(db, "PRAGMA journal_mode = WAL; CREATE TABLE t (a INTEGER) STRICT;");
+    // A process lock (fcntl, as SQLite's unix VFS takes one) on another
+    // description of the file conflicts with the open file description
+    // lock roux's VFS holds.
+    const file = try Io.Dir.cwd().openFile(std.testing.io, path, .{ .mode = .read_write });
+    defer file.close(std.testing.io);
+    const Flock = extern struct { type: i16, whence: i16, start: i64, length: i64, pid: i32 };
+    var shared: Flock = .{ .type = 0, .whence = 0, .start = 0, .length = 1, .pid = 0 }; // F_RDLCK
+    const set_lock = 6; // F_SETLK
+    const linux = std.os.linux;
+    const result = linux.fcntl(file.handle, set_lock, @intFromPtr(&shared));
+    try std.testing.expect(linux.errno(result) == .AGAIN or linux.errno(result) == .ACCES);
+}
+
+test "vfs: one writer at a time; a reader sees what was committed" {
+    try sqlite.initialize();
+    sqlite.vfs.thread_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var path_buffer: [512]u8 = undefined;
+    const path = try temporary_path(&dir, &path_buffer, "two.db");
+    const writer = try open_file(path);
+    defer _ = c.sqlite3_close_v2(writer);
+    try sqlite.exec(writer, "PRAGMA journal_mode = WAL; CREATE TABLE t (a INTEGER) STRICT;");
+    const other = try open_file(path);
+    defer _ = c.sqlite3_close_v2(other);
+    try sqlite.exec(writer, "BEGIN IMMEDIATE; INSERT INTO t VALUES (1);");
+    // The writer is taken: a second is busy at once (no busy timeout).
+    try std.testing.expectError(error.Sqlite, sqlite.exec(other, "BEGIN IMMEDIATE;"));
+    try std.testing.expectEqual(0, try count(other));
+    try sqlite.exec(writer, "COMMIT;");
+    try std.testing.expectEqual(1, try count(other));
+    try sqlite.exec(other, "BEGIN IMMEDIATE; INSERT INTO t VALUES (2); COMMIT;");
+    try std.testing.expectEqual(2, try count(writer));
+    try std.testing.expectEqual(0, sqlite.mutex.held);
+}
+
+test "vfs: a WAL left by a crash is recovered into a fresh index" {
+    try sqlite.initialize();
+    sqlite.vfs.thread_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var path_buffer: [512]u8 = undefined;
+    const path = try temporary_path(&dir, &path_buffer, "live.db");
+    const db = try open_file(path);
+    try sqlite.exec(db, "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;" ++
+        "CREATE TABLE t (a INTEGER) STRICT; INSERT INTO t VALUES (1), (2), (3);");
+    // The files as a crash would leave them: the commits only in the WAL.
+    const io = std.testing.io;
+    try Io.Dir.copyFile(dir.dir, "live.db", dir.dir, "copy.db", io, .{});
+    try Io.Dir.copyFile(dir.dir, "live.db-wal", dir.dir, "copy.db-wal", io, .{});
+    _ = c.sqlite3_close_v2(db);
+    var copy_buffer: [512]u8 = undefined;
+    const copy_path = try temporary_path(&dir, &copy_buffer, "copy.db");
+    const copy = try open_file(copy_path);
+    defer _ = c.sqlite3_close_v2(copy);
+    try std.testing.expectEqual(3, try count(copy));
+}
+
+fn count(db: *c.Db) !i64 {
+    var stmt: ?*c.Stmt = null;
+    const sql = "SELECT count(*) FROM t";
+    if (c.sqlite3_prepare_v3(db, sql, sql.len, 0, &stmt, null) != c.ok) return error.Sqlite;
+    defer _ = c.sqlite3_finalize(stmt);
+    if (c.sqlite3_step(stmt.?) != c.row) return error.Sqlite;
     return c.sqlite3_column_int64(stmt.?, 0);
 }

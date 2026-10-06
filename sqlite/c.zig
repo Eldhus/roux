@@ -9,6 +9,7 @@ pub const Stmt = opaque {};
 // Result codes (sqlite3.h, "Result Codes"): the primary code is the low
 // byte of an extended one.
 pub const ok = 0;
+pub const busy = 5;
 pub const row = 100;
 pub const done = 101;
 
@@ -154,3 +155,140 @@ pub const dbconfig_dqs_dml = 1013;
 pub const dbconfig_dqs_ddl = 1014;
 pub const dbconfig_enable_view = 1015;
 pub const dbconfig_trusted_schema = 1017;
+
+// --- for a VFS of our own (sqlite/vfs.zig) and counted mutexes ----------------
+
+pub const ioerr = 10;
+pub const notfound = 12;
+pub const cantopen = 14;
+pub const ioerr_read = ioerr | (1 << 8);
+pub const ioerr_short_read = ioerr | (2 << 8);
+pub const ioerr_write = ioerr | (3 << 8);
+pub const ioerr_fsync = ioerr | (4 << 8);
+pub const ioerr_truncate = ioerr | (6 << 8);
+pub const ioerr_fstat = ioerr | (7 << 8);
+pub const ioerr_delete = ioerr | (10 << 8);
+pub const ioerr_access = ioerr | (13 << 8);
+pub const ioerr_shmsize = ioerr | (19 << 8);
+pub const ioerr_delete_noent = ioerr | (23 << 8);
+
+pub const open_readonly = 0x00000001;
+pub const open_main_db = 0x00000100;
+pub const open_main_journal = 0x00000800;
+pub const open_wal = 0x00080000;
+
+pub const lock_none = 0;
+pub const lock_shared = 1;
+pub const lock_reserved = 2;
+pub const lock_pending = 3;
+pub const lock_exclusive = 4;
+
+pub const shm_unlock = 1;
+pub const shm_lock = 2;
+pub const shm_shared = 4;
+pub const shm_exclusive = 8;
+pub const shm_locks = 8;
+
+pub const iocap_powersafe_overwrite = 0x00001000;
+
+pub const config_mutex = 10;
+pub const config_getmutex = 11;
+
+pub extern fn sqlite3_config(op: c_int, ...) c_int;
+pub extern fn sqlite3_shutdown() c_int;
+pub extern fn sqlite3_vfs_register(vfs: *Vfs, make_default: c_int) c_int;
+
+pub const Mutex = opaque {};
+
+pub const MutexMethods = extern struct {
+    init: ?*const fn () callconv(.c) c_int,
+    end: ?*const fn () callconv(.c) c_int,
+    alloc: ?*const fn (kind: c_int) callconv(.c) ?*Mutex,
+    free: ?*const fn (mutex: ?*Mutex) callconv(.c) void,
+    enter: ?*const fn (mutex: ?*Mutex) callconv(.c) void,
+    try_enter: ?*const fn (mutex: ?*Mutex) callconv(.c) c_int,
+    leave: ?*const fn (mutex: ?*Mutex) callconv(.c) void,
+    held: ?*const fn (mutex: ?*Mutex) callconv(.c) c_int,
+    not_held: ?*const fn (mutex: ?*Mutex) callconv(.c) c_int,
+};
+
+/// `sqlite3_file`: every VFS file begins with its methods.
+pub const File = extern struct {
+    methods: ?*const IoMethods,
+};
+
+/// `sqlite3_io_methods`, version 2 (shared memory; no mmap).
+pub const IoMethods = extern struct {
+    version: c_int,
+    close: *const fn (file: *File) callconv(.c) c_int,
+    read: *const fn (
+        file: *File,
+        buffer: ?*anyopaque,
+        amount: c_int,
+        offset: i64,
+    ) callconv(.c) c_int,
+    write: *const fn (
+        file: *File,
+        buffer: ?*const anyopaque,
+        amount: c_int,
+        offset: i64,
+    ) callconv(.c) c_int,
+    truncate: *const fn (file: *File, size: i64) callconv(.c) c_int,
+    sync: *const fn (file: *File, flags: c_int) callconv(.c) c_int,
+    file_size: *const fn (file: *File, size: *i64) callconv(.c) c_int,
+    lock: *const fn (file: *File, level: c_int) callconv(.c) c_int,
+    unlock: *const fn (file: *File, level: c_int) callconv(.c) c_int,
+    check_reserved_lock: *const fn (file: *File, out: *c_int) callconv(.c) c_int,
+    file_control: *const fn (file: *File, op: c_int, argument: ?*anyopaque) callconv(.c) c_int,
+    sector_size: *const fn (file: *File) callconv(.c) c_int,
+    device_characteristics: *const fn (file: *File) callconv(.c) c_int,
+    shm_map: *const fn (
+        file: *File,
+        region: c_int,
+        region_bytes: c_int,
+        extend: c_int,
+        out: *?*volatile anyopaque,
+    ) callconv(.c) c_int,
+    shm_lock: *const fn (file: *File, offset: c_int, count: c_int, flags: c_int) callconv(.c) c_int,
+    shm_barrier: *const fn (file: *File) callconv(.c) void,
+    shm_unmap: *const fn (file: *File, delete: c_int) callconv(.c) c_int,
+};
+
+/// `sqlite3_vfs`, version 2.
+pub const Vfs = extern struct {
+    version: c_int,
+    file_bytes: c_int,
+    path_bytes_max: c_int,
+    next: ?*Vfs,
+    name: [*:0]const u8,
+    app_data: ?*anyopaque,
+    open: *const fn (
+        vfs: *Vfs,
+        name: ?[*:0]const u8,
+        file: *File,
+        flags: c_int,
+        out_flags: ?*c_int,
+    ) callconv(.c) c_int,
+    delete: *const fn (vfs: *Vfs, name: [*:0]const u8, sync_directory: c_int) callconv(.c) c_int,
+    access: *const fn (
+        vfs: *Vfs,
+        name: [*:0]const u8,
+        flags: c_int,
+        out: *c_int,
+    ) callconv(.c) c_int,
+    full_pathname: *const fn (
+        vfs: *Vfs,
+        name: [*:0]const u8,
+        out_bytes: c_int,
+        out: [*]u8,
+    ) callconv(.c) c_int,
+    dl_open: ?*const anyopaque = null,
+    dl_error: ?*const anyopaque = null,
+    dl_sym: ?*const anyopaque = null,
+    dl_close: ?*const anyopaque = null,
+    randomness: *const fn (vfs: *Vfs, bytes: c_int, out: [*]u8) callconv(.c) c_int,
+    sleep: *const fn (vfs: *Vfs, microseconds: c_int) callconv(.c) c_int,
+    current_time: *const fn (vfs: *Vfs, out: *f64) callconv(.c) c_int,
+    get_last_error: *const fn (vfs: *Vfs, bytes: c_int, out: ?[*]u8) callconv(.c) c_int,
+    current_time_int64: *const fn (vfs: *Vfs, out: *i64) callconv(.c) c_int,
+};

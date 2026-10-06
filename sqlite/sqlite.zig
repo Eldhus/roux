@@ -11,6 +11,8 @@ pub const c = @import("c.zig");
 pub const options = @import("options.zig");
 pub const authorizer = @import("authorizer.zig");
 pub const types = @import("types.zig");
+pub const vfs = @import("vfs.zig");
+pub const mutex = @import("mutex.zig");
 
 /// Statements one `exec` call runs, at most: setup scripts are short.
 pub const exec_statements_max = 256;
@@ -49,8 +51,23 @@ fn step_to_end(statement: *c.Stmt) error{Sqlite}!void {
     } else unreachable;
 }
 
-/// `sqlite3_initialize`, once per process before any connection (the build
-/// has `SQLITE_OMIT_AUTOINIT`). Idempotent, as SQLite's is.
+/// 0 not yet, 1 being done, 2 done.
+var initialized: std.atomic.Value(u32) = .init(0);
+
+/// SQLite set up for roux, once per process before any connection (the
+/// build has `SQLITE_OMIT_AUTOINIT`): the counted mutexes, then roux's VFS
+/// as the default. Every later call returns at once.
 pub fn initialize() error{Sqlite}!void {
-    if (c.sqlite3_initialize() != c.ok) return error.Sqlite;
+    if (initialized.load(.acquire) == 2) return;
+    if (initialized.cmpxchgStrong(0, 1, .acquire, .acquire)) |_| {
+        // Another thread is setting it up, for microseconds.
+        for (0..1 << 24) |_| {
+            if (initialized.load(.acquire) == 2) return;
+            std.atomic.spinLoopHint();
+        } else unreachable;
+    }
+    errdefer initialized.store(0, .release);
+    try mutex.install();
+    try vfs.register();
+    initialized.store(2, .release);
 }
