@@ -620,3 +620,61 @@ fn shm_unmap(base: *c.File, delete_index: c_int) callconv(.c) c_int {
     }
     return c.ok;
 }
+
+fn test_file(shared: *Shared) File {
+    return .{
+        .base = .{ .methods = &methods },
+        .handle = -1,
+        .kind = .main,
+        .lock = c.lock_none,
+        .shm_shared = 0,
+        .shm_exclusive = 0,
+        .shm_mapped = false,
+        .sync_directory = false,
+        .shared = shared,
+    };
+}
+
+test "vfs: the WAL index's locks, shared and exclusive, between two connections" {
+    var shared: Shared = .{};
+    var first = test_file(&shared);
+    var second = test_file(&shared);
+    const exclusive = c.shm_lock | c.shm_exclusive;
+    const shared_lock = c.shm_lock | c.shm_shared;
+    const unlocking = c.shm_unlock | c.shm_exclusive;
+    try std.testing.expectEqual(c.ok, shm_lock(&first.base, 3, 1, exclusive));
+    try std.testing.expectEqual(c.busy, shm_lock(&second.base, 3, 1, shared_lock));
+    try std.testing.expectEqual(c.ok, shm_lock(&second.base, 2, 1, shared_lock)); // another slot
+    try std.testing.expectEqual(c.ok, shm_lock(&first.base, 3, 1, unlocking));
+    try std.testing.expectEqual(c.ok, shm_lock(&second.base, 3, 1, shared_lock));
+    // A range over a slot another shares: busy, and nothing of it taken.
+    try std.testing.expectEqual(c.busy, shm_lock(&first.base, 1, 5, exclusive));
+    try std.testing.expectEqual(@as(u8, 0), first.shm_exclusive);
+    try std.testing.expectEqual(c.ok, shm_lock(&second.base, 2, 2, c.shm_unlock | c.shm_shared));
+    try std.testing.expectEqual(c.ok, shm_lock(&first.base, 1, 5, exclusive));
+    try std.testing.expectEqual(@as(u8, 0b0011_1110), first.shm_exclusive);
+}
+
+test "vfs: the database file's levels, between two connections" {
+    var shared: Shared = .{};
+    var first = test_file(&shared);
+    var second = test_file(&shared);
+    try std.testing.expectEqual(c.ok, lock(&first.base, c.lock_shared));
+    try std.testing.expectEqual(c.ok, lock(&second.base, c.lock_shared));
+    try std.testing.expectEqual(c.ok, lock(&first.base, c.lock_reserved));
+    try std.testing.expectEqual(c.busy, lock(&second.base, c.lock_reserved));
+    // EXCLUSIVE waits at PENDING while the other reads; no new reader.
+    try std.testing.expectEqual(c.busy, lock(&first.base, c.lock_exclusive));
+    try std.testing.expectEqual(@as(u8, c.lock_pending), first.lock);
+    var third = test_file(&shared);
+    try std.testing.expectEqual(c.busy, lock(&third.base, c.lock_shared));
+    try std.testing.expectEqual(c.ok, unlock(&second.base, c.lock_none));
+    try std.testing.expectEqual(c.ok, lock(&first.base, c.lock_exclusive));
+    var out: c_int = 0;
+    try std.testing.expectEqual(c.ok, check_reserved_lock(&second.base, &out));
+    try std.testing.expectEqual(1, out);
+    try std.testing.expectEqual(c.ok, unlock(&first.base, c.lock_none));
+    try std.testing.expectEqual(0, shared.shared_count);
+    try std.testing.expectEqual(c.ok, check_reserved_lock(&second.base, &out));
+    try std.testing.expectEqual(0, out);
+}
