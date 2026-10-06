@@ -53,6 +53,8 @@ pub const options = [_]Option{
     .{ .define = "SQLITE_STMTJRNL_SPILL=-1", .reported = "STMTJRNL_SPILL=-1" },
     // Temporary tables and indices in memory: no temporary files.
     .{ .define = "SQLITE_TEMP_STORE=3", .reported = "TEMP_STORE=3" },
+    // A heap of the host's, allocated at startup (sqlite.zig's `Setup`).
+    .{ .define = "SQLITE_ENABLE_MEMSYS5", .reported = "ENABLE_MEMSYS5" },
     // The generator types a result column by its origin table and column.
     .{ .define = "SQLITE_ENABLE_COLUMN_METADATA", .reported = "ENABLE_COLUMN_METADATA" },
     // Without it the unix VFS syncs data with fsync, flushing metadata too.

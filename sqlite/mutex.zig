@@ -17,14 +17,10 @@ pub threadlocal var held: u32 = 0;
 var original: c.MutexMethods = undefined;
 var counted: c.MutexMethods = undefined;
 
-/// Installs the counting methods. SQLite fills in its defaults only while
-/// it initializes, so: initialize, shut down, read them, install ours,
-/// initialize again. Once per process, before any connection.
+/// Installs the counting methods, in sqlite.zig's configuration window:
+/// SQLite has been initialized once (which fills in its defaults) and shut
+/// down (sqlite3_config is refused while initialized).
 pub fn install() error{Sqlite}!void {
-    if (c.sqlite3_initialize() != c.ok) return error.Sqlite;
-    // sqlite3_config is refused while SQLite is initialized; the defaults
-    // it filled in stay in its configuration after shutdown.
-    if (c.sqlite3_shutdown() != c.ok) return error.Sqlite;
     if (c.sqlite3_config(c.config_getmutex, &original) != c.ok) return error.Sqlite;
     assert(original.enter != null and original.leave != null);
     counted = original;
@@ -32,7 +28,6 @@ pub fn install() error{Sqlite}!void {
     counted.try_enter = try_enter;
     counted.leave = leave;
     if (c.sqlite3_config(c.config_mutex, &counted) != c.ok) return error.Sqlite;
-    if (c.sqlite3_initialize() != c.ok) return error.Sqlite;
 }
 
 fn enter(mutex: ?*c.Mutex) callconv(.c) void {
