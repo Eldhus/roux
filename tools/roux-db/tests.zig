@@ -135,6 +135,16 @@ test "roux-db: only the rowid is never NULL; other columns as declared" {
     }
 }
 
+test "roux-db: whitespace before a statement is what SQLite skips, no more, no less" {
+    // After a newline a vertical tab continues SQLite's run of spaces.
+    const query = "-- name: q :exec\n\x0bDELETE FROM tag;";
+    const run = try run_generator(schema_text, "Dishes.sql", query);
+    defer free(run);
+    try testing.expect(run.diagnostics.ok());
+    const entry = "sql: \"DELETE FROM tag;\"";
+    try testing.expect(std.mem.indexOf(u8, run.output("Database.roc"), entry) != null);
+}
+
 const Refusal = struct {
     /// What the case is about.
     case: []const u8,
@@ -147,8 +157,8 @@ const Refusal = struct {
 
 const refusals = [_]Refusal{
     .{
-        .case = "a vertical tab before a statement (not a space to SQLite)",
-        .query = "-- name: q :exec\n\x0bDELETE FROM dish;",
+        .case = "a vertical tab beginning a file (not a space to SQLite there)",
+        .query = "\x0b-- name: q :exec\nDELETE FROM dish;",
         .says = "unrecognized token",
     },
     .{

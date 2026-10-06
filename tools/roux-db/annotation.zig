@@ -4,8 +4,9 @@
 //! Before a statement SQLite's tokenizer allows only whitespace, `--`
 //! comments (to the end of the line), `/* */` comments and `;`. `scan`
 //! follows exactly those rules (tokenize.c: `aiClass`, CC_SPACE, CC_MINUS,
-//! CC_SLASH, CC_SEMI), and the caller has SQLite confirm the stretch it
-//! found prepares to no statement, so the two cannot drift apart unseen.
+//! CC_SLASH, CC_SEMI; a run of spaces begins with CC_SPACE and continues
+//! through `sqlite3Isspace`), and the caller has SQLite confirm the stretch
+//! prepares to nothing and the statement after it is all SQLite read.
 //!
 //! Annotations are `--` comments, one per line:
 //!
@@ -82,8 +83,12 @@ pub fn scan(text: []const u8, start: u32, end: u32, sink: Sink) u32 {
     for (0..end - start + 1) |_| {
         if (at >= end) return end;
         const byte = text[at];
-        if (is_space(byte) or byte == ';') {
+        if (byte == ';') {
             at += 1;
+        } else if (starts_space(byte)) {
+            at += 1;
+            // SQLite continues a run of spaces through any isspace byte.
+            while (at < end and is_space(text[at])) at += 1;
         } else if (byte == '-' and at + 1 < end and text[at + 1] == '-') {
             const newline = std.mem.indexOfScalarPos(u8, text[0..end], at, '\n');
             const line_end: u32 = if (newline) |offset| @intCast(offset) else end;
@@ -98,13 +103,18 @@ pub fn scan(text: []const u8, start: u32, end: u32, sink: Sink) u32 {
     } else unreachable;
 }
 
-/// SQLite's spaces: tab, newline, form feed, carriage return, space; not
-/// vertical tab (aiClass, CC_SPACE).
-fn is_space(byte: u8) bool {
+/// What begins a run of spaces for SQLite's tokenizer (aiClass, CC_SPACE):
+/// tab, newline, form feed, carriage return, space. Not vertical tab.
+fn starts_space(byte: u8) bool {
     return switch (byte) {
         '\t', '\n', 0x0c, '\r', ' ' => true,
         else => false,
     };
+}
+
+/// What continues one (`sqlite3Isspace`): vertical tab too.
+fn is_space(byte: u8) bool {
+    return starts_space(byte) or byte == 0x0b;
 }
 
 /// One `--` comment's text, after the dashes; `offset` is the comment's.
