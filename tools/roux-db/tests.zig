@@ -332,3 +332,124 @@ test "roux-db: every refusal, by name" {
         try testing.expectEqual(0, run.outputs.len);
     }
 }
+
+const sqlite = @import("sqlite");
+const compile = @import("compile.zig");
+
+/// A query shape, and whether each result column can be NULL.
+const Shape = struct { sql: []const u8, nullable: []const bool };
+
+const join_schema =
+    \\CREATE TABLE a (id INTEGER PRIMARY KEY, x TEXT NOT NULL) STRICT;
+    \\CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER NOT NULL, y TEXT NOT NULL) STRICT;
+    \\CREATE VIEW ab AS SELECT a.id AS aid, b.y AS y FROM a LEFT JOIN b ON b.a_id = a.id;
+    \\
+;
+
+/// Every shape meets a row with no partner: `a` 2 has no `b`, `b` 11
+/// points at no `a`.
+const join_data =
+    \\INSERT INTO a (id, x) VALUES (1, 'one'), (2, 'two');
+    \\INSERT INTO b (id, a_id, y) VALUES (10, 1, 'ten'), (11, 3, 'orphan');
+;
+
+const shapes = [_]Shape{
+    .{ .sql = "SELECT a.x, b.y FROM a JOIN b ON b.a_id = a.id", .nullable = &.{ false, false } },
+    .{
+        .sql = "SELECT a.x, b.y FROM a LEFT JOIN b ON b.a_id = a.id",
+        .nullable = &.{ false, true },
+    },
+    .{
+        .sql = "SELECT a.x, b.y FROM a RIGHT JOIN b ON b.a_id = a.id",
+        .nullable = &.{ true, false },
+    },
+    .{ .sql = "SELECT a.x, b.y FROM a FULL JOIN b ON b.a_id = a.id", .nullable = &.{ true, true } },
+    .{
+        .sql = "SELECT b.y, a.x FROM b LEFT JOIN a ON a.id = b.a_id",
+        .nullable = &.{ false, true },
+    },
+    .{ .sql = "SELECT aid, y FROM ab", .nullable = &.{ false, true } },
+    .{
+        .sql = "SELECT s.y FROM a LEFT JOIN (SELECT a_id, y FROM b) AS s ON s.a_id = a.id",
+        .nullable = &.{true},
+    },
+    .{ .sql = "SELECT (SELECT y FROM b WHERE b.a_id = a.id) AS y FROM a", .nullable = &.{true} },
+    .{
+        .sql = "WITH c AS (SELECT a.id, b.y FROM a LEFT JOIN b ON b.a_id = a.id) SELECT y FROM c",
+        .nullable = &.{true},
+    },
+    .{ .sql = "SELECT x FROM a UNION ALL SELECT 'literal'", .nullable = &.{false} },
+    .{ .sql = "SELECT x FROM a UNION ALL SELECT NULL", .nullable = &.{true} },
+    .{ .sql = "SELECT y FROM b UNION SELECT y FROM ab", .nullable = &.{true} },
+};
+
+test "roux-db: nullability from SQLite's resolver, against the rows the shapes return" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var text: std.Io.Writer.Allocating = .init(arena);
+    for (shapes, 0..) |shape, i| {
+        try text.writer.print("-- name: q{d} :many(100)\n{s};\n", .{ i, shape.sql });
+    }
+    var diagnostics = Diagnostics.init(arena);
+    const queries = [_]compile.Input{.{ .name = "Shapes.sql", .text = text.written() }};
+    const schema: compile.Input = .{ .name = "schema.sql", .text = join_schema };
+    const compiled = try compile.compile(arena, schema, &queries, &diagnostics);
+    for (diagnostics.items()) |d| std.debug.print("{s}\n", .{d.message});
+    try testing.expect(diagnostics.ok());
+    try testing.expectEqual(shapes.len, compiled.statements.len);
+    const db = try open_with_rows();
+    defer _ = sqlite.c.sqlite3_close_v2(db);
+    for (shapes, compiled.statements) |shape, statement| {
+        for (shape.nullable, statement.columns) |expected, column| {
+            testing.expectEqual(expected, column.type.nullable) catch |err| {
+                std.debug.print("{s}: column {s}\n", .{ shape.sql, column.name });
+                return err;
+            };
+        }
+        try expect_nulls_where_typed(db, shape);
+    }
+}
+
+fn open_with_rows() !*sqlite.c.Db {
+    var db: ?*sqlite.c.Db = null;
+    const c = sqlite.c;
+    const flags = c.open_readwrite | c.open_create | c.open_memory | c.open_exrescode;
+    if (c.sqlite3_open_v2(":memory:", &db, flags, null) != c.ok) return error.Sqlite;
+    try sqlite.exec(db.?, join_schema ++ join_data);
+    return db.?;
+}
+
+/// Runs the shape: a column typed never NULL is never NULL, and one typed
+/// nullable is NULL in some row (the data exercises it).
+fn expect_nulls_where_typed(db: *sqlite.c.Db, shape: Shape) !void {
+    const c = sqlite.c;
+    var statement: ?*c.Stmt = null;
+    const length: c_int = @intCast(shape.sql.len);
+    if (c.sqlite3_prepare_v3(db, shape.sql.ptr, length, 0, &statement, null) != c.ok) {
+        return error.Sqlite;
+    }
+    defer _ = c.sqlite3_finalize(statement);
+    var seen_null: [8]bool = @splat(false);
+    for (0..100) |_| {
+        const result = c.sqlite3_step(statement.?);
+        if (result == c.done) break;
+        try testing.expectEqual(c.row, result);
+        for (shape.nullable, 0..) |nullable, column| {
+            const is_null = c.sqlite3_column_type(statement.?, @intCast(column)) == c.null_type;
+            if (is_null) seen_null[column] = true;
+            if (is_null and !nullable) {
+                std.debug.print("{s}: column {d} typed never NULL is NULL\n", .{
+                    shape.sql, column,
+                });
+                return error.TestUnexpectedResult;
+            }
+        }
+    } else unreachable;
+    for (shape.nullable, seen_null[0..shape.nullable.len]) |nullable, seen| {
+        if (nullable and !seen) {
+            std.debug.print("{s}: typed nullable, never NULL in the data\n", .{shape.sql});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
