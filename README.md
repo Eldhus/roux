@@ -24,6 +24,7 @@ zig build platform                 # the host, as platform/targets/x64musl/libho
 cd examples && roc build hello.roc && ./hello   # http://127.0.0.1:8080
 zig build tools                    # rocstache-gen, the template compiler
 zig build examples                 # regenerate the examples' templates
+zig build sqlite-floor             # SQLite alone, timed (vendor/sqlite, sqlite/floor.zig)
 cd examples/templates && roc build main.roc && ./main   # a page from Page.rocstache
 ```
 

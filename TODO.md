@@ -51,7 +51,11 @@
    database file once our VFS lands; an exact schema match or no start;
    `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
    owner may overturn any.
-   - Where it stands (2026-10-06): planned; step 1 (vendor, floors) next.
+   - Where it stands (2026-10-06): step 1 done: SQLite 3.53.4 vendored,
+     built with `sqlite/options.zig` (checked by a test), the floors
+     measured (DIARY): a point query 4,774 instructions and ~1.4 us; a
+     connection per request 24 to 167 times that; fdatasync p50 3.1 ms on
+     this laptop (btrfs). Next: step 2, `tools/roux-db`.
 
 ## Plan
 

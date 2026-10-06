@@ -11,7 +11,7 @@ TESTING.md) and against Go and axum in fourneau-dragrace.
 
 | command | what | budget |
 |---|---|---|
-| `zig build test` | tidy over the host, with fourneau's rules | a second |
+| `zig build test` | tidy over the host and `sqlite/`, with fourneau's rules; SQLite's build checked (its options, with SQLite's own assertions and C undefined-behaviour traps on) | a second (cached; the first build compiles SQLite, ~15 s) |
 | `zig build platform` | the host as `libhost.a` (`-Dhost-heap=checked` for the checked heap) | seconds |
 | `roc test` in an example | the app's `expect`s | seconds |
 | `zig build spec` (M4, not yet) | every example over a real listener, requests against expected responses | a minute |

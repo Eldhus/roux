@@ -4,6 +4,7 @@
 //!   zig build test         tidy over the host (fourneau's rules)
 //!   zig build tools        rocstache-gen, the template compiler (tools-test)
 //!   zig build examples     the examples' templates, regenerated
+//!   zig build sqlite-floor SQLite alone, timed (sqlite/floor.zig)
 //!
 //! fourneau (../fourneau) is a dependency: the server, our port of
 //! `std.Io.Evented` and the style checker come from there.
@@ -28,11 +29,86 @@ pub fn build(b: *std.Build) void {
     // ...which the build system cannot see: a change to a file the test does
     // not import would otherwise reuse the cached run (as in fourneau).
     run_tests.has_side_effects = true;
-    b.step("test", "Run tidy over the host").dependOn(&run_tests.step);
+    const test_step = b.step("test", "Run tidy over the host, and SQLite's tests");
+    test_step.dependOn(&run_tests.step);
+    // SQLite's build, checked: its options, its behaviour, with SQLite's
+    // own assertions on (SQLITE_DEBUG). The test root imports the bindings
+    // by path (tidy's rule), so the C code is attached to it directly.
+    const sqlite_test_module = b.createModule(.{
+        .root_source_file = b.path("sqlite/tests.zig"),
+        .target = target,
+        .optimize = .debug,
+        .link_libc = true,
+    });
+    add_sqlite_c(b, sqlite_test_module);
+    const sqlite_tests = b.addTest(.{ .root_module = sqlite_test_module });
+    test_step.dependOn(&b.addRunArtifact(sqlite_tests).step);
 
     platform_step(b, fourneau);
     tools_step(b, target);
+    floor_step(b, target);
 }
+
+/// `zig build sqlite-floor`: SQLite alone, timed (sqlite/floor.zig), in
+/// the host's mode, so its numbers are the floor under a roux request.
+fn floor_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
+    const optimize = b.option(
+        std.builtin.Optimize,
+        "floor-optimize",
+        "sqlite-floor's mode (default safe, as the host)",
+    ) orelse .safe;
+    const sanitize = b.option(
+        std.zig.SanitizeC,
+        "floor-sanitize-c",
+        "Undefined-behaviour checks in SQLite's C for the floor (default off)",
+    ) orelse .off;
+    const module = b.createModule(.{
+        .root_source_file = b.path("sqlite/floor.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    add_sqlite_c(b, module);
+    module.sanitize_c = sanitize;
+    const floor = b.addExecutable(.{ .name = "sqlite-floor", .root_module = module });
+    const install = b.addInstallArtifact(floor, .{});
+    b.step("sqlite-floor", "Build sqlite-floor, SQLite alone, timed").dependOn(&install.step);
+}
+
+/// The `sqlite` module: roux's bindings (sqlite/sqlite.zig) with the
+/// vendored amalgamation compiled in.
+fn sqlite_module(b: *std.Build, options: struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+    /// True for the host, which roc links as a position-independent
+    /// executable; null for the target's default.
+    pic: ?bool,
+}) *std.Build.Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("sqlite/sqlite.zig"),
+        .target = options.target,
+        .optimize = options.optimize,
+        .pic = options.pic,
+        .link_libc = true,
+    });
+    add_sqlite_c(b, module);
+    return module;
+}
+
+/// `vendor/sqlite/sqlite3.c` in `module`, with the options of
+/// sqlite/options.zig, and SQLite's own assertions in Debug.
+fn add_sqlite_c(b: *std.Build, module: *std.Build.Module) void {
+    const debug = module.optimize.? == .debug;
+    // Explicit, never the mode's default: undefined behaviour in SQLite
+    // traps in the tests; elsewhere the floor measures what checking costs.
+    module.sanitize_c = if (debug) .trap else .off;
+    module.addCSourceFile(.{
+        .file = b.path("vendor/sqlite/sqlite3.c"),
+        .flags = if (debug) &sqlite_options.flags_debug else &sqlite_options.flags,
+    });
+}
+
+const sqlite_options = @import("sqlite/options.zig");
 
 /// The examples' templates, each compiled to the `.roc` beside it.
 const example_templates = [_][]const u8{

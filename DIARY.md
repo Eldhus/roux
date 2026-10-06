@@ -274,3 +274,60 @@ garbage and was refused. Both loops now capture by pointer.
 The tests, tested: three bugs put into `Url` (a hex digit off by one,
 an escape appending the `%` instead of decoding, a lone `%` accepted),
 each failed two or three of its expects.
+
+## 2026-10-06: SQLite, step 1: vendored, built, floors measured
+
+The owner started M5 (TODO, WIP 4): SQLite designed from scratch, typed
+queries generated as rocstache compiles templates, no migrations yet,
+measured at every step. Step 1 is SQLite itself.
+
+`vendor/sqlite/`: the 3.53.4 amalgamation (`sqlite3.c`, `sqlite3.h`),
+pristine, the zip's SHA3-256 checked against sqlite.org's download page
+(README there). `sqlite/options.zig` holds the compile-time options, each
+with why (`THREADSAFE=2`, `DQS=0`, no extensions, no mmap, temporary
+storage in memory, column metadata for the generator, `HAVE_USLEEP`,
+`HAVE_FDATASYNC`, ...); `sqlite/c.zig` the C API roux calls, by hand. The
+`zig build test` suite now asserts SQLite reports each option and runs
+with SQLite's own assertions (`SQLITE_DEBUG`) and C undefined-behaviour
+traps. The test was tested by its first run: SQLite reports
+`DEFAULT_FOREIGN_KEYS` and `STRICT_SUBTYPE` without their values, so the
+check failed until each option named how SQLite reports it.
+
+`sqlite-floor` (sqlite/floor.zig, `zig build sqlite-floor`, the host's
+safe mode): a point query on a 10,000-row STRICT table in WAL mode, on
+btrfs on the laptop's NVMe (Samsung 970 EVO Plus), pinned to one CPU,
+three interleaved rounds, `perf stat -e instructions:u` (identical every
+round), time as the median. Load 0.65 with a browser and an editor open:
+the instructions are the numbers to trust.
+
+| per point query | instructions | time |
+|---|---:|---:|
+| step (prepared once: bind, step, read, reset) | 4,774 | 1.35 us |
+| prepare + step + finalize | 22,832 | 3.9 us |
+| a new connection + prepare + step (2 tables) | 112,961 | 41 us |
+| the same, a schema of 20 tables | 798,929 | 152 us |
+
+So a connection per request costs 24 times a pooled, prepared query with
+a toy schema and 167 times with twenty tables (the schema is parsed by
+each new connection), and preparing per request 4.8 times: connections
+and statements are made at startup and kept (the design, TODO M5).
+
+`sqlite-floor fsync`: a 4 KiB write and fdatasync, 2,000 times, three
+runs: p50 3.1 ms, p99 6.2-6.5 ms, max 9.5-35.7 ms. One writer with
+`synchronous=FULL` commits at most ~320 times a second on this disk, and
+with SQLite's own VFS each commit holds its shard's thread for those
+milliseconds: step 5 measures that stall, and group commit (savepoints in
+one transaction, one fsync for many requests) moves up the list.
+
+A/B, the same three interleaved rounds:
+
+- Undefined-behaviour traps in SQLite's C (`-fsanitize-c=trap`): 7,944
+  instructions against 4,774 (+66%), 1.75 against 1.40 us. On in the
+  tests, off in the host and the floor; set explicitly in build.zig.
+- `THREADSAFE=2` against 0: 4,774 against 4,320 instructions (+10.5%),
+  time within noise. Kept (shards are threads and SQLite's allocator and
+  page cache are global); our own mutexes (step 6) may win it back.
+
+A slip: `zig fmt host` reformatted the generated `roc_platform_abi.zig`;
+caught by `git status` and restored before anything was built on it.
+Format only the files edited, never a directory holding generated code.
