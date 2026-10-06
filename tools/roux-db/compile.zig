@@ -6,8 +6,9 @@
 //! - what a statement does comes from SQLite's authorizer (authorizer.zig);
 //! - whether it writes from `sqlite3_stmt_readonly`;
 //! - its parameters from `sqlite3_bind_parameter_name`;
-//! - its result columns from their origin table and column (column
-//!   metadata) and that column's declaration in a STRICT table;
+//! - its result columns from their origin column's declaration in a
+//!   STRICT table (column metadata), and whether each can be NULL from our
+//!   patch to SQLite (`sqlite3_column_nullable`);
 //! - what SQLite cannot say (a parameter's type, an expression's) comes
 //!   from the annotations, and an annotation SQLite contradicts is an error.
 
@@ -67,9 +68,6 @@ const Compiler = struct {
     diagnostics: *Diagnostics,
     verdict: authorizer.Verdict,
     statements: std.ArrayList(Statement),
-    /// A table column's declared type, NOT NULL and place in the primary
-    /// key: `?1` table, `?2` column.
-    column_lookup: *c.Stmt,
 };
 
 /// Compiles `queries` against `schema`; what is wrong goes to
@@ -90,14 +88,9 @@ pub fn compile(
         .diagnostics = diagnostics,
         .verdict = .{ .policy = .schema },
         .statements = try .initCapacity(arena, statements_max),
-        .column_lookup = undefined,
     };
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
-    compiler.column_lookup = try prepare_own(db,
-        \\SELECT type, "notnull", pk FROM pragma_table_xinfo(?1) WHERE name = ?2
-    );
-    defer _ = c.sqlite3_finalize(compiler.column_lookup);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
         compile_file(&compiler, @intCast(file), query);
@@ -490,7 +483,7 @@ fn compile_column(
     }
     const declared = find(annotations.column_list(), name);
     const from_table = c.sqlite3_column_table_name(statement, @intCast(index)) != null;
-    const origin = if (from_table) origin_type(compiler, statement, index) else null;
+    const origin = if (from_table) origin_type(statement, index) else null;
     if (origin == null and declared == null) {
         compiler.diagnostics.add(file, offset, "column {s} is {s}, which SQLite cannot type: " ++
             "annotate `-- @column {s} : Type`", .{
@@ -513,32 +506,24 @@ fn compile_column(
 const Origin = struct { type: types.Type, storage: types.Storage };
 
 /// The type of the table column a result column comes from, as its STRICT
-/// table declares it; null for a column declared ANY.
-fn origin_type(compiler: *Compiler, statement: *c.Stmt, index: u32) ?Origin {
-    // A column with a table has an origin column (column metadata).
-    const table = std.mem.span(c.sqlite3_column_table_name(statement, @intCast(index)).?);
-    const column = std.mem.span(c.sqlite3_column_origin_name(statement, @intCast(index)).?);
-    const lookup = compiler.column_lookup;
-    defer _ = c.sqlite3_reset(lookup);
-    assert(c.sqlite3_bind_text64(lookup, 1, table.ptr, table.len, null, c.utf8) == c.ok);
-    assert(c.sqlite3_bind_text64(lookup, 2, column.ptr, column.len, null, c.utf8) == c.ok);
-    // SQLite named this column of this table: it is declared.
-    assert(c.sqlite3_step(lookup) == c.row);
-    const declared_text = c.sqlite3_column_text(lookup, 0) orelse return null;
-    const declared_bytes: u32 = @intCast(c.sqlite3_column_bytes(lookup, 0));
-    const storage = types.storage_from_declared(declared_text[0..declared_bytes]) orelse
-        return null;
-    const not_null = c.sqlite3_column_int64(lookup, 1) == 1;
-    const in_key = c.sqlite3_column_int64(lookup, 2) > 0;
-    // In a STRICT table every key column is NOT NULL; the one SQLite
-    // reports otherwise is the rowid's alias (an INTEGER PRIMARY KEY),
-    // which is the rowid and so never NULL either.
-    const nullable = !not_null and !in_key;
+/// table declares it, and whether it can be NULL here (our SQLite patch,
+/// `sqlite3_column_nullable`: an outer join, a scalar subquery, an arm of
+/// a compound select, or a column not NOT NULL); null for a column
+/// declared ANY.
+fn origin_type(statement: *c.Stmt, index: u32) ?Origin {
+    const column: c_int = @intCast(index);
+    // A column with a table has a declared type (column metadata).
+    const declared = std.mem.span(c.sqlite3_column_decltype(statement, column).?);
+    const storage = types.storage_from_declared(declared) orelse return null;
+    // -1 for a column means an arm of a compound select is an expression
+    // SQLite cannot prove never NULL (`UNION SELECT NULL`): nullable.
+    const nullable = c.sqlite3_column_nullable(statement, column);
+    assert(nullable >= -1 and nullable <= 1);
     const scalar: types.Scalar = switch (storage) {
         .integer => .i64,
         .real => .f64,
         .text => .str,
         .blob => .bytes,
     };
-    return .{ .type = .{ .scalar = scalar, .nullable = nullable }, .storage = storage };
+    return .{ .type = .{ .scalar = scalar, .nullable = nullable != 0 }, .storage = storage };
 }

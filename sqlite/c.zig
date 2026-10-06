@@ -23,6 +23,7 @@ pub const open_exrescode = 0x02000000;
 
 // Fundamental datatypes, as `column_type` returns them.
 pub const text = 3;
+pub const null_type = 5;
 
 pub extern fn sqlite3_initialize() c_int;
 pub extern fn sqlite3_libversion() [*:0]const u8;
@@ -88,3 +89,7 @@ pub const utf8: u8 = 1;
 pub extern fn sqlite3_column_name(stmt: *Stmt, column: c_int) ?[*:0]const u8;
 pub extern fn sqlite3_column_table_name(stmt: *Stmt, column: c_int) ?[*:0]const u8;
 pub extern fn sqlite3_column_origin_name(stmt: *Stmt, column: c_int) ?[*:0]const u8;
+pub extern fn sqlite3_column_decltype(stmt: *Stmt, column: c_int) ?[*:0]const u8;
+/// Our patch (vendor/sqlite/README.md): 1 when the result column can be
+/// NULL, 0 when it never is, -1 for an expression SQLite cannot prove.
+pub extern fn sqlite3_column_nullable(stmt: *Stmt, column: c_int) c_int;
