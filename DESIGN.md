@@ -92,22 +92,24 @@ respond! : Server.Request, Context => Try(Server.Response, _err)
 
 ## What the platform provides
 
-The modules apps use, and only those: `Server`, `Stdout` and `Stderr`
-today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
-`Path`, `UnixTime`, `Sleep` and `Rocstache` (escaping and template
-formatters) (M6). The pages under `/_dev` (DevTools, M6) are answered by
+The modules apps use, and only those: `Server`, `Stdout`, `Stderr` and
+`Rocstache` (template escaping and formatters) today; planned, `Sqlite` (M5), `Sse`, `Url`, `MultipartFormData`, `Env`,
+`Path`, `UnixTime` and `Sleep` (M6). The pages under `/_dev` (DevTools, M6) are answered by
 the platform. A module returns
 when an app needs it, not before.
 
 ## Tools
 
-All planned (M5), migrated from the old fork:
-
-- `roux` (`tools/gen/`): `new`, `dev`, `build`, `check`, `test`.
-- `rocstache-gen`: the template compiler (`*.rocstache` to typed Roc) and its
-  language server, which editors (Zed) talk to.
-- `roux-db` (`tools/db/`): schema, migrations and typed queries
-  checked against the vendored SQLite.
+- `rocstache-gen` (`tools/rocstache-gen/`, `zig build tools`): the
+  template compiler (`*.rocstache` to typed Roc) and its language server
+  (`rocstache-gen lsp`), which editors (Zed) talk to. It decides a
+  template's shape (records, lists, Bool sections) and leaves the types to
+  roc; every generated line names its template line. The platform's
+  `Rocstache` module escapes and holds the formatters, and the compiler
+  reads their signatures from it, so the two cannot drift.
+- Planned (M5), migrated from the old fork: `roux` (`tools/gen/`: `new`,
+  `dev`, `build`, `check`, `test`) and `roux-db` (`tools/db/`: schema,
+  migrations and typed queries checked against the vendored SQLite).
 
 ## Testing, in one paragraph
 

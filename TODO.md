@@ -18,8 +18,14 @@
    2026-10-06) The template compiler (`rocstache-gen`, in the old fork)
    moved into roux's `tools/`, on Zig 0.17 and in TigerStyle; an example
    app rendering templates; the dragrace's templates workload runs it.
-   - Where it stands (2026-10-06): queued behind fourneau's TLS work
-     (fourneau's TODO, WIP 2).
+   - Where it stands (2026-10-06): rocstache-gen is in `tools/` (it
+     built and passed its tests on Zig 0.17 unchanged), `Rocstache.roc`
+     in the platform (its 19 expects pass on roux's nightly; `url` now
+     encodes without the old fork's Url module), and
+     `examples/templates` renders a page from `Page.rocstache`, escaped,
+     at ~125k requests/s on this laptop. Next: the dragrace's templates
+     workload (its TODO); tidy over `tools/` (TigerStyle: the old code
+     has no assertions and recursion), and the Zed README pointed here.
 
 ## Plan
 
@@ -44,8 +50,8 @@ The platform's Roc modules, migrated and pruned.
 ### M5. SQLite and the tools
 
 `vendor/sqlite/`, the hosted SQLite functions, readers and the writer;
-`roux`, `roux-db` and `rocstache-gen` (the template compiler), migrated from the
-old fork to `tools/` (in Zig). **Proves it:** the SQLite examples pass; an
+`roux` and `roux-db` migrated from the old fork to `tools/` (in Zig);
+`rocstache-gen` is there already (2026-10-06). **Proves it:** the SQLite examples pass; an
 app builds and runs.
 
 ### M6. Everything an app needs

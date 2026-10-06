@@ -186,3 +186,23 @@ diaries' references still hold. The rest are the server's, in fourneau.
     pipelined). Measured parts: response-head writing with per-byte
     header validation (23%), copying strings into Roc (fromSlice +
     memcpy, 10%). Not the handler: roc_respond_for_host is 1.3%.
+
+## 2026-10-06: templates
+
+The owner asked for templates in roux (no database yet). The old fork's
+`rocstache-gen` (3,725 lines of Zig 0.16: parser, shape inference,
+emitter, `{{% %}}` blocks, formatters, the language server) is
+`tools/rocstache-gen/`, without its `rocstache dev/build` front end
+(`roux`, planned, takes that role). On Zig 0.17 it built and passed its
+tests with no change. `Rocstache.roc` (escaping, formatters) is a
+platform module; it imported the old fork's `Url` for one formatter,
+which now has its own percent-encoder; its 19 expects pass on
+nightly-2026-10-04-130536d.
+
+`examples/templates`: a menu rendered from `Page.rocstache` per request.
+The page escapes `<menu>`, quotes and `&`; an unknown path is 404; oha
+(32 connections, 5 s, 8 shards, laptop) 125,359 requests/s, all good.
+`zig build examples` regenerates the committed `.roc`.
+
+Not yet TigerStyle: the compiler has no assertions, `usize` throughout
+and recursion; tidy does not look at `tools/` yet (TODO).

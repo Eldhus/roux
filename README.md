@@ -22,6 +22,9 @@ roux builds against fourneau checked out beside it:
 git clone https://github.com/Eldhus/fourneau ../fourneau
 zig build platform                 # the host, as platform/targets/x64musl/libhost.a
 cd examples && roc build hello.roc && ./hello   # http://127.0.0.1:8080
+zig build tools                    # rocstache-gen, the template compiler
+zig build examples                 # regenerate the examples' templates
+cd examples/templates && roc build main.roc && ./main   # a page from Page.rocstache
 ```
 
 Zig 0.17.0 (`.zig-version`) and the Roc nightly in `.roc-version`.

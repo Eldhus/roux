@@ -5,7 +5,7 @@ platform "roux"
 			respond! : Server.Request, context => Try(Server.Response, _err),
 		}
 	}
-	exposes [Server, Stdout, Stderr]
+	exposes [Server, Stdout, Stderr, Rocstache]
 	packages {}
 	provides {
 		"roc_init_for_host": init_for_host!,
@@ -25,6 +25,7 @@ import Host
 import Server
 import Stdout
 import Stderr
+import Rocstache
 
 ## Called once, before the listener opens: the app's configuration and its
 ## immutable context, which every handler on every fiber shares.

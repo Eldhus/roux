@@ -1,0 +1,14 @@
+{{%
+import pf.Rocstache exposing [plural]
+%}}
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<h1>{{ title }}</h1>
+<p>{{ items | List.len | plural "dish" "dishes" }} on the menu.</p>
+<ul>
+{{#items}}  <li>{{ name }}: {{ price }} kr</li>
+{{/items}}</ul>
+{{^items}}<p>The kitchen is closed.</p>{{/items}}
+</html>
