@@ -5,8 +5,8 @@
 1. **Cook: a roux app deployed on the internet with nothing in front.**
    (owner, 2026-10-04) No dependencies, we own everything; one binary;
    TigerStyle; no compatibility with the old Roc API: the best platform we
-   can build (owner, 2026-10-05). Do not integrate SQLite early: the base
-   (fourneau) comes first.
+   can build (owner, 2026-10-05). SQLite waited for fourneau's base
+   until the owner started it (2026-10-06; WIP 4).
    - Where it stands (2026-10-06): M4 first light (2026-10-05): a Roc hello
      app on fourneau, one static executable, handlers on fibers, the body
      effect, Roc leak counting per shard. Split into its own repository
@@ -41,6 +41,18 @@
      ZigGlue.roc at the nightly's commit (unchanged platform first: byte
      for byte the committed file). Remove once the site runs on roux.
 
+4. **SQLite in roux, designed from scratch: M5.** (owner, 2026-10-06)
+   "Super tiger style": typed queries generated sqlc-style, as rocstache
+   compiles templates; no migrations yet (they need more thought);
+   measured at every step. Do not touch fourneau-dragrace (the owner is
+   working on its site). The design and its steps: Plan, M5. The open
+   decisions were taken as recommended (only generated SQL; one writer,
+   refused to GET and HEAD; `synchronous=FULL`; the process owns the
+   database file once our VFS lands; an exact schema match or no start;
+   `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
+   owner may overturn any.
+   - Where it stands (2026-10-06): planned; step 1 (vendor, floors) next.
+
 ## Plan
 
 The road to a roux app on the internet with nothing in front of it.
@@ -63,10 +75,59 @@ The platform's Roc modules, migrated and pruned.
 
 ### M5. SQLite and the tools
 
-`vendor/sqlite/`, the hosted SQLite functions, readers and the writer;
-`roux` and `roux-db` migrated from the old fork to `tools/` (in Zig);
-`rocstache-gen` is there already (2026-10-06). **Proves it:** the SQLite examples pass; an
-app builds and runs.
+Designed from scratch (2026-10-06), not ported: the old fork typed
+expressions by reading SQL tokens, which the no-hacks rule forbids. The
+shape:
+
+- **One database per app**, opened by the host at startup
+  (`Server.Config`; `ROUX_DATABASE` overrides the path).
+- **Only generated SQL.** `roux-db gen` compiles `db/*.sql` to
+  `db/*.roc` plus `Db.roc` (the schema and a numbered statement table);
+  the host prepares every statement on every connection at startup and a
+  call passes an index. No runtime SQL strings, no statement cache.
+- **Types from SQLite, never from reading SQL**: `STRICT` tables only
+  (`PRAGMA table_list`); result columns from SQLite's column metadata;
+  `-- @param name : Type` on every parameter and `-- @column` on
+  expression columns (SQLite cannot say); statements split by
+  `sqlite3_prepare_v2`'s tail; statement kinds by the authorizer.
+- **Read and write split by type**: `sqlite3_stmt_readonly` decides
+  whether a generated function takes `Sqlite.Read` or `Sqlite.Write`.
+- **Connections fixed at startup**: readers per shard (a reader is leased
+  for one query; with a blocking VFS one per shard suffices), one writer
+  for the process behind a FIFO futex lock with a bounded queue and wait
+  (`WriterBusy`, 503); SQLite never sees two writers. A lease returns
+  only with no transaction and no busy statement (asserted); a write
+  still open when `respond!` returns is rolled back and answered 500.
+- **No migrations**: a fresh database gets `schema.sql`; an existing
+  one's `sqlite_schema` must equal what `schema.sql` makes, or the host
+  refuses to start.
+- **A limit on everything**: `:many(rows_max)`, result bytes, statement
+  time (progress handler), every `sqlite3_limit`, PRAGMAs set and read
+  back on every connection.
+
+Steps, serial, each measured, written down and committed:
+
+1. Vendor the newest SQLite amalgamation, pristine and pinned; built for
+   the host (musl, PIC) and the tools with our options. Floors: SQLite
+   alone (a point query, ns and instructions), the per-request
+   alternatives (open+prepare+step, prepare+step, step), fsync physics.
+2. `tools/roux-db`: the generator, TigerStyle and tidy from the first
+   commit; a named test per refusal; golden outputs.
+3. A SQLite patch, `sqlite3_column_nullable` (from the resolver's
+   `EP_CanBeNull`), so outer joins type as nullable.
+4. The host and `platform/Sqlite.roc`, `examples/sqlite`; the request
+   handle made unforgeable first. Measured against a fourneau+SQLite
+   floor (experiment 21).
+5. The stall: a shard's plaintext p99 while writes commit, unix VFS.
+6. Our VFS over the shard's `std.Io` (fibers yield on the disk; clock,
+   randomness, sleep through `Io`), our mutexes; then `SQLITE_OS_OTHER`.
+7. Static memory: memsys5 and a fixed page cache.
+
+**Proves it:** `examples/sqlite` passes over a real listener, under load,
+with the leak count and `integrity_check` holding; the numbers in the
+diary. Later: a simulated disk in fourneau's `sim_io` puts SQLite under
+deterministic simulation; group commit (savepoints in one transaction)
+if the fsync floor calls for it.
 
 ### M6. Everything an app needs
 
