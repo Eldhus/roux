@@ -26,6 +26,7 @@ const assert = std.debug.assert;
 const abi = @import("roc_platform_abi.zig");
 const database_module = @import("database.zig");
 const RequestsType = @import("requests.zig").RequestsType;
+const sqlite_vfs = @import("sqlite").vfs;
 const fourneau = @import("fourneau");
 const Evented = @import("zig_io_evented");
 const build_options = @import("build_options");
@@ -90,8 +91,8 @@ var serving = false;
 const Requests = RequestsType(Server.Request);
 /// This shard's requests in Roc, by handle (requests.zig).
 threadlocal var shard_requests: ?*Requests = null;
-/// This shard's reader of the database.
-threadlocal var shard_reader: ?*database_module.Connection = null;
+/// This shard's readers of the database, leased a statement at a time.
+threadlocal var shard_readers: ?*database_module.ReaderPool = null;
 /// A result's rows, kept here until their count is known: a Roc list of
 /// refcounted items is allocated at its length (database's largest
 /// `rows_max`, allocated as the shard starts).
@@ -419,14 +420,18 @@ fn sqlite_run(
     const opened = database orelse return no_database(report);
     const entry = request_entry(handle) orelse return report.fail(.misuse, "not a request", .{});
     if (index >= opened.statements.len) return report.fail(.misuse, "no statement {d}", .{index});
-    const connection = if (on_writer) writer: {
-        if (!entry.holds_writer) {
-            return report.fail(.write_refused, "{s} runs inside Sqlite.write!", .{
-                opened.statements[index].name,
-            });
-        }
-        break :writer opened.writer;
-    } else shard_reader.?;
+    const io = shard_io.?; // a request's effect runs on its shard
+    if (on_writer and !entry.holds_writer) {
+        return report.fail(.write_refused, "{s} runs inside Sqlite.write!", .{
+            opened.statements[index].name,
+        });
+    }
+    const readers = shard_readers.?;
+    const connection = if (on_writer)
+        opened.writer
+    else
+        try readers.lease(io, opened.limits, report);
+    defer if (!on_writer) readers.release(io, connection);
     const roc_params = params.items();
     if (roc_params.len > params_max) return report.fail(.misuse, "{d} parameters", .{
         roc_params.len,
@@ -435,7 +440,6 @@ fn sqlite_run(
     for (roc_params, values[0..roc_params.len]) |*param, *value| value.* = value_from_roc(param);
     const columns: u32 = @intCast(opened.statements[index].columns.len);
     var sink: RowsToRoc = .{ .rows = shard_rows, .columns = columns };
-    const io = shard_io.?; // a request's effect runs on its shard
     database_module.run(
         opened,
         connection,
@@ -755,6 +759,10 @@ fn run() !void {
     roc_host.roc_dealloc = &counted_dealloc;
     roc_host_ready = true;
 
+    // `init!` may open the database: SQLite's files wait through this
+    // thread's Io until the shards start (roux's VFS).
+    const startup_io = std.Io.Threaded.global_single_threaded.io();
+    sqlite_vfs.thread_io = startup_io;
     const init = abi.roc_init_for_host();
     if (init.tag == .Err) {
         const code = init.payload_err();
@@ -765,7 +773,6 @@ fn run() !void {
     // as it says the address: a local run of an app that asks for 443.
     const app_port = if (started.port == 0) port_default else started.port;
     const port = port_from(environment("ROUX_PORT")) orelse app_port;
-    const startup_io = std.Io.Threaded.global_single_threaded.io();
     const shards = shard_count();
     assert(shards >= 1);
     assert(shards <= shards_max);
@@ -867,7 +874,6 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     const requests = try gpa.create(Requests);
     requests.* = try .init(gpa, connections_per_shard);
     shard_requests = requests;
-    if (database) |opened| try open_shard_database(gpa, opened);
     roc_allocations_idle = roc_allocations_live;
 
     var runtime: Evented = undefined;
@@ -881,6 +887,9 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
 
     const io = runtime.io();
     shard_io = io;
+    // SQLite's files on this shard wait through its ring, yielding fibers.
+    sqlite_vfs.thread_io = io;
+    if (database) |opened| try open_shard_database(gpa, opened);
     const address = try std.Io.net.IpAddress.parse(listen_address(), listen.port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
     var server = try Server.init(gpa, io, app, listener, .{
@@ -899,14 +908,16 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     try server.run();
 }
 
-/// The shard's reader, and its buffer of rows, sized for the largest
+/// The shard's readers, and its buffer of rows, sized for the largest
 /// `rows_max` of the database's statements.
 fn open_shard_database(gpa: std.mem.Allocator, opened: *database_module.Database) !void {
     var report: database_module.Report = .{};
-    shard_reader = database_module.open_reader(gpa, opened, &report) catch {
+    const readers = try gpa.create(database_module.ReaderPool);
+    readers.* = database_module.ReaderPool.open(gpa, opened, &report) catch {
         write_line(2, report.message());
         return error.DatabaseReader;
     };
+    shard_readers = readers;
     var rows_max: u32 = 1;
     for (opened.statements) |statement| rows_max = @max(rows_max, statement.rows_max);
     shard_rows = try gpa.alloc(RocRow, rows_max);
