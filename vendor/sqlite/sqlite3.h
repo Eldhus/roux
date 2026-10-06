@@ -5193,6 +5193,8 @@ SQLITE_API const char *sqlite3_column_table_name(sqlite3_stmt*,int);
 SQLITE_API const void *sqlite3_column_table_name16(sqlite3_stmt*,int);
 SQLITE_API const char *sqlite3_column_origin_name(sqlite3_stmt*,int);
 SQLITE_API const void *sqlite3_column_origin_name16(sqlite3_stmt*,int);
+/* roux: 1 can be NULL, 0 never NULL, -1 an expression (sqlite3.c). */
+SQLITE_API int sqlite3_column_nullable(sqlite3_stmt*,int);
 
 /*
 ** CAPI3REF: Declared Datatype Of A Query Result

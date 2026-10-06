@@ -17657,7 +17657,8 @@ typedef struct VdbeOpList VdbeOpList;
 #define COLNAME_TABLE    3
 #define COLNAME_COLUMN   4
 #ifdef SQLITE_ENABLE_COLUMN_METADATA
-# define COLNAME_N        5      /* Number of COLNAME_xxx symbols */
+# define COLNAME_NULLABLE 5      /* roux: "1", "0" or NULL; sqlite3_column_nullable */
+# define COLNAME_N        6      /* Number of COLNAME_xxx symbols */
 #else
 # ifdef SQLITE_OMIT_DECLTYPE
 #   define COLNAME_N      1      /* Store only the name */
@@ -95284,6 +95285,16 @@ SQLITE_API const void *sqlite3_column_database_name16(sqlite3_stmt *pStmt, int N
 #endif /* SQLITE_OMIT_UTF16 */
 
 /*
+** roux: whether the Nth result column can be NULL: 1 when it can, 0 when it
+** never is, -1 when it is an expression SQLite cannot prove never NULL.
+*/
+SQLITE_API int sqlite3_column_nullable(sqlite3_stmt *pStmt, int N){
+  const char *z = (const char*)columnName(pStmt, N, 0, COLNAME_NULLABLE);
+  if( z==0 ) return -1;
+  return z[0]=='1';
+}
+
+/*
 ** Return the name of the table from which a result column derives.
 ** NULL is returned if the result column is an expression or constant or
 ** anything else which is not an unambiguous reference to a database column.
@@ -151110,6 +151121,102 @@ static void generateColumnTypes(
 }
 
 
+#ifdef SQLITE_ENABLE_COLUMN_METADATA
+/*
+** roux: whether a result-set expression can be NULL, following the same
+** path as columnTypeImpl() through subqueries and views to the table
+** column it comes from. Returns 1 when it can be NULL, 0 when it never is,
+** and -1 when it is not a column (an expression) and SQLite cannot prove
+** it is never NULL. A column can be NULL when the resolver marked it so
+** (EP_CanBeNull: the inner side of a LEFT, RIGHT or FULL join), when it
+** reaches a scalar subquery (which yields NULL for no row), when any arm
+** of a compound subquery or view can give NULL, or when its table column
+** is not NOT NULL and not the INTEGER PRIMARY KEY.
+*/
+static int columnNullableImpl(NameContext *pNC, Expr *pExpr);
+static int columnNullableArms(NameContext *pNC, Select *pS, int iCol){
+  int result = 0;
+  for(; pS; pS=pS->pPrior){
+    NameContext sNC;
+    int r;
+    if( iCol>=pS->pEList->nExpr ) return -1;
+    sNC.pSrcList = pS->pSrc;
+    sNC.pNext = pNC;
+    sNC.pParse = pNC->pParse;
+    r = columnNullableImpl(&sNC, pS->pEList->a[iCol].pExpr);
+    if( r==1 ) return 1;
+    if( r<0 ) result = -1;
+  }
+  return result;
+}
+static int columnNullableImpl(NameContext *pNC, Expr *pExpr){
+  int j;
+  assert( pExpr!=0 );
+  switch( pExpr->op ){
+    case TK_COLUMN: {
+      Table *pTab = 0;
+      Select *pS = 0;
+      int iCol = pExpr->iColumn;
+      if( ExprHasProperty(pExpr, EP_CanBeNull) ) return 1;
+      while( pNC && !pTab ){
+        SrcList *pTabList = pNC->pSrcList;
+        for(j=0;j<pTabList->nSrc && pTabList->a[j].iCursor!=pExpr->iTable;j++);
+        if( j<pTabList->nSrc ){
+          pTab = pTabList->a[j].pSTab;
+          pS = pTabList->a[j].fg.isSubquery ? pTabList->a[j].u4.pSubq->pSelect : 0;
+        }else{
+          pNC = pNC->pNext;
+        }
+      }
+      if( pTab==0 ) return -1;
+      if( pS ){
+        if( iCol<0 ) return -1;  /* the rowid of a view or subquery: NULL */
+        return columnNullableArms(pNC, pS, iCol);
+      }
+      if( iCol<0 || iCol==pTab->iPKey ) return 0;  /* the rowid */
+      return pTab->aCol[iCol].notNull ? 0 : 1;
+    }
+#ifndef SQLITE_OMIT_SUBQUERY
+    case TK_SELECT: {
+      return 1;  /* no row is NULL */
+    }
+#endif
+    default: {
+      return sqlite3ExprCanBeNull(pExpr) ? -1 : 0;
+    }
+  }
+}
+
+/*
+** roux: the nullability of each result column, over every arm of a
+** compound select (pSelect is its right-most arm), as COLNAME_NULLABLE.
+*/
+static void generateColumnNullability(Parse *pParse, Select *pSelect){
+  Vdbe *v = pParse->pVdbe;
+  int i;
+  for(i=0; i<pSelect->pEList->nExpr; i++){
+    NameContext sNC;
+    int r;
+    memset(&sNC, 0, sizeof(sNC));
+    sNC.pParse = pParse;
+    r = 0;
+    {
+      Select *pArm;
+      for(pArm=pSelect; pArm; pArm=pArm->pPrior){
+        int a;
+        if( i>=pArm->pEList->nExpr ){ r = -1; continue; }
+        sNC.pSrcList = pArm->pSrc;
+        a = columnNullableImpl(&sNC, pArm->pEList->a[i].pExpr);
+        if( a==1 ){ r = 1; break; }
+        if( a<0 ) r = -1;
+      }
+    }
+    sqlite3VdbeSetColName(v, i, COLNAME_NULLABLE,
+                          r==1 ? "1" : r==0 ? "0" : 0, SQLITE_STATIC);
+  }
+}
+#endif /* SQLITE_ENABLE_COLUMN_METADATA */
+
 /*
 ** Compute the column names for a SELECT statement.
 **
@@ -151152,8 +151259,14 @@ SQLITE_PRIVATE void sqlite3GenerateColumnNames(
   sqlite3 *db = pParse->db;
   int fullName;    /* TABLE.COLUMN if no AS clause and is a direct table ref */
   int srcName;     /* COLUMN or TABLE.COLUMN if no AS clause and is direct */
+#ifdef SQLITE_ENABLE_COLUMN_METADATA
+  Select *pRightmost; /* roux: every arm, for nullability */
+#endif
 
   if( pParse->colNamesSet ) return;
+#ifdef SQLITE_ENABLE_COLUMN_METADATA
+  pRightmost = pSelect;
+#endif
   /* Column names are determined by the left-most term of a compound select */
   while( pSelect->pPrior ) pSelect = pSelect->pPrior;
   TREETRACE(0x80,pParse,pSelect,("generating column names\n"));
@@ -151202,6 +151315,9 @@ SQLITE_PRIVATE void sqlite3GenerateColumnNames(
     }
   }
   generateColumnTypes(pParse, pTabList, pEList);
+#ifdef SQLITE_ENABLE_COLUMN_METADATA
+  generateColumnNullability(pParse, pRightmost);
+#endif
 }
 
 /*
