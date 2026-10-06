@@ -706,3 +706,13 @@ at p99 0.3-0.5 ms. Against the build before (SQLite's pthread mutexes,
 wrapped), point reads, three interleaved rounds with the laptop quiet:
 18,699 against 18,703 instructions, 147k against 149k req/s (median,
 within the spread).
+
+## 2026-10-06: M5's proof: an exact count and integrity_check
+
+examples/sqlite on a fresh database (20 dishes), CPUs 0-1: 3,000 writes
+(`oha -n 3000 -c 16`, CPUs 2-3) while 32 connections read the 20-dish
+join for 15 s (CPUs 4-7). Every write answered 201, 3,000 reviews in the
+table afterwards (the count of answers, exactly); 45,353 reads, every
+one 200; no error logged. After the server stopped, the `sqlite3` shell
+(SQLite's own VFS, recovering roux's WAL): `PRAGMA integrity_check` ok,
+`PRAGMA foreign_key_check` empty. M5 is done.

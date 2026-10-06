@@ -181,10 +181,6 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   which a safe build fills with 0xaa on every call: 2.3% of a point
   read's instructions (experiment 21). Size it to the call, or fill
   only what is used. (2026-10-06)
-- [ ] `integrity_check` after a load run, and the exact count invariant
-  (a fixed number of writes, `oha -n`, against the rows), as M5's proof
-  asks: run on 2026-10-06 only as curl checks and counts after
-  duration-bound runs. (2026-10-06)
 - [ ] Migrations (owner, 2026-10-06: "require a lot more thought"). Today a
   schema change needs a new database (`open!` refuses a schema that is
   not `schema.sql`'s). (2026-10-06)
