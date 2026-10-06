@@ -9,5 +9,5 @@
         // are Eldhus repositories, developed together.
         .fourneau = .{ .path = "../fourneau" },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "host", "platform" },
+    .paths = .{ "build.zig", "build.zig.zon", "host", "platform", "sqlite", "vendor", "tools" },
 }

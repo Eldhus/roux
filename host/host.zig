@@ -24,6 +24,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const abi = @import("roc_platform_abi.zig");
+const database_module = @import("database.zig");
+const RequestsType = @import("requests.zig").RequestsType;
 const fourneau = @import("fourneau");
 const Evented = @import("zig_io_evented");
 const build_options = @import("build_options");
@@ -79,6 +81,21 @@ threadlocal var shard_io: ?std.Io = null;
 /// The app's static files (`static_dir`), served before `respond!`; read
 /// once at startup and shared read-only by every shard.
 var static_site: ?*const fourneau.site.Site = null;
+/// The app's database, opened by `Sqlite.open!` in `init!`; its writer is
+/// shared by every shard under its lock, the rest read-only.
+var database: ?*database_module.Database = null;
+/// Set as the shards start: `init!` is over (`Sqlite.open!` is its).
+var serving = false;
+
+const Requests = RequestsType(Server.Request);
+/// This shard's requests in Roc, by handle (requests.zig).
+threadlocal var shard_requests: ?*Requests = null;
+/// This shard's reader of the database.
+threadlocal var shard_reader: ?*database_module.Connection = null;
+/// A result's rows, kept here until their count is known: a Roc list of
+/// refcounted items is allocated at its length (database's largest
+/// `rows_max`, allocated as the shard starts).
+threadlocal var shard_rows: []RocRow = &.{};
 
 // Roc's compiled code calls the exported functions; the glue (lists and
 // strings the host builds) calls the `RocHost` table. Both reach the counted
@@ -176,14 +193,20 @@ const file_bytes_max = 64 * 1024 * 1024;
 const BodyResult = @typeInfo(@TypeOf(abi.hosted_request_body_read_all)).@"fn".return_type.?;
 
 /// The request body, read now that the handler asks, up to `limit_bytes`.
-/// `handle` is the address of the request, valid for this call: Roc holds
-/// it only while `respond!` runs.
+/// A handle that names no request of this shard is `BodyInvalid`.
 export fn hosted_request_body_read_all(handle: u64, limit_bytes: u64) callconv(.c) BodyResult {
-    const request: *Server.Request = @ptrFromInt(handle);
+    const entry = request_entry(handle) orelse
+        return .{ .tag = .Err, .payload = .{ .err = .body_invalid } };
+    const request = entry.request.?;
     // fourneau reads no body once a stream has started (its 100 Continue
     // would be a second head): refused here, not left to its assertion.
     if (request.stream_state() != .none) {
         return .{ .tag = .Err, .payload = .{ .err = .body_after_stream } };
+    }
+    // Reading waits on the client, and every request waiting for the
+    // database's writer would wait with it.
+    if (entry.holds_writer) {
+        return .{ .tag = .Err, .payload = .{ .err = .body_during_write } };
     }
     const result = read_body(request, limit_bytes) catch |err| return .{
         .tag = .Err,
@@ -233,8 +256,11 @@ export fn hosted_response_stream_start(
     headers: StreamHeaders,
 ) callconv(.c) StreamResult {
     defer headers.deinit(host());
-    const request: *Server.Request = @ptrFromInt(handle);
+    const entry = request_entry(handle) orelse return stream_error(.stream_refused);
+    const request = entry.request.?;
     if (request.stream_state() != .none) return stream_error(.stream_refused);
+    // A stream lasts as long as the client listens: not with the writer.
+    if (entry.holds_writer) return stream_error(.stream_refused);
     // As fourneau wants them, in the scratch memory, which nothing uses
     // while `respond!` runs; the head is written before this returns.
     const roc_headers = headers.items();
@@ -257,7 +283,7 @@ export fn hosted_response_stream_start(
 /// One event, a chunk; its bytes are copied or sent before this returns.
 export fn hosted_response_stream_send(handle: u64, bytes: StreamBytes) callconv(.c) StreamResult {
     defer bytes.decref(host());
-    const request: *Server.Request = @ptrFromInt(handle);
+    const request = request_from(handle) orelse return stream_error(.stream_refused);
     if (request.stream_state() != .streaming) return stream_error(.stream_refused);
     if (bytes.len() > stream_event_bytes_max) return stream_error(.stream_refused);
     request.stream_send(bytes.items()) catch return stream_error(.stream_disconnected);
@@ -265,14 +291,14 @@ export fn hosted_response_stream_send(handle: u64, bytes: StreamBytes) callconv(
 }
 
 export fn hosted_response_stream_flush(handle: u64) callconv(.c) StreamResult {
-    const request: *Server.Request = @ptrFromInt(handle);
+    const request = request_from(handle) orelse return stream_error(.stream_refused);
     if (request.stream_state() != .streaming) return stream_error(.stream_refused);
     request.stream_flush() catch return stream_error(.stream_disconnected);
     return stream_ok();
 }
 
 export fn hosted_response_stream_end(handle: u64) callconv(.c) StreamResult {
-    const request: *Server.Request = @ptrFromInt(handle);
+    const request = request_from(handle) orelse return stream_error(.stream_refused);
     if (request.stream_state() != .streaming) return stream_error(.stream_refused);
     request.stream_end() catch return stream_error(.stream_disconnected);
     assert(request.stream_state() == .ended);
@@ -287,6 +313,279 @@ fn stream_error(err: StreamError) StreamResult {
     return .{ .tag = .Err, .payload = .{ .err = err } };
 }
 
+/// The live request of this shard `handle` names (requests.zig).
+fn request_entry(handle: u64) ?*Requests.Entry {
+    const requests = shard_requests orelse return null; // not on a shard
+    return requests.find(handle);
+}
+
+fn request_from(handle: u64) ?*Server.Request {
+    const entry = request_entry(handle) orelse return null;
+    return entry.request.?;
+}
+
+// --- the database (Sqlite) --------------------------------------------------------
+
+const SqliteOpenResult = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".return_type.?;
+const SqliteStatements = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[2].?;
+const SqliteRunResult = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".return_type.?;
+const SqliteParams = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".param_types[3].?;
+const SqliteWriteResult = @typeInfo(@TypeOf(abi.hosted_sqlite_write_begin)).@"fn".return_type.?;
+const SqliteCommitResult = @typeInfo(@TypeOf(abi.hosted_sqlite_commit)).@"fn".return_type.?;
+/// `List(List(Value))`, a row a `List(Value)`, a cell a `Value`.
+const RocRows = @FieldType(@FieldType(SqliteRunResult, "payload"), "ok");
+const RocRow = ListItem(RocRows);
+const RocValue = ListItem(RocRow);
+const SqliteError = @FieldType(@FieldType(SqliteRunResult, "payload"), "err");
+/// Parameters a statement takes, at most (roux-db's bound).
+const params_max = 64;
+
+/// The item type of a glue list type.
+fn ListItem(comptime List: type) type {
+    const pointer = @typeInfo(@FieldType(List, "elements_ptr")).optional.child;
+    return @typeInfo(pointer).pointer.child;
+}
+
+/// `Sqlite.open!`: the database, in `init!` only, once. Every allocation
+/// here is the process's for its life (startup).
+export fn hosted_sqlite_open(
+    path: abi.RocStr,
+    schema: abi.RocStr,
+    statements: SqliteStatements,
+) callconv(.c) SqliteOpenResult {
+    defer path.decref(host());
+    defer schema.decref(host());
+    defer statements.deinit(host());
+    if (serving or database != null) return open_error("Sqlite.open! belongs to init!, once");
+    const gpa = std.heap.page_allocator;
+    const roc_statements = statements.items();
+    const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch
+        return open_error("out of memory");
+    defer gpa.free(descriptions);
+    // By pointer: a small string's bytes live inside the record.
+    for (roc_statements, descriptions) |*statement, *description| {
+        description.* = .{
+            .name = statement.name.asSlice(),
+            .sql = statement.sql.asSlice(),
+            .writes = statement.writes,
+            .rows_max = statement.rows_max,
+            .params = statement.params.items(),
+            .columns = statement.columns.items(),
+        };
+    }
+    // Where the database is is the deployment's to say, as the port.
+    const where = environment("ROUX_DATABASE") orelse path.asSlice();
+    var report: database_module.Report = .{};
+    const description: database_module.Description = .{
+        .path = where,
+        .schema = schema.asSlice(),
+        .statements = descriptions,
+    };
+    database = database_module.open(gpa, description, .{}, &report) catch
+        return open_error(report.message());
+    var banner: [256]u8 = undefined;
+    write_line(1, std.fmt.bufPrint(&banner, "roux: database {s}, {d} statements", .{
+        where, descriptions.len,
+    }) catch "roux: database");
+    return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+fn open_error(message: []const u8) SqliteOpenResult {
+    return .{ .tag = .Err, .payload = .{ .err = .fromSlice(message, host()) } };
+}
+
+/// Runs a statement for a request: on the shard's reader, or (`on_writer`)
+/// on the writer the request holds.
+export fn hosted_sqlite_run(
+    handle: u64,
+    index: u32,
+    on_writer: bool,
+    params: SqliteParams,
+) callconv(.c) SqliteRunResult {
+    defer params.deinit(host());
+    var report: database_module.Report = .{};
+    const rows = sqlite_run(handle, index, on_writer, params, &report) catch
+        return .{ .tag = .Err, .payload = .{ .err = sqlite_error(&report) } };
+    return .{ .tag = .Ok, .payload = .{ .ok = rows } };
+}
+
+fn sqlite_run(
+    handle: u64,
+    index: u32,
+    on_writer: bool,
+    params: SqliteParams,
+    report: *database_module.Report,
+) error{Failed}!RocRows {
+    const opened = database orelse return no_database(report);
+    const entry = request_entry(handle) orelse return report.fail(.misuse, "not a request", .{});
+    if (index >= opened.statements.len) return report.fail(.misuse, "no statement {d}", .{index});
+    const connection = if (on_writer) writer: {
+        if (!entry.holds_writer) {
+            return report.fail(.write_refused, "{s} runs inside Sqlite.write!", .{
+                opened.statements[index].name,
+            });
+        }
+        break :writer opened.writer;
+    } else shard_reader.?;
+    const roc_params = params.items();
+    if (roc_params.len > params_max) return report.fail(.misuse, "{d} parameters", .{
+        roc_params.len,
+    });
+    var values: [params_max]database_module.Value = undefined;
+    for (roc_params, values[0..roc_params.len]) |*param, *value| value.* = value_from_roc(param);
+    const columns: u32 = @intCast(opened.statements[index].columns.len);
+    var sink: RowsToRoc = .{ .rows = shard_rows, .columns = columns };
+    const io = shard_io.?; // a request's effect runs on its shard
+    database_module.run(
+        opened,
+        connection,
+        index,
+        values[0..roc_params.len],
+        io,
+        &sink,
+        report,
+    ) catch |err| {
+        sink.discard();
+        return err;
+    };
+    return sink.finish();
+}
+
+/// A parameter from Roc; its bytes stay Roc's, alive until the run ends.
+fn value_from_roc(value: *const RocValue) database_module.Value {
+    return switch (value.tag) {
+        .Null => .null,
+        .Integer => .{ .integer = value.payload.integer },
+        .Real => .{ .real = value.payload.real },
+        // In place: a small string's bytes live inside the value.
+        .Text => .{ .text = value.payload.text.asSlice() },
+        .Blob => .{ .blob = value.payload.blob.items() },
+    };
+}
+
+fn value_to_roc(value: database_module.Value) RocValue {
+    return switch (value) {
+        .null => .{ .payload = .{ .null = .{} }, .tag = .Null },
+        .integer => |n| .{ .payload = .{ .integer = n }, .tag = .Integer },
+        .real => |x| .{ .payload = .{ .real = x }, .tag = .Real },
+        .text => |text| .{ .payload = .{ .text = .fromSlice(text, host()) }, .tag = .Text },
+        .blob => |bytes| .{ .payload = .{ .blob = .fromSlice(bytes, host()) }, .tag = .Blob },
+    };
+}
+
+/// The sink database.run fills: each row a Roc list of its cells, kept in
+/// the shard's buffer until the run ends, then one Roc list of them all.
+const RowsToRoc = struct {
+    rows: []RocRow,
+    columns: u32,
+    count: u32 = 0,
+    /// The row being filled, and its cells so far.
+    open: bool = false,
+    filled: u32 = 0,
+
+    pub fn row(sink: *RowsToRoc) error{}!void {
+        sink.close();
+        // database.run fails past rows_max, before this: the buffer fits.
+        assert(sink.count < sink.rows.len);
+        assert(sink.columns > 0);
+        sink.rows[sink.count] = .allocate(sink.columns, host());
+        sink.open = true;
+        sink.filled = 0;
+    }
+
+    pub fn cell(sink: *RowsToRoc, value: database_module.Value) error{}!void {
+        assert(sink.open);
+        assert(sink.filled < sink.columns);
+        const cells: [*]RocValue = @constCast(sink.rows[sink.count].allocationItems().ptr);
+        cells[sink.filled] = value_to_roc(value);
+        sink.filled += 1;
+    }
+
+    fn close(sink: *RowsToRoc) void {
+        if (!sink.open) return;
+        assert(sink.filled == sink.columns);
+        sink.count += 1;
+        sink.open = false;
+    }
+
+    fn finish(sink: *RowsToRoc) RocRows {
+        sink.close();
+        const rows: RocRows = .allocate(sink.count, host());
+        if (sink.count == 0) return rows;
+        const items: [*]RocRow = @constCast(rows.allocationItems().ptr);
+        @memcpy(items[0..sink.count], sink.rows[0..sink.count]);
+        return rows;
+    }
+
+    /// A run that failed: every row so far released (a row cut short is
+    /// filled with NULLs first: a list releases every item it has room for).
+    fn discard(sink: *RowsToRoc) void {
+        if (sink.open) {
+            const cells: [*]RocValue = @constCast(sink.rows[sink.count].allocationItems().ptr);
+            for (cells[sink.filled..sink.columns]) |*empty| empty.* = value_to_roc(.null);
+            sink.filled = sink.columns;
+            sink.close();
+        }
+        for (sink.rows[0..sink.count]) |row_list| row_list.deinit(host());
+        sink.count = 0;
+    }
+};
+
+fn sqlite_error(report: *const database_module.Report) SqliteError {
+    return .{
+        .code = @backingInt(report.failure),
+        .message = .fromSlice(report.message(), host()),
+    };
+}
+
+fn no_database(report: *database_module.Report) error{Failed} {
+    return report.fail(.misuse, "no database: Sqlite.open! in init!", .{});
+}
+
+/// `Sqlite.write!`: the writer for this request, and its transaction.
+/// Never for a request that should not change anything.
+export fn hosted_sqlite_write_begin(handle: u64) callconv(.c) SqliteWriteResult {
+    var report: database_module.Report = .{};
+    sqlite_write_begin(handle, &report) catch
+        return .{ .tag = .Err, .payload = .{ .err = sqlite_error(&report) } };
+    return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+fn sqlite_write_begin(handle: u64, report: *database_module.Report) error{Failed}!void {
+    const opened = database orelse return no_database(report);
+    const entry = request_entry(handle) orelse return report.fail(.misuse, "not a request", .{});
+    const head = entry.request.?.head;
+    switch (head.method) {
+        .get, .head, .options, .trace => return report.fail(.write_refused, "a {s} request does " ++
+            "not write", .{head.method_text}),
+        .post, .put, .delete, .patch, .other => {},
+    }
+    if (entry.holds_writer) {
+        return report.fail(.write_refused, "this request holds the writer already", .{});
+    }
+    try database_module.begin_write(opened, shard_io.?, report);
+    entry.holds_writer = true;
+}
+
+/// `Sqlite.commit!`: commits, and gives the writer back (a failed commit
+/// rolls back and gives it back too).
+export fn hosted_sqlite_commit(handle: u64) callconv(.c) SqliteCommitResult {
+    var report: database_module.Report = .{};
+    sqlite_commit(handle, &report) catch
+        return .{ .tag = .Err, .payload = .{ .err = sqlite_error(&report) } };
+    return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+fn sqlite_commit(handle: u64, report: *database_module.Report) error{Failed}!void {
+    const opened = database orelse return no_database(report);
+    const entry = request_entry(handle) orelse return report.fail(.misuse, "not a request", .{});
+    if (!entry.holds_writer) {
+        return report.fail(.write_refused, "no transaction: Sqlite.write! first", .{});
+    }
+    entry.holds_writer = false;
+    try database_module.commit_write(opened, shard_io.?, report);
+}
+
 // --- the application, for fourneau ------------------------------------------------
 
 const App = struct {
@@ -299,6 +598,9 @@ const App = struct {
         body: []const u8,
         /// Roc's response, released after the send; null for a static file.
         roc: ?ResponseToHost,
+        /// The request's handle (requests.zig), ended at release; 0 for a
+        /// static file, which never reached Roc.
+        handle: u64,
     };
 
     pub fn handle(app: *App, request: *Server.Request) Response {
@@ -310,22 +612,36 @@ const App = struct {
                     .headers = file.headers,
                     .body = file.body,
                     .roc = null,
+                    .handle = 0,
                 };
             }
         }
-        const roc_request = request_to_roc(request);
+        const request_handle = shard_requests.?.begin(request);
+        const roc_request = request_to_roc(request, request_handle);
         abi.increfBox(@ptrCast(app.context), 1); // Roc consumes its arguments
         const roc = abi.roc_respond_for_host(roc_request, app.context);
+        const kept_writer = give_back_writer(request_handle);
         const streamed = fourneau.server.streamed_status;
         if (request.stream_state() != .none) {
+            if (kept_writer) {
+                write_line(2, "roux: a stream's respond! returned holding the database's " ++
+                    "writer: rolled back");
+            }
             // Streamed (`Sse`): whatever `respond!` returned after, the
             // response is on its way; ended or not, fourneau finishes it.
-            return .{ .status = streamed, .headers = &.{}, .body = "", .roc = roc };
+            return status_only(streamed, roc, request_handle);
         }
         if (roc.status == streamed) {
             // `Server.streamed` with no stream: there is nothing to send.
             write_line(2, "roux: respond! returned Server.streamed without a stream: 500");
-            return .{ .status = 500, .headers = &.{}, .body = "", .roc = roc };
+            return status_only(500, roc, request_handle);
+        }
+        if (kept_writer and roc.status < 400) {
+            // Its writes were rolled back: never answer as if they were not.
+            // An error answer (a constraint, a 404) says so already.
+            write_line(2, "roux: respond! answered success holding the database's writer, " ++
+                "never committed: rolled back, 500");
+            return status_only(500, roc, request_handle);
         }
         // The response's headers, as fourneau wants them, in this
         // connection's scratch memory; their bytes stay Roc's until release.
@@ -341,12 +657,36 @@ const App = struct {
             .headers = table[0..count],
             .body = roc.body.items(),
             .roc = roc,
+            .handle = request_handle,
         };
+    }
+
+    /// An answer of a status alone, Roc's response released after it.
+    fn status_only(status: u16, roc: ResponseToHost, request_handle: u64) Response {
+        return .{
+            .status = status,
+            .headers = &.{},
+            .body = "",
+            .roc = roc,
+            .handle = request_handle,
+        };
+    }
+
+    /// A request whose `respond!` returned still holding the database's
+    /// writer (no `Sqlite.commit!`: an error returned early, or a commit
+    /// forgotten): rolled back, the writer given back.
+    fn give_back_writer(request_handle: u64) bool {
+        const entry = shard_requests.?.find(request_handle).?;
+        if (!entry.holds_writer) return false;
+        database_module.rollback_write(database.?, shard_io.?);
+        entry.holds_writer = false;
+        return true;
     }
 
     pub fn release(app: *App, response: *Response) void {
         _ = app;
         if (response.roc) |roc| roc.decref(host());
+        if (response.handle != 0) shard_requests.?.end(response.handle);
         response.* = undefined;
         assert(requests_in_flight > 0);
         requests_in_flight -= 1;
@@ -355,7 +695,7 @@ const App = struct {
         if (requests_in_flight == 0) assert(roc_allocations_live == roc_allocations_idle);
     }
 
-    fn request_to_roc(request: *Server.Request) RequestFromHost {
+    fn request_to_roc(request: *Server.Request, request_handle: u64) RequestFromHost {
         const head = request.head;
         const headers: RocHeaders = .allocate(head.headers.len, host());
         const slots: [*]RocHeader = @constCast(headers.allocationItems().ptr);
@@ -369,7 +709,7 @@ const App = struct {
             .method = .fromSlice(head.method_text, host()),
             .target = .fromSlice(head.path_and_query, host()),
             .headers = headers,
-            .body = @intFromPtr(request),
+            .body = request_handle,
         };
     }
 };
@@ -444,6 +784,8 @@ fn run() !void {
     }
 
     var app: App = .{ .context = started.context };
+    // `init!` is over: the database is open, or there is none.
+    serving = true;
     const listen: Listen = .{ .port = port, .shards = shards, .tls = tls, .https = https_options };
     var threads: [shards_max]std.Thread = undefined;
     for (threads[1..shards]) |*thread| {
@@ -519,9 +861,15 @@ fn run_shard(app: *App, listen: Listen) void {
 fn run_shard_or_fail(app: *App, listen: Listen) !void {
     assert(listen.shards >= 1);
     assert(requests_in_flight == 0);
+    assert(serving);
+    const gpa = std.heap.page_allocator;
+    const connections_per_shard: u32 = @max(1, connections_max / listen.shards);
+    const requests = try gpa.create(Requests);
+    requests.* = try .init(gpa, connections_per_shard);
+    shard_requests = requests;
+    if (database) |opened| try open_shard_database(gpa, opened);
     roc_allocations_idle = roc_allocations_live;
 
-    const gpa = std.heap.page_allocator;
     var runtime: Evented = undefined;
     try runtime.init(gpa, .{
         .thread_limit = 0, // this thread only
@@ -536,7 +884,7 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     const address = try std.Io.net.IpAddress.parse(listen_address(), listen.port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
     var server = try Server.init(gpa, io, app, listener, .{
-        .connections_max = @max(1, connections_max / listen.shards),
+        .connections_max = connections_per_shard,
         .tls = listen.tls,
     });
     var group: std.Io.Group = .init;
@@ -549,6 +897,19 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
         try group.concurrent(io, run_redirect, .{&redirect_server});
     }
     try server.run();
+}
+
+/// The shard's reader, and its buffer of rows, sized for the largest
+/// `rows_max` of the database's statements.
+fn open_shard_database(gpa: std.mem.Allocator, opened: *database_module.Database) !void {
+    var report: database_module.Report = .{};
+    shard_reader = database_module.open_reader(gpa, opened, &report) catch {
+        write_line(2, report.message());
+        return error.DatabaseReader;
+    };
+    var rows_max: u32 = 1;
+    for (opened.statements) |statement| rows_max = @max(rows_max, statement.rows_max);
+    shard_rows = try gpa.alloc(RocRow, rows_max);
 }
 
 /// Where to listen: `ROUX_ADDRESS`, else loopback. Where a server

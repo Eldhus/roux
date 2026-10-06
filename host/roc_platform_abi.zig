@@ -749,6 +749,110 @@ comptime {
     }
 }
 
+/// Element type for __AnonStruct_2d568438e96cd20c
+pub const __AnonStruct_2d568438e96cd20c = if (@sizeOf(usize) == 4) extern struct {
+    @"columns": RocListWith(u8, false),
+    @"name": RocStr,
+    @"params": RocListWith(u8, false),
+    @"sql": RocStr,
+    @"rows_max": u32,
+    @"writes": bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"columns".decref(roc_host);
+        value.@"name".decref(roc_host);
+        value.@"params".decref(roc_host);
+        value.@"sql".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"columns".incref(amount);
+        value.@"name".incref(amount);
+        value.@"params".incref(amount);
+        value.@"sql".incref(amount);
+    }
+} else extern struct {
+    @"columns": RocListWith(u8, false),
+    @"name": RocStr,
+    @"params": RocListWith(u8, false),
+    @"sql": RocStr,
+    @"rows_max": u32,
+    @"writes": bool,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"columns".decref(roc_host);
+        value.@"name".decref(roc_host);
+        value.@"params".decref(roc_host);
+        value.@"sql".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"columns".incref(amount);
+        value.@"name".incref(amount);
+        value.@"params".incref(amount);
+        value.@"sql".incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_2d568438e96cd20c) != 104) @compileError("__AnonStruct_2d568438e96cd20c size mismatch");
+        if (@alignOf(__AnonStruct_2d568438e96cd20c) != 8) @compileError("__AnonStruct_2d568438e96cd20c alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_2d568438e96cd20c) != 56) @compileError("__AnonStruct_2d568438e96cd20c size mismatch");
+        if (@alignOf(__AnonStruct_2d568438e96cd20c) != 4) @compileError("__AnonStruct_2d568438e96cd20c alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_4c605145331877e7
+pub const __AnonStruct_4c605145331877e7 = if (@sizeOf(usize) == 4) extern struct {
+    @"message": RocStr,
+    @"code": u8,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"message".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"message".incref(amount);
+    }
+} else extern struct {
+    @"message": RocStr,
+    @"code": u8,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"message".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"message".incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_4c605145331877e7) != 32) @compileError("__AnonStruct_4c605145331877e7 size mismatch");
+        if (@alignOf(__AnonStruct_4c605145331877e7) != 8) @compileError("__AnonStruct_4c605145331877e7 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_4c605145331877e7) != 16) @compileError("__AnonStruct_4c605145331877e7 size mismatch");
+        if (@alignOf(__AnonStruct_4c605145331877e7) != 4) @compileError("__AnonStruct_4c605145331877e7 alignment mismatch");
+    }
+}
+
 /// Element type for __AnonStruct_2a70a3dd551fa8a1
 pub const __AnonStruct_2a70a3dd551fa8a1 = if (@sizeOf(usize) == 4) extern struct {
     @"context": RocBox,
@@ -1002,7 +1106,7 @@ pub const HostRequest_body_read_allResultTag = enum(u8) {
 
 /// Payload union for Try.
 pub const HostRequest_body_read_allResultPayload = extern union {
-        @"err": BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge,
+        @"err": BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge,
         @"ok": RocListWith(u8, false),
 };
 
@@ -1010,8 +1114,8 @@ pub const HostRequest_body_read_allResultPayload = extern union {
 pub const HostRequest_body_read_allResult = if (@sizeOf(usize) == 4) extern struct {
     payload: [12]u8 align(4),
     tag: HostRequest_body_read_allResultTag,
-    pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge {
-        const ptr: *const BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge {
+        const ptr: *const BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
@@ -1030,7 +1134,7 @@ pub const HostRequest_body_read_allResult = if (@sizeOf(usize) == 4) extern stru
 } else extern struct {
     payload: HostRequest_body_read_allResultPayload,
     tag: HostRequest_body_read_allResultTag,
-    pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge {
+    pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge {
         return self.payload.@"err";
     }
     pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
@@ -1060,12 +1164,13 @@ comptime {
     }
 }
 
-/// Tag union: BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge
-pub const BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge = enum(u8) {
+/// Tag union: BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge
+pub const BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge = enum(u8) {
     @"body_after_stream" = 0,
     @"body_disconnected" = 1,
-    @"body_invalid" = 2,
-    @"body_too_large" = 3,
+    @"body_during_write" = 2,
+    @"body_invalid" = 3,
+    @"body_too_large" = 4,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -1081,12 +1186,12 @@ pub const BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge = enum(u8
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge size mismatch");
-        if (@alignOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge alignment mismatch");
+        if (@sizeOf(BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge size mismatch");
+        if (@alignOf(BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge size mismatch");
-        if (@alignOf(BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge alignment mismatch");
+        if (@sizeOf(BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge size mismatch");
+        if (@alignOf(BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge) != 1) @compileError("BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge alignment mismatch");
     }
 }
 
@@ -1174,6 +1279,276 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(StreamDisconnectedOrStreamRefused) != 1) @compileError("StreamDisconnectedOrStreamRefused size mismatch");
         if (@alignOf(StreamDisconnectedOrStreamRefused) != 1) @compileError("StreamDisconnectedOrStreamRefused alignment mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const HostSqlite_openResultTag = enum(u8) {
+    @"Err" = 0,
+    @"Ok" = 1,
+};
+
+/// Payload union for Try.
+pub const HostSqlite_openResultPayload = extern union {
+        @"err": RocStr,
+        @"ok": [0]u8,
+};
+
+/// Tag union: Try
+pub const HostSqlite_openResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: HostSqlite_openResultTag,
+    pub fn payload_err(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_openResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_openResult(self, amount);
+    }
+} else extern struct {
+    payload: HostSqlite_openResultPayload,
+    tag: HostSqlite_openResultTag,
+    pub fn payload_err(self: *const @This()) RocStr {
+        return self.payload.@"err";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_openResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_openResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostSqlite_openResult) != 32) @compileError("HostSqlite_openResult size mismatch");
+        if (@alignOf(HostSqlite_openResult) != 8) @compileError("HostSqlite_openResult alignment mismatch");
+        if (@offsetOf(HostSqlite_openResult, "tag") != 24) @compileError("HostSqlite_openResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostSqlite_openResult) != 16) @compileError("HostSqlite_openResult size mismatch");
+        if (@alignOf(HostSqlite_openResult) != 4) @compileError("HostSqlite_openResult alignment mismatch");
+        if (@offsetOf(HostSqlite_openResult, "tag") != 12) @compileError("HostSqlite_openResult tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const HostSqlite_runResultTag = enum(u8) {
+    @"Err" = 0,
+    @"Ok" = 1,
+};
+
+/// Payload union for Try.
+pub const HostSqlite_runResultPayload = extern union {
+        @"err": __AnonStruct_4c605145331877e7,
+        @"ok": RocList(RocList(BlobOrIntegerOrNullOrRealOrText)),
+};
+
+/// Tag union: Try
+pub const HostSqlite_runResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: HostSqlite_runResultTag,
+    pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
+        const ptr: *const __AnonStruct_4c605145331877e7 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_ok(self: *const @This()) RocList(RocList(BlobOrIntegerOrNullOrRealOrText)) {
+        const ptr: *const RocList(RocList(BlobOrIntegerOrNullOrRealOrText)) = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_runResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_runResult(self, amount);
+    }
+} else extern struct {
+    payload: HostSqlite_runResultPayload,
+    tag: HostSqlite_runResultTag,
+    pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
+        return self.payload.@"err";
+    }
+    pub fn payload_ok(self: *const @This()) RocList(RocList(BlobOrIntegerOrNullOrRealOrText)) {
+        return self.payload.@"ok";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_runResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_runResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostSqlite_runResult) != 40) @compileError("HostSqlite_runResult size mismatch");
+        if (@alignOf(HostSqlite_runResult) != 8) @compileError("HostSqlite_runResult alignment mismatch");
+        if (@offsetOf(HostSqlite_runResult, "tag") != 32) @compileError("HostSqlite_runResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostSqlite_runResult) != 20) @compileError("HostSqlite_runResult size mismatch");
+        if (@alignOf(HostSqlite_runResult) != 4) @compileError("HostSqlite_runResult alignment mismatch");
+        if (@offsetOf(HostSqlite_runResult, "tag") != 16) @compileError("HostSqlite_runResult tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for BlobOrIntegerOrNullOrRealOrText.
+pub const BlobOrIntegerOrNullOrRealOrTextTag = enum(u8) {
+    @"Blob" = 0,
+    @"Integer" = 1,
+    @"Null" = 2,
+    @"Real" = 3,
+    @"Text" = 4,
+};
+
+/// Payload union for BlobOrIntegerOrNullOrRealOrText.
+pub const BlobOrIntegerOrNullOrRealOrTextPayload = extern union {
+        @"blob": RocListWith(u8, false),
+        @"integer": i64,
+        @"null": [0]u8,
+        @"real": f64,
+        @"text": RocStr,
+};
+
+/// Tag union: BlobOrIntegerOrNullOrRealOrText
+pub const BlobOrIntegerOrNullOrRealOrText = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(8),
+    tag: BlobOrIntegerOrNullOrRealOrTextTag,
+    pub fn payload_blob(self: *const @This()) RocListWith(u8, false) {
+        const ptr: *const RocListWith(u8, false) = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_integer(self: *const @This()) i64 {
+        const ptr: *const i64 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_real(self: *const @This()) f64 {
+        const ptr: *const f64 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_text(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefBlobOrIntegerOrNullOrRealOrText(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfBlobOrIntegerOrNullOrRealOrText(self, amount);
+    }
+} else extern struct {
+    payload: BlobOrIntegerOrNullOrRealOrTextPayload,
+    tag: BlobOrIntegerOrNullOrRealOrTextTag,
+    pub fn payload_blob(self: *const @This()) RocListWith(u8, false) {
+        return self.payload.@"blob";
+    }
+    pub fn payload_integer(self: *const @This()) i64 {
+        return self.payload.@"integer";
+    }
+    pub fn payload_real(self: *const @This()) f64 {
+        return self.payload.@"real";
+    }
+    pub fn payload_text(self: *const @This()) RocStr {
+        return self.payload.@"text";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefBlobOrIntegerOrNullOrRealOrText(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfBlobOrIntegerOrNullOrRealOrText(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(BlobOrIntegerOrNullOrRealOrText) != 32) @compileError("BlobOrIntegerOrNullOrRealOrText size mismatch");
+        if (@alignOf(BlobOrIntegerOrNullOrRealOrText) != 8) @compileError("BlobOrIntegerOrNullOrRealOrText alignment mismatch");
+        if (@offsetOf(BlobOrIntegerOrNullOrRealOrText, "tag") != 24) @compileError("BlobOrIntegerOrNullOrRealOrText tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(BlobOrIntegerOrNullOrRealOrText) != 16) @compileError("BlobOrIntegerOrNullOrRealOrText size mismatch");
+        if (@alignOf(BlobOrIntegerOrNullOrRealOrText) != 8) @compileError("BlobOrIntegerOrNullOrRealOrText alignment mismatch");
+        if (@offsetOf(BlobOrIntegerOrNullOrRealOrText, "tag") != 12) @compileError("BlobOrIntegerOrNullOrRealOrText tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const HostSqlite_write_beginResultTag = enum(u8) {
+    @"Err" = 0,
+    @"Ok" = 1,
+};
+
+/// Payload union for Try.
+pub const HostSqlite_write_beginResultPayload = extern union {
+        @"err": __AnonStruct_4c605145331877e7,
+        @"ok": [0]u8,
+};
+
+/// Tag union: Try
+pub const HostSqlite_write_beginResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: HostSqlite_write_beginResultTag,
+    pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
+        const ptr: *const __AnonStruct_4c605145331877e7 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_write_beginResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_write_beginResult(self, amount);
+    }
+} else extern struct {
+    payload: HostSqlite_write_beginResultPayload,
+    tag: HostSqlite_write_beginResultTag,
+    pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
+        return self.payload.@"err";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_write_beginResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_write_beginResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostSqlite_write_beginResult) != 40) @compileError("HostSqlite_write_beginResult size mismatch");
+        if (@alignOf(HostSqlite_write_beginResult) != 8) @compileError("HostSqlite_write_beginResult alignment mismatch");
+        if (@offsetOf(HostSqlite_write_beginResult, "tag") != 32) @compileError("HostSqlite_write_beginResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostSqlite_write_beginResult) != 20) @compileError("HostSqlite_write_beginResult size mismatch");
+        if (@alignOf(HostSqlite_write_beginResult) != 4) @compileError("HostSqlite_write_beginResult alignment mismatch");
+        if (@offsetOf(HostSqlite_write_beginResult, "tag") != 16) @compileError("HostSqlite_write_beginResult tag offset mismatch");
     }
 }
 
@@ -1266,7 +1641,7 @@ pub const HostFile_read_utf8Args = extern struct {
 };
 
 /// Arguments for Host.request_body_read_all!
-/// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyInvalid, BodyTooLarge])
+/// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyDuringWrite, BodyInvalid, BodyTooLarge])
 /// Refcounted fields are owned by the hosted function.
 pub const HostRequest_body_read_allArgs = extern struct {
     arg0: u64,
@@ -1303,10 +1678,43 @@ pub const HostResponse_stream_endArgs = extern struct {
     arg0: u64,
 };
 
+/// Arguments for Host.sqlite_open!
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }) => Try({}, Str)
+/// Refcounted fields are owned by the hosted function.
+pub const HostSqlite_openArgs = extern struct {
+    arg0: RocStr,
+    arg1: RocStr,
+    arg2: RocList(__AnonStruct_2d568438e96cd20c),
+};
+
+/// Arguments for Host.sqlite_run!
+/// Roc signature: U64, U32, Bool, List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)]) => Try(List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), { code : U8, message : Str })
+/// Refcounted fields are owned by the hosted function.
+pub const HostSqlite_runArgs = extern struct {
+    arg0: u64,
+    arg1: u32,
+    arg2: bool,
+    arg3: RocList(BlobOrIntegerOrNullOrRealOrText),
+};
+
+/// Arguments for Host.sqlite_write_begin!
+/// Roc signature: U64 => Try({}, { code : U8, message : Str })
+/// Refcounted fields are owned by the hosted function.
+pub const HostSqlite_write_beginArgs = extern struct {
+    arg0: u64,
+};
+
+/// Arguments for Host.sqlite_commit!
+/// Roc signature: U64 => Try({}, { code : U8, message : Str })
+/// Refcounted fields are owned by the hosted function.
+pub const HostSqlite_commitArgs = extern struct {
+    arg0: u64,
+};
+
 // Platform Type Aliases
 
 pub const HostFile_read_utf8Err = FileNotFoundOrFileTooLargeOrFileUnreadable;
-pub const HostRequest_body_read_allErr = BodyAfterStreamOrBodyDisconnectedOrBodyInvalidOrBodyTooLarge;
+pub const HostRequest_body_read_allErr = BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge;
 pub const HostResponse_stream_startArg1 = __AnonStruct_82a96c5d55d63488;
 pub const HostResponse_stream_startErr = StreamDisconnectedOrStreamRefused;
 pub const HostResponse_stream_sendResult = HostResponse_stream_startResult;
@@ -1321,6 +1729,19 @@ pub const HostResponse_stream_endResult = HostResponse_stream_startResult;
 pub const HostResponse_stream_endResultPayload = HostResponse_stream_startResultPayload;
 pub const HostResponse_stream_endResultTag = HostResponse_stream_startResultTag;
 pub const HostResponse_stream_endErr = StreamDisconnectedOrStreamRefused;
+pub const HostSqlite_openArg2 = __AnonStruct_2d568438e96cd20c;
+pub const HostSqlite_runArg3 = BlobOrIntegerOrNullOrRealOrText;
+pub const HostSqlite_runArg3Payload = BlobOrIntegerOrNullOrRealOrTextPayload;
+pub const HostSqlite_runArg3Tag = BlobOrIntegerOrNullOrRealOrTextTag;
+pub const HostSqlite_runErr = __AnonStruct_4c605145331877e7;
+pub const HostSqlite_runOk = BlobOrIntegerOrNullOrRealOrText;
+pub const HostSqlite_runOkPayload = BlobOrIntegerOrNullOrRealOrTextPayload;
+pub const HostSqlite_runOkTag = BlobOrIntegerOrNullOrRealOrTextTag;
+pub const HostSqlite_write_beginErr = __AnonStruct_4c605145331877e7;
+pub const HostSqlite_commitResult = HostSqlite_write_beginResult;
+pub const HostSqlite_commitResultPayload = HostSqlite_write_beginResultPayload;
+pub const HostSqlite_commitResultTag = HostSqlite_write_beginResultTag;
+pub const HostSqlite_commitErr = __AnonStruct_4c605145331877e7;
 pub const Init_for_hostOk = __AnonStruct_2a70a3dd551fa8a1;
 pub const Respond_for_hostArg0 = __AnonStruct_28781edfe447a702;
 pub const Respond_for_hostArg0Headers = __AnonStruct_82a96c5d55d63488;
@@ -1415,6 +1836,128 @@ pub const __AnonStruct_82a96c5d55d63488Release = struct {
     }
 };
 
+fn decrefHostSqlite_openResult(value: HostSqlite_openResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().decref(roc_host);
+        },
+        .@"Ok" => {},
+    }
+}
+
+fn increfHostSqlite_openResult(value: HostSqlite_openResult, amount: isize) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().incref(amount);
+        },
+        .@"Ok" => {},
+    }
+}
+
+pub const HostSqlite_openResultRelease = struct {
+    pub fn release(value: HostSqlite_openResult, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_2d568438e96cd20cRelease = struct {
+    pub fn release(value: __AnonStruct_2d568438e96cd20c, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+fn decrefHostSqlite_runResult(value: HostSqlite_runResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().decref(roc_host);
+        },
+        .@"Ok" => {
+        decrefListOfListOfBlobOrIntegerOrNullOrRealOrText(value.payload_ok(), roc_host);
+        },
+    }
+}
+
+fn increfHostSqlite_runResult(value: HostSqlite_runResult, amount: isize) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().incref(amount);
+        },
+        .@"Ok" => {
+        value.payload_ok().incref(amount);
+        },
+    }
+}
+
+pub const HostSqlite_runResultRelease = struct {
+    pub fn release(value: HostSqlite_runResult, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_4c605145331877e7Release = struct {
+    pub fn release(value: __AnonStruct_4c605145331877e7, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+fn decrefBlobOrIntegerOrNullOrRealOrText(value: BlobOrIntegerOrNullOrRealOrText, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Blob" => {
+        value.payload_blob().decref(roc_host);
+        },
+        .@"Integer" => {},
+        .@"Null" => {},
+        .@"Real" => {},
+        .@"Text" => {
+        value.payload_text().decref(roc_host);
+        },
+    }
+}
+
+fn increfBlobOrIntegerOrNullOrRealOrText(value: BlobOrIntegerOrNullOrRealOrText, amount: isize) void {
+    switch (value.tag) {
+        .@"Blob" => {
+        value.payload_blob().incref(amount);
+        },
+        .@"Integer" => {},
+        .@"Null" => {},
+        .@"Real" => {},
+        .@"Text" => {
+        value.payload_text().incref(amount);
+        },
+    }
+}
+
+pub const BlobOrIntegerOrNullOrRealOrTextRelease = struct {
+    pub fn release(value: BlobOrIntegerOrNullOrRealOrText, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+fn decrefHostSqlite_write_beginResult(value: HostSqlite_write_beginResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().decref(roc_host);
+        },
+        .@"Ok" => {},
+    }
+}
+
+fn increfHostSqlite_write_beginResult(value: HostSqlite_write_beginResult, amount: isize) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().incref(amount);
+        },
+        .@"Ok" => {},
+    }
+}
+
+pub const HostSqlite_write_beginResultRelease = struct {
+    pub fn release(value: HostSqlite_write_beginResult, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 fn decrefInit_for_hostResult(value: Init_for_hostResult, roc_host: *RocHost) void {
     switch (value.tag) {
         .@"Err" => {},
@@ -1465,6 +2008,30 @@ pub fn decrefListOf__AnonStruct_82a96c5d55d63488(value: RocList(__AnonStruct_82a
     value.deinitWith(__AnonStruct_82a96c5d55d63488Release, roc_host);
 }
 
+/// Release one owned reference to a `RocList(__AnonStruct_2d568438e96cd20c)`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+pub fn decrefListOf__AnonStruct_2d568438e96cd20c(value: RocList(__AnonStruct_2d568438e96cd20c), roc_host: *RocHost) void {
+    value.deinitWith(__AnonStruct_2d568438e96cd20cRelease, roc_host);
+}
+
+/// Release one owned reference to a `RocList(RocList(BlobOrIntegerOrNullOrRealOrText))`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+pub fn decrefListOfListOfBlobOrIntegerOrNullOrRealOrText(value: RocList(RocList(BlobOrIntegerOrNullOrRealOrText)), roc_host: *RocHost) void {
+    value.deinitWith(RocListRelease(RocList(BlobOrIntegerOrNullOrRealOrText), BlobOrIntegerOrNullOrRealOrTextRelease), roc_host);
+}
+
+/// Release one owned reference to a `RocList(BlobOrIntegerOrNullOrRealOrText)`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+pub fn decrefListOfBlobOrIntegerOrNullOrRealOrText(value: RocList(BlobOrIntegerOrNullOrRealOrText), roc_host: *RocHost) void {
+    value.deinitWith(BlobOrIntegerOrNullOrRealOrTextRelease, roc_host);
+}
+
 
 fn rocReleasePolicy(comptime T: type) type {
     if (T == RocStr) return RocStrRelease;
@@ -1473,6 +2040,15 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == RocListWith(u8, false)) return RocListSpineRelease(RocListWith(u8, false));
     if (T == RocList(__AnonStruct_82a96c5d55d63488)) return RocListRelease(RocList(__AnonStruct_82a96c5d55d63488), __AnonStruct_82a96c5d55d63488Release);
     if (T == __AnonStruct_82a96c5d55d63488) return __AnonStruct_82a96c5d55d63488Release;
+    if (T == HostSqlite_openResult) return HostSqlite_openResultRelease;
+    if (T == RocList(__AnonStruct_2d568438e96cd20c)) return RocListRelease(RocList(__AnonStruct_2d568438e96cd20c), __AnonStruct_2d568438e96cd20cRelease);
+    if (T == __AnonStruct_2d568438e96cd20c) return __AnonStruct_2d568438e96cd20cRelease;
+    if (T == HostSqlite_runResult) return HostSqlite_runResultRelease;
+    if (T == __AnonStruct_4c605145331877e7) return __AnonStruct_4c605145331877e7Release;
+    if (T == RocList(RocList(BlobOrIntegerOrNullOrRealOrText))) return RocListRelease(RocList(RocList(BlobOrIntegerOrNullOrRealOrText)), RocListRelease(RocList(BlobOrIntegerOrNullOrRealOrText), BlobOrIntegerOrNullOrRealOrTextRelease));
+    if (T == RocList(BlobOrIntegerOrNullOrRealOrText)) return RocListRelease(RocList(BlobOrIntegerOrNullOrRealOrText), BlobOrIntegerOrNullOrRealOrTextRelease);
+    if (T == BlobOrIntegerOrNullOrRealOrText) return BlobOrIntegerOrNullOrRealOrTextRelease;
+    if (T == HostSqlite_write_beginResult) return HostSqlite_write_beginResultRelease;
     if (T == Init_for_hostResult) return Init_for_hostResultRelease;
     if (T == __AnonStruct_2a70a3dd551fa8a1) return __AnonStruct_2a70a3dd551fa8a1Release;
     if (T == __AnonStruct_a14cd3b7d5755441) return __AnonStruct_a14cd3b7d5755441Release;
@@ -1526,7 +2102,7 @@ pub extern fn hosted_stderr_line(arg0: RocStr) callconv(.c) void;
 pub extern fn hosted_file_read_utf8(arg0: RocStr, arg1: u64) callconv(.c) HostFile_read_utf8Result;
 
 /// Hosted symbol for Host.request_body_read_all!
-/// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyInvalid, BodyTooLarge])
+/// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyDuringWrite, BodyInvalid, BodyTooLarge])
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_request_body_read_all(arg0: u64, arg1: u64) callconv(.c) HostRequest_body_read_allResult;
 
@@ -1551,6 +2127,34 @@ pub extern fn hosted_response_stream_flush(arg0: u64) callconv(.c) HostResponse_
 /// Hosted symbol for Host.response_stream_end!
 /// Roc signature: U64 => Try({}, [StreamDisconnected, StreamRefused])
 pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_stream_startResult;
+
+/// Hosted symbol for Host.sqlite_open!
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }) => Try({}, Str)
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     arg0.decref(roc_host);
+///     arg1.decref(roc_host);
+///     decrefListOf__AnonStruct_2d568438e96cd20c(arg2, roc_host);
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c)) callconv(.c) HostSqlite_openResult;
+
+/// Hosted symbol for Host.sqlite_run!
+/// Roc signature: U64, U32, Bool, List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)]) => Try(List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), { code : U8, message : Str })
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     decrefListOfBlobOrIntegerOrNullOrRealOrText(arg3, roc_host);
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_sqlite_run(arg0: u64, arg1: u32, arg2: bool, arg3: RocList(BlobOrIntegerOrNullOrRealOrText)) callconv(.c) HostSqlite_runResult;
+
+/// Hosted symbol for Host.sqlite_write_begin!
+/// Roc signature: U64 => Try({}, { code : U8, message : Str })
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_sqlite_write_begin(arg0: u64) callconv(.c) HostSqlite_write_beginResult;
+
+/// Hosted symbol for Host.sqlite_commit!
+/// Roc signature: U64 => Try({}, { code : U8, message : Str })
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_sqlite_commit(arg0: u64) callconv(.c) HostSqlite_write_beginResult;
 
 
 /// Default memory management functions for Roc platforms.
