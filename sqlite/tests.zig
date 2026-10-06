@@ -181,3 +181,49 @@ fn count(db: *c.Db) !i64 {
     if (c.sqlite3_step(stmt.?) != c.row) return error.Sqlite;
     return c.sqlite3_column_int64(stmt.?, 0);
 }
+
+test "vfs: the database file's locks, as a rollback journal uses them" {
+    try sqlite.initialize();
+    sqlite.vfs.thread_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var path_buffer: [512]u8 = undefined;
+    const path = try temporary_path(&dir, &path_buffer, "journal.db");
+    const a = try open_file(path);
+    defer _ = c.sqlite3_close_v2(a);
+    try sqlite.exec(a, "PRAGMA journal_mode = DELETE; CREATE TABLE t (a INTEGER) STRICT;");
+    const b = try open_file(path);
+    defer _ = c.sqlite3_close_v2(b);
+    // RESERVED is one connection's.
+    try sqlite.exec(a, "BEGIN IMMEDIATE;");
+    try std.testing.expectError(error.Sqlite, sqlite.exec(b, "BEGIN IMMEDIATE;"));
+    try std.testing.expectEqual(0, try count(b)); // SHARED beside RESERVED
+    try sqlite.exec(a, "INSERT INTO t VALUES (1); COMMIT;");
+    // EXCLUSIVE keeps every reader out.
+    try sqlite.exec(a, "BEGIN EXCLUSIVE;");
+    try std.testing.expectError(error.Sqlite, count(b));
+    try sqlite.exec(a, "COMMIT;");
+    try std.testing.expectEqual(1, try count(b));
+    try std.testing.expectEqual(0, sqlite.mutex.held);
+}
+
+test "vfs: a connection closing leaves the WAL to the others" {
+    try sqlite.initialize();
+    sqlite.vfs.thread_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var path_buffer: [512]u8 = undefined;
+    const path = try temporary_path(&dir, &path_buffer, "wal.db");
+    const stays = try open_file(path);
+    defer _ = c.sqlite3_close_v2(stays);
+    try sqlite.exec(stays, "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;" ++
+        "CREATE TABLE t (a INTEGER) STRICT; INSERT INTO t VALUES (1);");
+    const leaves = try open_file(path);
+    try sqlite.exec(leaves, "INSERT INTO t VALUES (2);");
+    // Not the last: it may not take EXCLUSIVE to checkpoint and delete the WAL.
+    _ = c.sqlite3_close_v2(leaves);
+    var wal_buffer: [512]u8 = undefined;
+    const wal = try temporary_path(&dir, &wal_buffer, "wal.db-wal");
+    try Io.Dir.cwd().access(std.testing.io, wal, .{});
+    try std.testing.expectEqual(2, try count(stays));
+}
