@@ -25,5 +25,13 @@ Host := [].{
 
 	## The whole body, up to `limit_bytes`; read from the connection only
 	## now, when the handler asks.
-	request_body_read_all! : U64, U64 => Try(List(U8), [BodyTooLarge, BodyInvalid, BodyDisconnected])
+	request_body_read_all! : U64, U64 => Try(List(U8), [BodyTooLarge, BodyInvalid, BodyDisconnected, BodyAfterStream])
+
+	## A streamed response on the request `body` names: a 200 head with
+	## these headers, then a chunk per send, then the end (fourneau's
+	## streams). Out of order, or an event too large, is `StreamRefused`.
+	response_stream_start! : U64, List(Header) => Try({}, [StreamDisconnected, StreamRefused])
+	response_stream_send! : U64, List(U8) => Try({}, [StreamDisconnected, StreamRefused])
+	response_stream_flush! : U64 => Try({}, [StreamDisconnected, StreamRefused])
+	response_stream_end! : U64 => Try({}, [StreamDisconnected, StreamRefused])
 }

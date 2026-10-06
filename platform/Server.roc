@@ -22,7 +22,8 @@ Server := [].{
 		body : List(U8),
 	}
 
-	BodyErr : [BodyTooLarge, BodyInvalid, BodyDisconnected]
+	## `BodyAfterStream`: read after `Sse.start!`, when it no longer can be.
+	BodyErr : [BodyTooLarge, BodyInvalid, BodyDisconnected, BodyAfterStream]
 
 	from_host : Host.RequestFromHost -> Request
 	from_host = |request| request
@@ -64,4 +65,10 @@ Server := [].{
 
 	status_response : U16 -> Response
 	status_response = |status| { status, headers: [], body: [] }
+
+	## What `respond!` returns after a stream (`Sse.end!` gives it): the
+	## response is on its way already. Returned without a stream, the host
+	## answers 500: status 0 is no status.
+	streamed : Response
+	streamed = { status: 0, headers: [], body: [] }
 }
