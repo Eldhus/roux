@@ -14,6 +14,13 @@
      (DIARY). Next: the examples' spec as a Zig step (M4), then crt1/libc
      from Zig's musl. SQLite (M5) waits for fourneau's base.
 
+2. **Templates: rocstache in roux, no database yet.** (owner,
+   2026-10-06) The template compiler (`rocstache-gen`, in the old fork)
+   moved into roux's `tools/`, on Zig 0.17 and in TigerStyle; an example
+   app rendering templates; the dragrace's templates workload runs it.
+   - Where it stands (2026-10-06): queued behind fourneau's TLS work
+     (fourneau's TODO, WIP 2).
+
 ## Plan
 
 The road to a roux app on the internet with nothing in front of it.
