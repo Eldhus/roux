@@ -354,6 +354,8 @@ const join_data =
 ;
 
 const shapes = [_]Shape{
+    // A left arm that can be NULL, a right one that cannot: every arm counts.
+    .{ .sql = "SELECT y FROM ab UNION ALL SELECT y FROM b", .nullable = &.{true} },
     .{ .sql = "SELECT a.x, b.y FROM a JOIN b ON b.a_id = a.id", .nullable = &.{ false, false } },
     .{
         .sql = "SELECT a.x, b.y FROM a LEFT JOIN b ON b.a_id = a.id",
