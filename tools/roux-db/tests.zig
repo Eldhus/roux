@@ -147,6 +147,11 @@ const Refusal = struct {
 
 const refusals = [_]Refusal{
     .{
+        .case = "a vertical tab before a statement (not a space to SQLite)",
+        .query = "-- name: q :exec\n\x0bDELETE FROM dish;",
+        .says = "unrecognized token",
+    },
+    .{
         .case = "a table not STRICT",
         .schema = "CREATE TABLE t (id INTEGER PRIMARY KEY);",
         .says = "not STRICT",
