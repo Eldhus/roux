@@ -70,8 +70,6 @@ const Compiler = struct {
     /// A table column's declared type, NOT NULL and place in the primary
     /// key: `?1` table, `?2` column.
     column_lookup: *c.Stmt,
-    /// A table's primary-key column count and whether it is WITHOUT ROWID.
-    key_lookup: *c.Stmt,
 };
 
 /// Compiles `queries` against `schema`; what is wrong goes to
@@ -93,7 +91,6 @@ pub fn compile(
         .verdict = .{ .policy = .schema },
         .statements = try .initCapacity(arena, statements_max),
         .column_lookup = undefined,
-        .key_lookup = undefined,
     };
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
@@ -101,11 +98,6 @@ pub fn compile(
         \\SELECT type, "notnull", pk FROM pragma_table_xinfo(?1) WHERE name = ?2
     );
     defer _ = c.sqlite3_finalize(compiler.column_lookup);
-    compiler.key_lookup = try prepare_own(db,
-        \\SELECT (SELECT count(*) FROM pragma_table_xinfo(?1) WHERE pk > 0),
-        \\  (SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1)
-    );
-    defer _ = c.sqlite3_finalize(compiler.key_lookup);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
         compile_file(&compiler, @intCast(file), query);
@@ -525,10 +517,12 @@ fn origin_type(compiler: *Compiler, statement: *c.Stmt, index: u32) ?Origin {
     const declared_bytes: u32 = @intCast(c.sqlite3_column_bytes(lookup, 0));
     const storage = types.storage_from_declared(declared_text[0..declared_bytes]) orelse
         return null;
-    const declared = declared_text[0..declared_bytes];
     const not_null = c.sqlite3_column_int64(lookup, 1) == 1;
     const in_key = c.sqlite3_column_int64(lookup, 2) > 0;
-    const nullable = !not_null and !(in_key and is_rowid_alias(compiler, table, declared));
+    // In a STRICT table every key column is NOT NULL; the one SQLite
+    // reports otherwise is the rowid's alias (an INTEGER PRIMARY KEY),
+    // which is the rowid and so never NULL either.
+    const nullable = !not_null and !in_key;
     const scalar: types.Scalar = switch (storage) {
         .integer => .i64,
         .real => .f64,
@@ -536,20 +530,4 @@ fn origin_type(compiler: *Compiler, statement: *c.Stmt, index: u32) ?Origin {
         .blob => .bytes,
     };
     return .{ .type = .{ .scalar = scalar, .nullable = nullable }, .storage = storage };
-}
-
-/// Whether a table's primary-key column, declared `declared`, is its rowid
-/// (never NULL, NOT NULL or not): the only key column of a rowid table,
-/// declared exactly INTEGER (`INT PRIMARY KEY` is not an alias; SQLite's
-/// documentation, "ROWIDs and the INTEGER PRIMARY KEY").
-fn is_rowid_alias(compiler: *Compiler, table: []const u8, declared: []const u8) bool {
-    if (!std.ascii.eqlIgnoreCase(declared, "INTEGER")) return false;
-    const lookup = compiler.key_lookup;
-    defer _ = c.sqlite3_reset(lookup);
-    assert(c.sqlite3_bind_text64(lookup, 1, table.ptr, table.len, null, c.utf8) == c.ok);
-    assert(c.sqlite3_step(lookup) == c.row);
-    const key_columns = c.sqlite3_column_int64(lookup, 0);
-    assert(key_columns >= 1); // the caller's column is in the key
-    const without_rowid = c.sqlite3_column_int64(lookup, 1) == 1;
-    return key_columns == 1 and !without_rowid;
 }
