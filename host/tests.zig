@@ -17,8 +17,14 @@ test {
 const trees = [_]tidy.Tree{
     .{
         .dir = "host",
-        .roots = &.{ "tests.zig", "host.zig", "pad_archive.zig" },
-        .untested = &.{ "tests.zig", "host.zig", "pad_archive.zig", "roc_platform_abi.zig" },
+        .roots = &.{ "tests.zig", "host.zig", "pad_archive.zig", "floor.zig" },
+        .untested = &.{
+            "tests.zig",
+            "host.zig",
+            "pad_archive.zig",
+            "roc_platform_abi.zig",
+            "floor.zig",
+        },
         .generated = &.{"roc_platform_abi.zig"},
         // host.zig: the Roc ABI, extern symbols and opaque boxes;
         // database.zig: SQLite's progress handler, a C callback.
