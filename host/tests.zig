@@ -2,10 +2,16 @@
 //!
 //! The host builds only as libhost.a for `roc build`, so its behaviour is
 //! tested through the platform's examples; what a test binary can check
-//! here is the code itself.
+//! here is the code itself, and the database, which knows nothing of Roc
+//! (database_test.zig).
 
 const std = @import("std");
 const tidy = @import("tidy");
+
+test {
+    _ = @import("database.zig");
+    _ = @import("database_test.zig");
+}
 
 const trees = [_]tidy.Tree{
     .{
@@ -13,8 +19,9 @@ const trees = [_]tidy.Tree{
         .roots = &.{ "tests.zig", "host.zig", "pad_archive.zig" },
         .untested = &.{ "tests.zig", "host.zig", "pad_archive.zig", "roc_platform_abi.zig" },
         .generated = &.{"roc_platform_abi.zig"},
-        // host.zig: the Roc ABI, extern symbols and opaque boxes.
-        .interfaces = &.{"host.zig"},
+        // host.zig: the Roc ABI, extern symbols and opaque boxes;
+        // database.zig: SQLite's progress handler, a C callback.
+        .interfaces = &.{ "host.zig", "database.zig" },
     },
     .{
         .dir = "sqlite",

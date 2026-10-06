@@ -93,3 +93,64 @@ pub extern fn sqlite3_column_decltype(stmt: *Stmt, column: c_int) ?[*:0]const u8
 /// Our patch (vendor/sqlite/README.md): 1 when the result column can be
 /// NULL, 0 when it never is, -1 for an expression SQLite cannot prove.
 pub extern fn sqlite3_column_nullable(stmt: *Stmt, column: c_int) c_int;
+
+pub const interrupt = 9;
+pub const constraint = 19;
+
+pub const open_nomutex = 0x00008000;
+/// For `prepare_v3`: kept for the connection's life.
+pub const prepare_persistent: c_uint = 0x01;
+
+pub const integer = 1;
+pub const float = 2;
+pub const blob = 4;
+
+pub extern fn sqlite3_errcode(db: *Db) c_int;
+pub extern fn sqlite3_get_autocommit(db: *Db) c_int;
+pub extern fn sqlite3_stmt_busy(stmt: *Stmt) c_int;
+pub extern fn sqlite3_next_stmt(db: *Db, stmt: ?*Stmt) ?*Stmt;
+pub extern fn sqlite3_clear_bindings(stmt: *Stmt) c_int;
+pub extern fn sqlite3_bind_null(stmt: *Stmt, index: c_int) c_int;
+pub extern fn sqlite3_bind_double(stmt: *Stmt, index: c_int, value: f64) c_int;
+/// `destructor` null is SQLITE_STATIC, as for `bind_text64`.
+pub extern fn sqlite3_bind_blob64(
+    stmt: *Stmt,
+    index: c_int,
+    bytes: ?[*]const u8,
+    length: u64,
+    destructor: ?*const fn (?*anyopaque) callconv(.c) void,
+) c_int;
+pub extern fn sqlite3_column_double(stmt: *Stmt, column: c_int) f64;
+pub extern fn sqlite3_column_blob(stmt: *Stmt, column: c_int) ?[*]const u8;
+
+/// Called every `instructions` virtual-machine steps; non-zero interrupts.
+pub extern fn sqlite3_progress_handler(
+    db: *Db,
+    instructions: c_int,
+    callback: ?*const fn (user: ?*anyopaque) callconv(.c) c_int,
+    user: ?*anyopaque,
+) void;
+
+/// Sets limit `id` to `value` (unless negative); returns the old value.
+pub extern fn sqlite3_limit(db: *Db, id: c_int, value: c_int) c_int;
+pub const limit_length = 0;
+pub const limit_sql_length = 1;
+pub const limit_column = 2;
+pub const limit_expr_depth = 3;
+pub const limit_compound_select = 4;
+pub const limit_vdbe_op = 5;
+pub const limit_function_arg = 6;
+pub const limit_attached = 7;
+pub const limit_like_pattern_length = 8;
+pub const limit_variable_number = 9;
+pub const limit_trigger_depth = 10;
+pub const limit_worker_threads = 11;
+
+/// `(db, op, int value, int *readback)` for the boolean options below.
+pub extern fn sqlite3_db_config(db: *Db, op: c_int, ...) c_int;
+pub const dbconfig_enable_trigger = 1003;
+pub const dbconfig_defensive = 1010;
+pub const dbconfig_dqs_dml = 1013;
+pub const dbconfig_dqs_ddl = 1014;
+pub const dbconfig_enable_view = 1015;
+pub const dbconfig_trusted_schema = 1017;
