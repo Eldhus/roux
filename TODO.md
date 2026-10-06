@@ -31,6 +31,14 @@
      workload (its TODO); tidy over `tools/` (TigerStyle: the old code
      has no assertions and recursion), and the Zed README pointed here.
 
+3. **What the dragrace site needs to run on roux.** (owner, 2026-10-06:
+   the site becomes the roux demo; fourneau-dragrace's TODO, WIP 3)
+   - Where it stands (2026-10-06): planned. Static files the app names in
+     `init!`, served by the host before `respond!` (fourneau's loader:
+     gzip, ETags, ranges); a `File` module with a bounded `read_utf8!`
+     effect (new hosted functions: the glue regenerated). Next: both,
+     with an example each.
+
 ## Plan
 
 The road to a roux app on the internet with nothing in front of it.
