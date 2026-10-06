@@ -167,8 +167,10 @@ fn next_statement(
     };
     const start = annotation.scan(text, at.*, end, sink);
     // SQLite and the scan agree on where the statement begins: what the
-    // scan passed over prepares to nothing.
+    // scan passed over prepares to nothing, and what follows is one whole
+    // statement, as the host will prepare it.
     assert(prepares_to_nothing(compiler.db, text[at.*..start]));
+    if (statement != null) assert(prepares_whole(compiler.db, text[start..end]));
     assert((statement == null) == (start == end));
     at.* = end;
     return .{ .statement = statement, .start = start, .end = end };
@@ -204,6 +206,15 @@ fn prepares_to_nothing(db: *c.Db, text: []const u8) bool {
         if (consumed == 0) return false;
         rest = rest[consumed..];
     } else unreachable;
+}
+
+/// Whether `text` prepares to one statement that is all of it.
+fn prepares_whole(db: *c.Db, text: []const u8) bool {
+    var statement: ?*c.Stmt = null;
+    var tail: [*]const u8 = text.ptr;
+    const result = c.sqlite3_prepare_v3(db, text.ptr, @intCast(text.len), 0, &statement, &tail);
+    defer _ = c.sqlite3_finalize(statement);
+    return result == c.ok and statement != null and tail == text.ptr + text.len;
 }
 
 // --- schema.sql -------------------------------------------------------------
