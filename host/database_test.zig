@@ -431,3 +431,25 @@ fn release_soon(database: *Database) void {
     var report: Report = .{};
     database_module.commit_write(database, testing.io, &report) catch unreachable;
 }
+
+test "database: a shard's readers, leased one statement at a time; none free, a bounded wait" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const database = try fixture.open(schema, &statements, &report);
+    defer database_module.close(fixture.arena_state.allocator(), database);
+    const arena = fixture.arena_state.allocator();
+    var pool = try database_module.ReaderPool.open(arena, database, &report);
+    defer for (pool.readers) |reader| database_module.close_connection(arena, reader);
+    const io = testing.io;
+    var leased: [8]*database_module.Connection = undefined;
+    const count = database.limits.readers_per_shard;
+    for (leased[0..count]) |*reader| reader.* = try pool.lease(io, limits, &report);
+    try testing.expectError(error.Failed, pool.lease(io, limits, &report));
+    try testing.expectEqual(database_module.Failure.readers_busy, report.failure);
+    pool.release(io, leased[1]);
+    const again = try pool.lease(io, limits, &report);
+    try testing.expectEqual(leased[1], again);
+    for (leased[0..count]) |reader| pool.release(io, reader);
+    try testing.expectEqual(@as(u32, (1 << 4) - 1), pool.free);
+}

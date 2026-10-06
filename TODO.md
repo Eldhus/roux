@@ -51,15 +51,14 @@
    database file once our VFS lands; an exact schema match or no start;
    `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
    owner may overturn any.
-   - Where it stands (2026-10-06): steps 1 to 4 done. SQLite 3.53.4
-     vendored with one patch of ours, `tools/roux-db` generating typed
-     modules, `host/database.zig` (tested alone) and `platform/Sqlite.roc`,
-     `examples/sqlite` checked by curl and under the checked heap;
-     experiment 21 measured (DIARY): a point read costs roux +7,600
-     instructions over the floor (19,023 against 11,399), writes are the
-     disk's (~300/s). Step 5 measured: at 100 commits a second a shard's
-     reads go from p99 0.3 ms to 3.6-6.7 ms (the fdatasync holds the
-     thread). Next: step 6, a VFS over the shard's `std.Io`.
+   - Where it stands (2026-10-06): steps 1 to 6 done. SQLite 3.53.4
+     vendored with one patch of ours; `tools/roux-db`; `host/database.zig`
+     and `platform/Sqlite.roc`; `examples/sqlite`; roux's VFS over the
+     shard's `std.Io` (SQLite's waits yield the fiber), readers pooled
+     per shard. Measured (DIARY): point reads +16% over SQLite's own VFS;
+     a shard's reads beside 100 commits a second at p99 0.3 ms where they
+     were 3.8-6.8 ms. Next: step 7, static memory (memsys5, a fixed page
+     cache); then `SQLITE_OS_OTHER` (no unix VFS compiled in).
 
 ## Plan
 
@@ -198,6 +197,10 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   which a safe build fills with 0xaa on every call: 2.3% of a point
   read's instructions (experiment 21). Size it to the call, or fill
   only what is used. (2026-10-06)
+- [ ] A data-only sync for the VFS (`fdatasync`): Evented's `fileSync` is
+  a full fsync; io_uring's FSYNC takes `IORING_FSYNC_DATASYNC`. A change
+  to fourneau's port (its `// fourneau:` patches), measured on writes
+  first. (2026-10-06)
 - [ ] The writer's lock is not FIFO: a waiter woken may lose to one
   arriving. Measure the spread of write waits under contention before
   doing anything (host/database.zig, WriterLock). (2026-10-06)

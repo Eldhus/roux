@@ -45,6 +45,9 @@ Sqlite := [].{
 	Err : [
 		## The writer stayed busy past the wait, or too many waited: 503.
 		WriterBusy(Str),
+		## Every reader of the request's shard stayed busy past the wait:
+		## 503 (statements waiting on the disk).
+		ReadersBusy(Str),
 		## Past the statement's time.
 		TimedOut(Str),
 		## More rows (or bytes) than the query's bound.
@@ -128,6 +131,7 @@ Sqlite := [].{
 			5 => Constraint(message)
 			6 => WriteRefused(message)
 			8 => Misuse(message)
+			9 => ReadersBusy(message)
 			_ => Failed(message)
 		}
 

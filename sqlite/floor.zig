@@ -47,6 +47,7 @@ pub fn main(init: std.process.Init) !void {
     if (iterations == 0 or iterations > iterations_max) fatal("N: 1 to 10,000,000");
     try sqlite.initialize();
     const io = init.io;
+    sqlite.vfs.thread_io = io;
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
     switch (mode) {
         .fsync => {
@@ -58,10 +59,12 @@ pub fn main(init: std.process.Init) !void {
             const name = if (mode == .@"open-wide") "wide.db" else "floor.db";
             const path = try std.fmt.bufPrintSentinel(&path_buffer, "{s}/{s}", .{ dir, name }, 0);
             try ensure_database(path, mode == .@"open-wide");
+            const before = sqlite.vfs.calls;
             const elapsed_ns = try run_queries(io, mode, path, iterations);
             print("{t}: {d} iterations, {d} ns per operation\n", .{
                 mode, iterations, elapsed_ns / iterations,
             });
+            print_calls(before, sqlite.vfs.calls, iterations);
         },
     }
 }
@@ -226,6 +229,16 @@ fn run_fsync(io: Io, arena: std.mem.Allocator, path: []const u8, iterations: u32
     print("fsync: {d} writes of 4 KiB + fdatasync, p50 {d} us, p99 {d} us, max {d} us\n", .{
         iterations, p50 / 1000, p99 / 1000, max / 1000,
     });
+}
+
+/// The VFS calls of the run, per operation, in hundredths.
+fn print_calls(before: sqlite.vfs.Calls, after: sqlite.vfs.Calls, iterations: u32) void {
+    print("  VFS calls per 100 operations:", .{});
+    inline for (@typeInfo(sqlite.vfs.Calls).@"struct".field_names) |field| {
+        const count = @field(after, field) - @field(before, field);
+        if (count > 0) print(" {s} {d}", .{ field, count * 100 / iterations });
+    }
+    print("\n", .{});
 }
 
 fn print(comptime format: []const u8, arguments: anytype) void {

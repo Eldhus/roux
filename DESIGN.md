@@ -125,9 +125,14 @@ started it; the choices in TODO.md, WIP 4).
   a statement does is SQLite's authorizer's verdict: `schema.sql` only
   creates; a query only reads and writes rows (`sqlite/authorizer.zig`,
   shared by roux-db and the host).
-- **Readers and one writer.** A shard has its own reader connection; with
-  SQLite's own VFS a statement runs without yielding, so one is enough
-  (asserted). Writes go to one connection for the process, one request at
+- **SQLite's waits yield the fiber.** roux's VFS (`sqlite/vfs.zig`) does
+  SQLite's file I/O through the shard's `std.Io`; one process owns the
+  database (locks and the WAL index in memory, an open file description
+  lock keeping other processes out, file sizes kept, not asked). Safe
+  because the thread holds no SQLite mutex where the VFS yields (counted,
+  asserted: `sqlite/mutex.zig`).
+- **Readers and one writer.** A shard has a few readers (`ReaderPool`),
+  leased a statement at a time; none free, a bounded wait (503). Writes go to one connection for the process, one request at
   a time, behind a futex lock with a bounded queue and wait (503 past
   it): SQLite never sees two writers. Reading and writing are separate
   types (`Sqlite.Read`, `Sqlite.Write`), decided by
@@ -147,8 +152,9 @@ started it; the choices in TODO.md, WIP 4).
   one must hold exactly the schema `schema.sql` makes, or `open!` fails.
 - Measured (DIARY, 2026-10-06): a prepared point query costs SQLite
   ~4,800 instructions; a connection per request would cost 24 to 167
-  times that; a commit's fdatasync on the laptop is ~3 ms, which holds
-  its shard with SQLite's own VFS (step 5 of M5 measures the stall).
+  times that; a commit's fdatasync on the laptop is ~3 ms. With SQLite's
+  own VFS that wait held its shard (reads beside 100 commits a second:
+  p99 3.8-6.8 ms); with roux's, 0.3 ms, and point reads 16% faster.
 
 ## What the platform provides
 

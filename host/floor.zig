@@ -18,7 +18,8 @@ const Io = std.Io;
 const fourneau = @import("fourneau");
 const Evented = @import("zig_io_evented");
 const database_module = @import("database.zig");
-const types = @import("sqlite").types;
+const sqlite = @import("sqlite");
+const types = sqlite.types;
 
 const Header = fourneau.http1_response.Header;
 
@@ -61,7 +62,7 @@ const statements = [_]database_module.StatementDescription{
 };
 
 var database: *database_module.Database = undefined;
-threadlocal var shard_reader: *database_module.Connection = undefined;
+threadlocal var shard_readers: database_module.ReaderPool = undefined;
 threadlocal var shard_io: Io = undefined;
 
 const text_plain: []const Header = &.{
@@ -154,7 +155,9 @@ fn query_i64(path: []const u8, key: []const u8) RouteError!i64 {
 fn dish(id: i64, scratch: []u8, report: *database_module.Report) RouteError![]const u8 {
     var rows: Cells = .{};
     const params = [_]database_module.Value{.{ .integer = id }};
-    try database_module.run(database, shard_reader, by_id, &params, shard_io, &rows, report);
+    const reader = try shard_readers.lease(shard_io, database.limits, report);
+    defer shard_readers.release(shard_io, reader);
+    try database_module.run(database, reader, by_id, &params, shard_io, &rows, report);
     if (rows.rows == 0) return error.NotFound;
     var w = Io.Writer.fixed(scratch);
     const name = rows.cells[1].text;
@@ -170,7 +173,9 @@ fn dish(id: i64, scratch: []u8, report: *database_module.Report) RouteError![]co
 /// Every dish with its stars, a line each, written as the rows come.
 fn menu(scratch: []u8, report: *database_module.Report) RouteError![]const u8 {
     var lines: MenuLines = .{ .writer = Io.Writer.fixed(scratch) };
-    try database_module.run(database, shard_reader, with_stars, &.{}, shard_io, &lines, report);
+    const reader = try shard_readers.lease(shard_io, database.limits, report);
+    defer shard_readers.release(shard_io, reader);
+    try database_module.run(database, reader, with_stars, &.{}, shard_io, &lines, report);
     if (lines.full) return error.NoSpaceLeft;
     return lines.writer.buffered();
 }
@@ -247,6 +252,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
     const port: u16 = if (args.len > 2) try std.fmt.parseInt(u16, args[2], 10) else 8095;
+    sqlite.vfs.thread_io = init.io;
     var report: database_module.Report = .{};
     const description: database_module.Description = .{
         .path = args[1],
@@ -283,16 +289,17 @@ fn run_shard(port: u16, shards: u32) void {
 
 fn run_shard_or_fail(port: u16, shards: u32) !void {
     const gpa = std.heap.page_allocator;
-    var report: database_module.Report = .{};
-    shard_reader = database_module.open_reader(gpa, database, &report) catch {
-        std.debug.print("roux-db-floor: {s}\n", .{report.message()});
-        return error.Reader;
-    };
     var runtime: Evented = undefined;
     try runtime.init(gpa, .{ .thread_limit = 0, .log2_ring_entries = 12 });
     defer runtime.deinit();
     const io = runtime.io();
     shard_io = io;
+    sqlite.vfs.thread_io = io;
+    var report: database_module.Report = .{};
+    shard_readers = database_module.ReaderPool.open(gpa, database, &report) catch {
+        std.debug.print("roux-db-floor: {s}\n", .{report.message()});
+        return error.Reader;
+    };
     const address = try Io.net.IpAddress.parse("127.0.0.1", port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
     var app: App = .{};

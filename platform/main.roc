@@ -70,15 +70,15 @@ respond_for_host! = |request, boxed_context| {
 }
 
 ## The status for an error `respond!` returns, by its tag: `NotFound` is
-## 404, `BadRequest` 400, the database's writer busy 503, anything else
-## 500.
+## 404, `BadRequest` 400, the database's writer or readers busy 503,
+## anything else 500.
 error_status : Str -> U16
 error_status = |inspected|
 	if is_tag(inspected, "NotFound") {
 		404
 	} else if is_tag(inspected, "BadRequest") {
 		400
-	} else if Str.starts_with(inspected, "DbErr(WriterBusy(") {
+	} else if Str.starts_with(inspected, "DbErr(WriterBusy(") or Str.starts_with(inspected, "DbErr(ReadersBusy(") {
 		503
 	} else {
 		500
@@ -93,3 +93,4 @@ expect error_status("NotFoundish") == 500
 expect error_status("BadRequest(\"no id\")") == 400
 expect error_status("DbErr(WriterBusy(\"64 requests wait\"))") == 503
 expect error_status("DbErr(Failed(\"disk I/O error\"))") == 500
+expect error_status("DbErr(ReadersBusy(\"every reader\"))") == 503

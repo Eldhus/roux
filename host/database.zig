@@ -6,9 +6,12 @@
 //! connection that runs it. After that nothing is prepared, nothing is
 //! opened and no SQL text is read: a request names a statement by number.
 //!
-//! - Readers: one connection per shard, never leaving its thread. With
-//!   SQLite's own VFS a statement runs to its end without yielding the
-//!   fiber, so one is enough (asserted: a reader is never entered twice).
+//! - Readers: a few connections per shard (`ReaderPool`), never leaving its
+//!   thread, each leased for one statement. With roux's VFS a statement
+//!   may yield its fiber on the disk, and another fiber of the shard then
+//!   needs another reader; none free, it waits a bounded time
+//!   (`readers_busy`, a 503). (With SQLite's own VFS one reader was enough:
+//!   the assertion that said so fired as the VFS changed.)
 //! - The writer: one connection for the process, behind `WriterLock`, a
 //!   bounded queue with a bounded wait (`writer_busy`, a 503). SQLite never
 //!   sees two writers, so `busy_timeout` is 0.
@@ -47,12 +50,21 @@ pub const Limits = struct {
     write_wait_ms: u32 = 1_000,
     /// Requests waiting for the writer; one more is `writer_busy` at once.
     writers_waiting: u32 = 64,
+    /// Readers per shard: statements of one shard waiting on the disk at
+    /// once, at most (more wait for one).
+    readers_per_shard: u32 = 4,
+    /// How long a statement waits for a reader before `readers_busy`.
+    read_wait_ms: u32 = 100,
 };
+
+/// Readers a pool holds, at most (a bit each in `ReaderPool.free`).
+pub const readers_per_shard_max = 32;
 /// Statements of schema.sql.
 pub const schema_statements_max = 1024;
 /// SQLite's page cache, per connection.
 pub const writer_cache_kib = 8 * 1024;
-pub const reader_cache_kib = 4 * 1024;
+/// Smaller than the writer's: a shard has several (`Limits.readers_per_shard`).
+pub const reader_cache_kib = 1024;
 /// The write-ahead log is cut back to this after a checkpoint.
 pub const wal_bytes_max = 64 * 1024 * 1024;
 /// Virtual-machine steps between two looks at the clock.
@@ -69,6 +81,7 @@ pub const Failure = enum(u8) {
     write_refused = 6,
     failed = 7,
     misuse = 8,
+    readers_busy = 9,
 };
 
 /// A failure and what it was, for the log and the app.
@@ -214,6 +227,82 @@ pub fn close_connection(gpa: Allocator, connection: *Connection) void {
     gpa.free(connection.prepared);
     gpa.destroy(connection);
 }
+
+/// One shard's readers, leased a statement at a time. Used by its own
+/// thread only; a fiber waiting for a reader yields on a futex.
+pub const ReaderPool = struct {
+    readers: []*Connection,
+    /// Bit i: reader i is free.
+    free: u32,
+    /// Bumped by every release: what a waiting fiber's futex watches.
+    released: std.atomic.Value(u32) = .init(0),
+    /// Fibers waiting for a reader: a release wakes one only if there is
+    /// one (a wake is a system call on Evented, even with no waiter).
+    waiting: u32 = 0,
+
+    /// The pool, at the shard's start: `limits.readers_per_shard` readers.
+    pub fn open(
+        gpa: Allocator,
+        database: *const Database,
+        report: *Report,
+    ) error{Failed}!ReaderPool {
+        const count = database.limits.readers_per_shard;
+        assert(count >= 1 and count <= readers_per_shard_max);
+        const readers = gpa.alloc(*Connection, count) catch return out_of_memory(report);
+        for (readers) |*reader| reader.* = try open_reader(gpa, database, report);
+        const all: u32 = @truncate((@as(u64, 1) << @intCast(count)) - 1);
+        return .{ .readers = readers, .free = all };
+    }
+
+    /// A free reader, or one released within `limits.read_wait_ms`.
+    pub fn lease(
+        pool: *ReaderPool,
+        io: Io,
+        limits: Limits,
+        report: *Report,
+    ) error{Failed}!*Connection {
+        if (pool.free != 0) return pool.take();
+        const wait: Io.Duration = .fromMilliseconds(limits.read_wait_ms);
+        const deadline = Io.Timestamp.now(io, .awake).addDuration(wait);
+        pool.waiting += 1;
+        defer pool.waiting -= 1;
+        // Each pass takes a reader, or waits for a release or the deadline.
+        const passes_max = 1 << 20;
+        for (0..passes_max) |_| {
+            const seen = pool.released.load(.acquire);
+            if (pool.free != 0) return pool.take();
+            if (Io.Timestamp.now(io, .awake).nanoseconds >= deadline.nanoseconds) break;
+            const timeout: Io.Timeout = .{ .deadline = deadline.withClock(.awake) };
+            io.futexWaitTimeout(u32, &pool.released.raw, seen, timeout) catch break;
+        }
+        return report.fail(.readers_busy, "every reader of the shard stayed busy for {d} ms", .{
+            limits.read_wait_ms,
+        });
+    }
+
+    fn take(pool: *ReaderPool) *Connection {
+        assert(pool.free != 0);
+        const index: u5 = @intCast(@ctz(pool.free));
+        pool.free &= ~(@as(u32, 1) << index);
+        const reader = pool.readers[index];
+        assert(!reader.running);
+        return reader;
+    }
+
+    pub fn release(pool: *ReaderPool, io: Io, reader: *Connection) void {
+        assert(!reader.running); // its statement ran to its end, or failed
+        for (pool.readers, 0..) |candidate, index| {
+            if (candidate != reader) continue;
+            const bit = @as(u32, 1) << @intCast(index);
+            assert(pool.free & bit == 0); // leased
+            pool.free |= bit;
+            _ = pool.released.fetchAdd(1, .release);
+            if (pool.waiting > 0) io.futexWake(u32, &pool.released.raw, 1);
+            return;
+        }
+        unreachable; // a reader of this pool
+    }
+};
 
 /// A shard's reader, at the shard's start: every read statement prepared.
 pub fn open_reader(
@@ -864,7 +953,10 @@ pub const WriterLock = struct {
 
     pub fn acquire(lock: *WriterLock, io: Io, limits: Limits, report: *Report) error{Failed}!void {
         if (lock.state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) return;
-        if (lock.waiting.fetchAdd(1, .monotonic) >= limits.writers_waiting) {
+        // Sequentially consistent with `release`: a waiter counted before
+        // it reads the lock, a release frees it before it reads the count,
+        // so no release misses a waiter that then sleeps.
+        if (lock.waiting.fetchAdd(1, .seq_cst) >= limits.writers_waiting) {
             _ = lock.waiting.fetchSub(1, .monotonic);
             return report.fail(.writer_busy, "{d} requests wait for the writer", .{
                 limits.writers_waiting,
@@ -876,7 +968,7 @@ pub const WriterLock = struct {
         // Each pass takes the lock, or waits until a release or the deadline.
         const passes_max = 1 << 20;
         for (0..passes_max) |_| {
-            if (lock.state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) return;
+            if (lock.state.cmpxchgStrong(0, 1, .seq_cst, .seq_cst) == null) return;
             if (Io.Timestamp.now(io, .awake).nanoseconds >= deadline.nanoseconds) break;
             const timeout: Io.Timeout = .{ .deadline = deadline.withClock(.awake) };
             io.futexWaitTimeout(u32, &lock.state.raw, 1, timeout) catch break;
@@ -887,8 +979,10 @@ pub const WriterLock = struct {
     }
 
     pub fn release(lock: *WriterLock, io: Io) void {
-        const was = lock.state.swap(0, .release);
+        const was = lock.state.swap(0, .seq_cst);
         assert(was == 1);
-        io.futexWake(u32, &lock.state.raw, 1);
+        // A wake is a system call: only for a request that waits. One that
+        // starts waiting after this load finds the lock free first.
+        if (lock.waiting.load(.seq_cst) > 0) io.futexWake(u32, &lock.state.raw, 1);
     }
 };

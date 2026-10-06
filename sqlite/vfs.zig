@@ -19,6 +19,7 @@
 //! An interface file: SQLite's VFS is a table of C function pointers.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Io = std.Io;
 const linux = std.os.linux;
@@ -28,6 +29,21 @@ const mutex = @import("mutex.zig");
 /// The `Io` this thread's SQLite calls wait through: set as a thread
 /// starts using SQLite (the host's startup, each shard, a test).
 pub threadlocal var thread_io: ?Io = null;
+
+/// This thread's calls into the VFS, by kind: what SQLite asks of the
+/// disk, per statement (sqlite-floor prints them).
+pub const Calls = struct {
+    open: u64 = 0,
+    read: u64 = 0,
+    write: u64 = 0,
+    sync: u64 = 0,
+    size: u64 = 0,
+    access: u64 = 0,
+    lock: u64 = 0,
+    shm_lock: u64 = 0,
+    shm_map: u64 = 0,
+};
+pub threadlocal var calls: Calls = .{};
 
 pub const name = "roux";
 const path_bytes_max = 512;
@@ -43,6 +59,7 @@ const databases_max = 4;
 const spins_max = 1 << 24;
 
 const Kind = enum(u8) { main, wal, journal };
+const kinds = 3;
 
 /// A file SQLite opened: `base` first, as SQLite reads it.
 const File = extern struct {
@@ -80,6 +97,13 @@ const Shared = struct {
     shm_exclusive: [c.shm_locks]?*File = @splat(null),
     /// Main-file opens of this database; at 0 the slot is free again.
     files_open: u32 = 0,
+    /// Each file's size (database, WAL, journal), by kind. One process
+    /// owns the files, so only its own writes and truncates change them:
+    /// read once at the first open, kept since, and a size asked for costs
+    /// no system call (one a read transaction would make: experiment in
+    /// the DIARY, 2026-10-06). Checked against the file's in tests.
+    sizes: [kinds]u64 = @splat(0),
+    sizes_known: [kinds]bool = @splat(false),
 
     fn take(shared: *Shared) void {
         for (0..spins_max) |_| {
@@ -165,6 +189,7 @@ fn open(
     flags: c_int,
     out_flags: ?*c_int,
 ) callconv(.c) c_int {
+    calls.open += 1;
     base.methods = null; // a failed open has none
     const kind: Kind = if (flags & c.open_main_db != 0)
         .main
@@ -190,15 +215,55 @@ fn open(
         .sync_directory = create and kind != .main,
         .shared = null,
     };
-    if (kind == .main) {
-        file.shared = share(text) catch {
-            wait_io_close(handle);
-            base.methods = null;
-            return c.cantopen;
-        };
-    }
+    file.shared = if (kind == .main) share(text) catch null else lookup(base_path(text, kind));
+    const shared = file.shared orelse {
+        wait_io_close(handle);
+        base.methods = null;
+        return c.cantopen; // the database opens first; its WAL and journal after
+    };
+    know_size(shared, file) catch {
+        _ = close(base);
+        return c.cantopen;
+    };
     if (out_flags) |out| out.* = flags;
     return c.ok;
+}
+
+/// The database's path for its WAL's or journal's.
+fn base_path(path: []const u8, kind: Kind) []const u8 {
+    const suffix = switch (kind) {
+        .main => return path,
+        .wal => "-wal",
+        .journal => "-journal",
+    };
+    assert(std.mem.endsWith(u8, path, suffix)); // SQLite's names
+    return path[0 .. path.len - suffix.len];
+}
+
+/// The size of a file the process has not opened since it last changed
+/// unseen (never, or deleted): one stat.
+fn know_size(shared: *Shared, file: *const File) !void {
+    const kind = @backingInt(file.kind);
+    shared.take();
+    const known = shared.sizes_known[kind];
+    shared.give();
+    if (known) return;
+    const length = try io_file(file).length(wait_io()); // outside the guard: may yield
+    shared.take();
+    defer shared.give();
+    shared.sizes[kind] = length;
+    shared.sizes_known[kind] = true;
+}
+
+fn lookup(path: []const u8) ?*Shared {
+    take_databases();
+    defer give_databases();
+    for (&databases) |*shared| {
+        if (shared.path_length == path.len and std.mem.eql(u8, shared.path[0..path.len], path)) {
+            return shared;
+        }
+    }
+    return null;
 }
 
 fn open_handle(path: []const u8, create: bool, read_only: bool) !std.posix.fd_t {
@@ -292,8 +357,24 @@ fn delete(_: *c.Vfs, path: [*:0]const u8, sync_directory: c_int) callconv(.c) c_
         error.FileNotFound => c.ioerr_delete_noent,
         else => c.ioerr_delete,
     };
+    forget_size(text);
     if (sync_directory != 0) sync_parent(text) catch return c.ioerr_delete;
     return c.ok;
+}
+
+/// A WAL or journal deleted: its size is unknown until it is opened again.
+fn forget_size(path: []const u8) void {
+    const kind: Kind = if (std.mem.endsWith(u8, path, "-wal"))
+        .wal
+    else if (std.mem.endsWith(u8, path, "-journal"))
+        .journal
+    else
+        return; // SQLite deletes no database file
+    const shared = lookup(base_path(path, kind)) orelse return;
+    shared.take();
+    defer shared.give();
+    shared.sizes[@backingInt(kind)] = 0;
+    shared.sizes_known[@backingInt(kind)] = false;
 }
 
 fn sync_parent(path: []const u8) !void {
@@ -306,6 +387,7 @@ fn sync_parent(path: []const u8) !void {
 
 fn access(_: *c.Vfs, path: [*:0]const u8, flags: c_int, out: *c_int) callconv(.c) c_int {
     _ = flags; // exists, or read-write: one process, files it made
+    calls.access += 1;
     const io = wait_io();
     const stat = Io.Dir.cwd().statFile(io, std.mem.span(path), .{}) catch |err| switch (err) {
         error.FileNotFound => {
@@ -386,12 +468,13 @@ fn close(base: *c.File) callconv(.c) c_int {
     if (file.kind == .main) _ = unlock(base, c.lock_none);
     assert(!file.shm_mapped); // SQLite unmaps before it closes
     io_file(file).close(wait_io());
-    if (file.shared) |shared| unshare(shared);
+    if (file.kind == .main) unshare(file.shared.?);
     base.methods = null;
     return c.ok;
 }
 
 fn read(base: *c.File, buffer: ?*anyopaque, amount: c_int, offset: i64) callconv(.c) c_int {
+    calls.read += 1;
     const file = file_of(base);
     const bytes: [*]u8 = @ptrCast(buffer.?);
     const wanted = bytes[0..@intCast(amount)];
@@ -404,20 +487,33 @@ fn read(base: *c.File, buffer: ?*anyopaque, amount: c_int, offset: i64) callconv
 }
 
 fn write(base: *c.File, buffer: ?*const anyopaque, amount: c_int, offset: i64) callconv(.c) c_int {
+    calls.write += 1;
     const file = file_of(base);
     const bytes: [*]const u8 = @ptrCast(buffer.?);
     io_file(file).writePositionalAll(wait_io(), bytes[0..@intCast(amount)], @intCast(offset)) catch
         return c.ioerr_write;
+    const shared = file.shared.?;
+    shared.take();
+    defer shared.give();
+    const kind = @backingInt(file.kind);
+    assert(shared.sizes_known[kind]);
+    shared.sizes[kind] = @max(shared.sizes[kind], @as(u64, @intCast(offset + amount)));
     return c.ok;
 }
 
 fn truncate(base: *c.File, size: i64) callconv(.c) c_int {
-    io_file(file_of(base)).setLength(wait_io(), @intCast(size)) catch return c.ioerr_truncate;
+    const file = file_of(base);
+    io_file(file).setLength(wait_io(), @intCast(size)) catch return c.ioerr_truncate;
+    const shared = file.shared.?;
+    shared.take();
+    defer shared.give();
+    shared.sizes[@backingInt(file.kind)] = @intCast(size);
     return c.ok;
 }
 
 fn sync(base: *c.File, flags: c_int) callconv(.c) c_int {
     _ = flags; // a full sync always
+    calls.sync += 1;
     const file = file_of(base);
     io_file(file).sync(wait_io()) catch return c.ioerr_fsync;
     if (file.sync_directory) {
@@ -440,8 +536,20 @@ fn path_of(file: *const File, buffer: *[path_bytes_max]u8) ![]const u8 {
 }
 
 fn file_size(base: *c.File, size: *i64) callconv(.c) c_int {
-    const length = io_file(file_of(base)).length(wait_io()) catch return c.ioerr_fstat;
-    size.* = @intCast(length);
+    calls.size += 1;
+    const file = file_of(base);
+    const shared = file.shared.?;
+    const kind = @backingInt(file.kind);
+    shared.take();
+    assert(shared.sizes_known[kind]); // since this file opened
+    const known = shared.sizes[kind];
+    shared.give();
+    if (builtin.is_test) {
+        // The cache is the file's: what one process owning it promises.
+        const length = io_file(file).length(wait_io()) catch return c.ioerr_fstat;
+        assert(length == known);
+    }
+    size.* = @intCast(known);
     return c.ok;
 }
 
@@ -463,6 +571,7 @@ fn device_characteristics(_: *c.File) callconv(.c) c_int {
 /// rules without fcntl): SHARED while no one holds PENDING or EXCLUSIVE;
 /// one RESERVED; EXCLUSIVE through PENDING, once no other SHARED is left.
 fn lock(base: *c.File, level: c_int) callconv(.c) c_int {
+    calls.lock += 1;
     const file = file_of(base);
     const shared = file.shared.?;
     assert(level == c.lock_shared or level == c.lock_reserved or level == c.lock_exclusive);
@@ -531,6 +640,7 @@ fn shm_map(
     extend: c_int,
     out: *?*volatile anyopaque,
 ) callconv(.c) c_int {
+    calls.shm_map += 1;
     const file = file_of(base);
     const shared = file.shared.?;
     assert(region_bytes == shm_region_bytes);
@@ -556,6 +666,7 @@ fn shm_map(
 /// SQLite's eight WAL locks among this process's connections: a slot is
 /// held shared by many or exclusive by one; a lock never waits (busy).
 fn shm_lock(base: *c.File, offset: c_int, count: c_int, flags: c_int) callconv(.c) c_int {
+    calls.shm_lock += 1;
     const file = file_of(base);
     const shared = file.shared.?;
     assert(offset >= 0 and count >= 1 and offset + count <= c.shm_locks);

@@ -566,3 +566,92 @@ still syncs, and the reads beside it wait 16-17 ms. Neither is the
 answer: the wait must yield the fiber, not the thread. That is step 6,
 a VFS over the shard's `std.Io` (io_uring), measured against these
 numbers. `synchronous` stays FULL.
+
+## 2026-10-06: SQLite, step 6: roux's VFS, SQLite's files through `std.Io`
+
+`sqlite/vfs.zig`, registered as SQLite's default by `sqlite.initialize`:
+SQLite's files through the calling thread's `std.Io` (`vfs.thread_io`:
+the host's startup thread sets the Threaded one, each shard its Evented
+one), so on a shard a read, a write, a sync that waits on the disk
+yields its fiber. One process owns the database: the five-level file
+locks and the WAL index's eight locks are in memory, the index in heap
+regions (64 of 32 KiB, zero pages until used, no `-shm` file); the
+first open takes an open file description lock on the whole file, which
+conflicts with every lock SQLite's own VFS takes, so the `sqlite3` shell
+gets "database is locked" while a roux app runs (checked). Randomness
+(`getrandom`) and the clock (the vDSO) never yield.
+
+Yielding inside SQLite is safe only when the thread holds no SQLite
+mutex, or another fiber on the thread could block it on itself:
+`sqlite/mutex.zig` wraps SQLite's own mutexes (initialize, shut down,
+read the defaults, install the wrapper, initialize again: sqlite3_config
+is refused while initialized) to count them per thread, and every VFS
+call that may yield asserts the count is zero. The assertion was tested
+by mutation: randomness put on the yielding path fired it at once —
+SQLite asks for randomness holding its PRNG mutex, which is why
+randomness is a system call. `SQLITE_STMTJRNL_SPILL=-1`: no temporary
+files.
+
+What the first measurement found, in order:
+
+1. The stall test aborted at once: "a reader is entered by one fiber at a
+   time", the assertion written for SQLite's own VFS, under which one
+   reader per shard was enough. A read can now yield mid-statement (a
+   page the writer just committed comes from the WAL file), and another
+   fiber of the shard needs a reader. So: `ReaderPool`, four readers a
+   shard (1 MiB of cache each), leased a statement at a time; none free,
+   a bounded wait (`ReadersBusy`, 503).
+2. Point reads were then 22% slower than on SQLite's own VFS (139k
+   against 109k req/s; kernel time +2.9 us a read). Counting VFS calls
+   per statement (`vfs.calls`, printed by sqlite-floor) showed one
+   `xFileSize` per read transaction: on Evented a ring round trip and a
+   fiber switch. One process owns the files, so only its own writes and
+   truncates change their sizes: the VFS keeps them (read once at the
+   first open), and a size costs nothing; in tests every size is checked
+   against the file's (a mutation that forgot a write's growth was
+   caught). sqlite-floor's point query: 1,350 ns (SQLite's VFS), 785 ns
+   (ours, sizes from fstat), 565 ns (sizes kept). But the server's
+   numbers did not move.
+3. The cause was the pool: every release woke a waiter with
+   `futexWake`, which Evented submits to the kernel at once, waiter or
+   not. Now a release wakes only when a fiber waits (and the writer's
+   lock likewise; its count and state are sequentially consistent so no
+   release misses a waiter about to sleep).
+
+Measured, examples/sqlite on SQLite's own VFS (a build from before this
+step) against roux's, the same file reseeded to 50 dishes and 500
+reviews, CPUs 0-1, three interleaved rounds (bench_ab.sh, stall.sh):
+
+| | SQLite's VFS | roux's VFS |
+|---|---:|---:|
+| point read, req/s (median) | 125,130 | 145,284 (+16%) |
+| instructions, user | 19,021 | 18,681 |
+| user / kernel ns | 5,898 / 9,947 | 5,181 / 8,650 |
+| 50-row join, req/s | 5,724 | 5,509 (-4%; more kernel time, 20 against 14 us) |
+| writes, req/s (16 conns) | 293-296 | 297 |
+| writes, p99 | 174-343 ms | 69-128 ms |
+| reads beside 100 writes/s, p99 (one shard) | 3.8-6.8 ms | 0.26-0.32 ms |
+| the same, max | 13-31 ms | ~3 ms |
+
+The stall is gone: a shard keeps serving while its commit waits on the
+disk. A write costs ~10k instructions more (55k against 45k): the ring,
+the pool, a full fsync where SQLite's VFS did fdatasync (Evented's sync
+is fsync; a data-only sync would be a change to fourneau's port, TODO).
+
+Mistakes on the way, and their rules:
+
+- Three servers of mine kept running after their runs (`$!` taken in a
+  subshell named the subshell, not the server; and a whole command chain
+  sent to the background). One held the benchmark database open, idle,
+  through experiment 21 and step 5: the same for both sides of each
+  comparison, so the comparisons stand. Rule: start a server with `exec`
+  in its subshell, kill it by its own PID, and list what is left
+  listening after every run.
+- Write runs grew the benchmark's reviews from 500 to ~30,000, so a
+  later join measured 45 M instructions where the first measured 1.4 M.
+  Rule: reseed the database before a comparison that reads it.
+- `zig fmt host/*.zig` reformatted the generated glue again (restored at
+  once). Format files by name.
+- Deleting cached test binaries left Zig's cache pointing at nothing
+  ("checking cache failed"); the local `.zig-cache` was removed and
+  rebuilt (10 s; SQLite's object came from the global cache).
