@@ -11,9 +11,10 @@ TESTING.md) and against Go and axum in fourneau-dragrace.
 
 | command | what | budget |
 |---|---|---|
-| `zig build test` | tidy over the host and `sqlite/`, with fourneau's rules; SQLite's build checked (its options, with SQLite's own assertions and C undefined-behaviour traps on) | a second (cached; the first build compiles SQLite, ~15 s) |
+| `zig build test` | tidy over `host/`, `sqlite/` and `tools/roux-db/`, with fourneau's rules; SQLite's build checked (its options); the host's database alone (`host/database_test.zig`: opening, the schema check, statements misdescribed, typed cells, bounds, the writer and its lock) and its request handles; roux-db (a golden directory, nullability against real rows, every refusal); all with SQLite's own assertions and C undefined-behaviour traps on | seconds (cached; the first build compiles SQLite, ~15 s) |
 | `zig build platform` | the host as `libhost.a` (`-Dhost-heap=checked` for the checked heap) | seconds |
 | `roc test` in an example | the app's `expect`s | seconds |
+| `zig build sqlite-floor`, `zig build db-floor` | SQLite alone, and the database workloads without Roc: the floors a measurement compares with | seconds |
 | `zig build spec` (M4, not yet) | every example over a real listener, requests against expected responses | a minute |
 
 ## Layers
@@ -22,7 +23,13 @@ TESTING.md) and against Go and axum in fourneau-dragrace.
    inputs, not only the happy path.
 2. **Each feature is an example** in `examples/` with a case in the spec:
    the requests and the responses expected, run over a real listener.
-3. **Apps** carry their own `roc test` expects.
+   Until the spec exists (M4), each example's header comment lists its
+   routes and refusals, and DIARY.md records the curl run that checked
+   them (examples/sqlite: 2026-10-06).
+3. **The database without Roc**: `host/database.zig` takes rows through
+   a sink, so its tests are Zig alone, with a temporary directory and the
+   testing `Io`; the waits are a test's (`Limits`), milliseconds.
+4. **Apps** carry their own `roc test` expects.
 
 ## Memory safety
 

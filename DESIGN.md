@@ -10,7 +10,8 @@ is written is TigerStyle (the eldhus tigerstyle skill).
 
 **roux**: a Roc platform for hypermedia applications on fourneau. An app
 is Roc: a request handler, typed templates (**rocstache**: `*.rocstache`
-files compiled to Roc), typed SQL and migrations (`roux-db`), and SQLite.
+files compiled to Roc), typed SQL (`roux-db`; migrations not yet), and
+SQLite.
 `roc build` links the app, the platform host, fourneau and SQLite into one
 static executable.
 
@@ -35,11 +36,12 @@ query's columns).
 Nothing is fetched at build time. The binary holds our code, fourneau,
 the Zig standard library, the Roc compiler's output for the app, and:
 
-- **SQLite** (`vendor/sqlite/`, planned in M5; the amalgamation, public
-  domain), vendored
-  and pinned, with a chore to update it. Writing a database is not this
-  project. The host and `roux-db` compile the same copy, so a query is
-  typed by the SQLite that runs it.
+- **SQLite** (`vendor/sqlite/`: the amalgamation, public domain, with one
+  patch of ours, `sqlite3_column_nullable`), vendored
+  and pinned, with a chore to update it; its compile-time options are
+  `sqlite/options.zig`, each checked by a test. Writing a database is not
+  this project. The host and `roux-db` compile the same copy, so a query
+  is typed by the SQLite that runs it.
 - **musl**: `crt1.o` and `libc.a` for the static executable (TODO: built
   from Zig's own musl).
 
@@ -74,8 +76,8 @@ init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64), ..]
 respond! : Server.Request, Context => Try(Server.Response, _err)
 ```
 
-- `init!` runs once, before the listener opens (configuration today;
-  migrations and databases with M5). Its `Context` is immutable and
+- `init!` runs once, before the listener opens: configuration, and the
+  database (`Sqlite.open!`, kept in the context). Its `Context` is immutable and
   shared by every handler on every shard.
 - `respond!` handles one request on its connection's fiber (its effects
   yield the fiber when they wait) and returns a response. An error it
@@ -99,17 +101,62 @@ respond! : Server.Request, Context => Try(Server.Response, _err)
   body read after the start is refused, never left to fourneau's
   assertions; whatever `respond!` returns after a stream started is
   ignored, and a stream not ended closes cut short.
-- Planned (M5, M6): `shutdown!`; responses that are a file served by the
-  host; a body streamed to a file and multipart fields one at a time;
-  state in SQLite (no mutable process state in Roc).
+- **State is in SQLite** (no mutable process state in Roc): The
+  database, below.
+- Planned (M6): `shutdown!`; responses that are a file served by the
+  host; a body streamed to a file and multipart fields one at a time.
+
+## The database
+
+One SQLite database per app, held by the host; the app reaches it only
+through typed functions roux-db generates. Decided 2026-10-06 (the owner
+started it; the choices in TODO.md, WIP 4).
+
+- **SQL is compiled, never read at run time.** `roux-db gen db` turns
+  `db/schema.sql` and `db/Module.sql` into `db/Module.roc` and
+  `db/Database.roc` (every statement, numbered). `Sqlite.open!` prepares
+  every statement on every connection at startup; a call names one by
+  number. No statement cache, no SQL strings in Roc, no injection.
+- **Types come from SQLite, never from reading SQL.** Every table is
+  STRICT; a result column is typed by its origin column's declaration
+  and by `sqlite3_column_nullable` (our patch: outer joins, scalar
+  subqueries, compound selects); what SQLite cannot say (a parameter's
+  type, an expression's) is an annotation, checked where SQLite can. What
+  a statement does is SQLite's authorizer's verdict: `schema.sql` only
+  creates; a query only reads and writes rows (`sqlite/authorizer.zig`,
+  shared by roux-db and the host).
+- **Readers and one writer.** A shard has its own reader connection; with
+  SQLite's own VFS a statement runs without yielding, so one is enough
+  (asserted). Writes go to one connection for the process, one request at
+  a time, behind a futex lock with a bounded queue and wait (503 past
+  it): SQLite never sees two writers. Reading and writing are separate
+  types (`Sqlite.Read`, `Sqlite.Write`), decided by
+  `sqlite3_stmt_readonly`, so a handler cannot write with a reader.
+- **A transaction is a request's.** `Sqlite.write!` refuses GET and HEAD;
+  a transaction still open when `respond!` returns is rolled back, and a
+  success answer becomes 500; reading the body or starting a stream
+  while holding the writer is refused (it would wait on a client with
+  every writer waiting too).
+- **Nothing leaks between requests**, by construction and asserted: no
+  PRAGMA, ATTACH or temp table can be run by an app; between transactions
+  the writer holds no transaction and no statement mid-step.
+- **A limit on everything**: rows per query (`:many(N)`, more is an
+  error), result bytes, statement time (progress handler), every
+  `sqlite3_limit`; every PRAGMA and option set and read back.
+- **No migrations yet**: a new database gets `schema.sql`; an existing
+  one must hold exactly the schema `schema.sql` makes, or `open!` fails.
+- Measured (DIARY, 2026-10-06): a prepared point query costs SQLite
+  ~4,800 instructions; a connection per request would cost 24 to 167
+  times that; a commit's fdatasync on the laptop is ~3 ms, which holds
+  its shard with SQLite's own VFS (step 5 of M5 measures the stall).
 
 ## What the platform provides
 
 The modules apps use, and only those: `Server`, `Stdout`, `Stderr`,
 `Rocstache` (template escaping and formatters), `File` (`read_utf8!`:
 a whole file, bounded, read through the shard's `Io` so the fiber
-yields), `Sse` (server-sent events) and `Url` (`query_value`, form
-decoding) today; planned, `Sqlite` (M5), `MultipartFormData`, `Env`,
+yields), `Sse` (server-sent events), `Url` (`query_value`, form
+decoding) and `Sqlite` (the database) today; planned, `MultipartFormData`, `Env`,
 `Path`, `UnixTime` and `Sleep` (M6).
 
 The port is the app's (`Server.Config.port`) unless the deployment sets
@@ -131,9 +178,11 @@ when an app needs it, not before.
   roc; every generated line names its template line. The platform's
   `Rocstache` module escapes and holds the formatters, and the compiler
   reads their signatures from it, so the two cannot drift.
-- Planned (M5), migrated from the old fork: `roux` (`tools/gen/`: `new`,
-  `dev`, `build`, `check`, `test`) and `roux-db` (`tools/db/`: schema,
-  migrations and typed queries checked against the vendored SQLite).
+- `roux-db` (`tools/roux-db/`, `zig build tools`): `roux-db gen DIR`, an
+  app's typed queries (The database, above), written from scratch
+  (2026-10-06), not the old fork's. Migrations: not yet.
+- Not planned until asked: the old fork's `roux` command (`new`, `dev`,
+  `build`, `check`, `test`).
 
 ## Testing, in one paragraph
 

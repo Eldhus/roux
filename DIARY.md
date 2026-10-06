@@ -431,3 +431,113 @@ arm was added, then caught.
 Cost (sqlite-floor, three interleaved rounds against the pristine
 build): stepping a prepared point query unchanged, 4,774 instructions;
 preparing one 23,465 against 22,832 (+2.8%), paid at startup only.
+
+## 2026-10-06: SQLite, step 4: the host and `Sqlite`, examples/sqlite
+
+`host/database.zig` keeps the app's one database without knowing Roc
+(rows go to a sink passed at compile time), so its tests are Zig alone
+(`host/database_test.zig`, seven, in `zig build test`). `Sqlite.open!`
+in `init!` opens it: the writer, every option, limit and PRAGMA set and
+read back, the schema created on a new file or compared row by row with
+what `schema.sql` makes (no migrations yet: a schema changed by one
+space does not open), every statement of `Database.roc` prepared on each
+connection that runs it and checked against what SQLite says of it,
+under the same authorizer policy roux-db used. Each shard opens its own
+reader as it starts, and a buffer of rows sized by the largest
+`rows_max`: a Roc list of refcounted items records its length when it
+is allocated, so rows are collected first, then copied into a list of
+exactly their number, and a row cut short by an error is filled with
+NULLs before it is released.
+
+`platform/Sqlite.roc`: `open!`, `read`, `write!`, `commit!`, `reading`
+(reads inside the transaction), and for generated code `run_read!`,
+`run_write!`, `Param`, `Cell` (a cell of another kind than its column's
+is a crash: the host checked every cell). `Nullable(a)` is a structural
+`[Null, NotNull(a)]`. The writer busy past its wait is `DbErr(WriterBusy)`,
+answered 503 by `error_status`.
+
+Decided while building it:
+
+- The database is opened by an effect in `init!`, not a `Server.Config`
+  field: a new field breaks every app's config record, the dragrace
+  site's among them.
+- A transaction still open when `respond!` returns is rolled back. A
+  success answer then becomes 500 (what it did was undone); an error
+  answer stays, so a constraint the handler turned into a 400 is a 400.
+  First built as "always 500", which made every constraint a 500.
+- Reading the body or starting a stream while holding the writer is
+  refused (`BodyDuringWrite`, a new `Server.BodyErr` tag; `StreamRefused`).
+- Request handles were the request's address, which an app can forge
+  (`Server.Request` is a plain record); now a slot and a generation in a
+  per-shard table (`host/requests.zig`), checked by every effect, the
+  body and stream effects included. Tested: handles an app could make,
+  a pointer among them, find nothing.
+
+examples/sqlite (dishes and reviews), checked with curl on a fresh
+database: a dish added (201), found (200), missing (404), a non-number
+id (400); a taken name, a price of 0, a review of a dish that is not
+there, five stars out of range: each a 400 naming the constraint
+SQLite gave, and rolled back; a rename onto a taken name refused, the
+old name kept; `Sqlite.write!` on a GET 500 (`WriteRefused`); a write
+never committed rolled back and 500, the dish absent after; the body
+read while holding the writer `BodyDuringWrite`; the outer join's
+average NULL for a dish with no reviews. The other examples still pass
+their routes (hello's echo, sse's stream and `BodyAfterStream`).
+
+Under the checked heap (`-Dhost-heap=checked`) with oha (32
+connections, 5 s each, server on CPUs 0-1): point reads (217,416
+responses), the 50-row join (24,722), concurrent writes (81,049): no
+fault, every answer 2xx, the per-shard leak assertion held. The review
+count afterwards was 16 more than oha's 201s: requests in flight when
+oha's clock stopped. An exact count needs a fixed number of requests.
+
+A Roc compiler crash on the way: `roc check` segfaulted on the example.
+The cause was my code: an error mapper (`? constraint_as_bad_request`)
+that took `[DbErr(..)]` where `add!`'s error also has `NotFound`; the
+compiler crashes instead of reporting the mismatch. Minimized to twelve
+lines in ~/devel/rocbugs/try-mapper-mismatch, not filed (the owner's
+call); with it, two more gotchas for the roc skill: `{ id }` is a block,
+not a record, and a record pattern names every field or ends in `..`.
+
+## 2026-10-06: experiment 21, what a database request costs across Roc
+
+`roux-db-floor` (host/floor.zig, `zig build db-floor`): examples/sqlite's
+three workloads on fourneau and the host's own database.zig, the answers
+formatted in Zig, no Roc; the same database file (its schema embedded
+from the example's, byte for byte). Against examples/sqlite on the same
+file (50 dishes, 500 reviews, btrfs on the NVMe). Server on CPUs 0-1 (2
+shards), oha on 2-7, 2 s warmup, 10 s measured, three rounds
+interleaved, `perf stat -e instructions:u -p` over the measured run,
+user and kernel time from /proc/stat on CPUs 0-1 (the scratchpad's
+bench.sh; the method is the benchmarking skill's). The laptop quiet
+(load 1.1, no other load; a dragrace session's local race had just
+ended).
+
+| per request, median of 3 | roux | floor | roux - floor |
+|---|---:|---:|---:|
+| point read `GET /dishes/7`, 64 conns: req/s | 131,485 | 163,824 | -20% |
+| instructions (user) | 19,023 | 11,399 | +7,624 |
+| user / kernel ns | 5,725 / 9,474 | 3,194 / 9,145 | |
+| 50-row join `GET /`, 64 conns: req/s | 5,761 | 6,301 | -9% |
+| instructions (user) | 1,386,801 | 1,262,352 | +124,449 (2.5k a row) |
+| write `POST /reviews`, 16 conns: req/s | 298 | 299 | |
+| instructions (user) | 44,871 | 30,830 | +14,041 |
+
+Instructions were identical round to round (within 0.5%); req/s varied
+by 10%. The point read is 63% kernel in both: HTTP on loopback. Where
+roux's extra 7,600 go (`perf record -e instructions:u`, flat): the
+app's own routing and strings (`Str.concat` 7.5%, `split_on` 1.6%,
+`I64.from_str` 1.2%), Roc's heap (SmpAllocator alloc and free 6.8%),
+copying into Roc (`RocStr.fromSlice` 3.6%, memcpy 3.9%), and 2.3% for a
+0xaa fill: the host's 64-slot parameter array is `undefined`, which a
+safe build fills on every call (TODO). The top symbol, 7.7%, is
+fourneau's head parser (`findScalarPos` under `http1_head.parse`),
+shared with the floor.
+
+Writes are the disk's: ~300 a second for both in the first rounds (the
+fdatasync floor of 3.1 ms allows ~330), ~150 in the third, as the WAL
+grew on btrfs; p99 0.1 to 0.7 s; the floor's second round had 11
+writers past their 1 s wait (503). Each commit cost 350-500 us of
+kernel CPU on the server's cores: btrfs's fsync is CPU too, not only
+waiting. With SQLite's own VFS that wait holds the shard's thread: step
+5 measures what it does to the reads beside it.

@@ -69,6 +69,37 @@ pub fn build(b: *std.Build) void {
     platform_step(b, fourneau);
     tools_step(b, target);
     floor_step(b, target);
+    db_floor_step(b, fourneau);
+}
+
+/// `zig build db-floor`: examples/sqlite's workloads on fourneau and the
+/// host's database.zig, no Roc (host/floor.zig): what a database request
+/// costs without the Roc boundary (experiment 21). Built as the host is:
+/// musl, safe.
+fn db_floor_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
+    const target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl });
+    const module = b.createModule(.{
+        .root_source_file = b.path("host/floor.zig"),
+        .target = target,
+        .optimize = .safe,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "fourneau", .module = fourneau_package.module("fourneau") },
+            .{ .name = "zig_io_evented", .module = fourneau_package.module("zig_io_evented") },
+            .{ .name = "sqlite", .module = sqlite_module(b, .{
+                .target = target,
+                .optimize = .safe,
+                .pic = null,
+            }) },
+        },
+    });
+    // The example's own schema, byte for byte: both open one database file.
+    module.addAnonymousImport("floor_schema.sql", .{
+        .root_source_file = b.path("examples/sqlite/db/schema.sql"),
+    });
+    const floor = b.addExecutable(.{ .name = "roux-db-floor", .root_module = module });
+    const install = b.addInstallArtifact(floor, .{});
+    b.step("db-floor", "Build roux-db-floor, the database workloads without Roc").dependOn(&install.step);
 }
 
 /// `zig build sqlite-floor`: SQLite alone, timed (sqlite/floor.zig), in

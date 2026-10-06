@@ -51,13 +51,14 @@
    database file once our VFS lands; an exact schema match or no start;
    `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
    owner may overturn any.
-   - Where it stands (2026-10-06): steps 1 to 3 done. SQLite 3.53.4
-     vendored with one patch of ours (`sqlite3_column_nullable`), built
-     with `sqlite/options.zig`, floors measured (DIARY); `tools/roux-db`
-     generates typed modules from `db/*.sql`, typed by SQLite alone,
-     nullability right across joins, subqueries and compounds (a matrix
-     checked against real rows). Next: step 4, the host and
-     `platform/Sqlite.roc`, `examples/sqlite`.
+   - Where it stands (2026-10-06): steps 1 to 4 done. SQLite 3.53.4
+     vendored with one patch of ours, `tools/roux-db` generating typed
+     modules, `host/database.zig` (tested alone) and `platform/Sqlite.roc`,
+     `examples/sqlite` checked by curl and under the checked heap;
+     experiment 21 measured (DIARY): a point read costs roux +7,600
+     instructions over the floor (19,023 against 11,399), writes are the
+     disk's (~300/s). Next: step 5, the stall a commit puts on its
+     shard's reads.
 
 ## Plan
 
@@ -191,6 +192,16 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   Roc list, sized from `Content-Length` when there is one. (2026-10-05)
 - [ ] ThreadSanitizer for the host: TSan's runtime does not support musl,
   which the host links. A glibc build of the host for testing only?
+  (2026-10-06)
+- [ ] The host's 64-slot parameter array for a statement is `undefined`,
+  which a safe build fills with 0xaa on every call: 2.3% of a point
+  read's instructions (experiment 21). Size it to the call, or fill
+  only what is used. (2026-10-06)
+- [ ] The writer's lock is not FIFO: a waiter woken may lose to one
+  arriving. Measure the spread of write waits under contention before
+  doing anything (host/database.zig, WriterLock). (2026-10-06)
+- [ ] File the Roc segfault (`x ? mapper` with an argument type that does
+  not fit): ~/devel/rocbugs/try-mapper-mismatch; the owner's call.
   (2026-10-06)
 - [ ] TigerStyle for `tools/rocstache-gen` (owner: TigerStyle,
   data-oriented). Measured 2026-10-06 with tidy pointed at it: 212
