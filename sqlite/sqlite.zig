@@ -9,6 +9,8 @@ const assert = std.debug.assert;
 
 pub const c = @import("c.zig");
 pub const options = @import("options.zig");
+pub const authorizer = @import("authorizer.zig");
+pub const types = @import("types.zig");
 
 /// Statements one `exec` call runs, at most: setup scripts are short.
 pub const exec_statements_max = 256;

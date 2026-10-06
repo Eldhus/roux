@@ -12,6 +12,9 @@ pub const ok = 0;
 pub const row = 100;
 pub const done = 101;
 
+// What an authorizer returns to refuse an action: the prepare fails.
+pub const deny = 1;
+
 // Flags for `open_v2`.
 pub const open_readwrite = 0x00000002;
 pub const open_create = 0x00000004;
@@ -55,3 +58,33 @@ pub extern fn sqlite3_column_type(stmt: *Stmt, column: c_int) c_int;
 pub extern fn sqlite3_column_int64(stmt: *Stmt, column: c_int) i64;
 pub extern fn sqlite3_column_text(stmt: *Stmt, column: c_int) ?[*]const u8;
 pub extern fn sqlite3_column_bytes(stmt: *Stmt, column: c_int) c_int;
+
+pub extern fn sqlite3_set_authorizer(
+    db: *Db,
+    callback: ?*const fn (
+        user: ?*anyopaque,
+        action: c_int,
+        first: ?[*:0]const u8,
+        second: ?[*:0]const u8,
+        database: ?[*:0]const u8,
+        trigger: ?[*:0]const u8,
+    ) callconv(.c) c_int,
+    user: ?*anyopaque,
+) c_int;
+
+pub extern fn sqlite3_stmt_readonly(stmt: *Stmt) c_int;
+pub extern fn sqlite3_bind_parameter_count(stmt: *Stmt) c_int;
+pub extern fn sqlite3_bind_parameter_name(stmt: *Stmt, index: c_int) ?[*:0]const u8;
+/// `destructor` null is SQLITE_STATIC: the bytes outlive the statement's use.
+pub extern fn sqlite3_bind_text64(
+    stmt: *Stmt,
+    index: c_int,
+    text: [*]const u8,
+    bytes: u64,
+    destructor: ?*const fn (?*anyopaque) callconv(.c) void,
+    encoding: u8,
+) c_int;
+pub const utf8: u8 = 1;
+pub extern fn sqlite3_column_name(stmt: *Stmt, column: c_int) ?[*:0]const u8;
+pub extern fn sqlite3_column_table_name(stmt: *Stmt, column: c_int) ?[*:0]const u8;
+pub extern fn sqlite3_column_origin_name(stmt: *Stmt, column: c_int) ?[*:0]const u8;

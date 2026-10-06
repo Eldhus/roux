@@ -23,8 +23,16 @@ const trees = [_]tidy.Tree{
         .roots = &.{ "tests.zig", "sqlite.zig", "floor.zig" },
         .untested = &.{ "tests.zig", "floor.zig" },
         .generated = &.{},
-        // c.zig: SQLite's C API, whose callbacks are C function pointers.
-        .interfaces = &.{"c.zig"},
+        // c.zig: SQLite's C API, whose callbacks are C function pointers;
+        // authorizer.zig: one such callback.
+        .interfaces = &.{ "c.zig", "authorizer.zig" },
+    },
+    .{
+        .dir = "tools/roux-db",
+        .roots = &.{ "tests.zig", "main.zig" },
+        .untested = &.{"tests.zig"},
+        .generated = &.{},
+        .interfaces = &.{},
     },
 };
 
