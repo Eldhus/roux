@@ -109,5 +109,13 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] ThreadSanitizer for the host: TSan's runtime does not support musl,
   which the host links. A glibc build of the host for testing only?
   (2026-10-06)
+- [ ] TigerStyle for `tools/rocstache-gen` (owner: TigerStyle,
+  data-oriented). Measured 2026-10-06 with tidy pointed at it: 212
+  findings, 202 lines over 100 columns, 6 hidden indirections (the
+  partial loader is `*anyopaque` plus a function pointer: make it a
+  comptime parameter), 4 functions over 70 lines; and about 3 assertions
+  in ~3,700 lines, `usize` throughout, recursion in the parser. Bring it
+  to zero, then add the tree to `host/tests.zig` so tidy keeps it there.
+  (2026-10-06)
 
 ## Tickler
