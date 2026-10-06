@@ -9,6 +9,7 @@ pub const Stmt = opaque {};
 // Result codes (sqlite3.h, "Result Codes"): the primary code is the low
 // byte of an extended one.
 pub const ok = 0;
+pub const err_generic = 1;
 pub const busy = 5;
 pub const row = 100;
 pub const done = 101;
@@ -193,10 +194,8 @@ pub const iocap_powersafe_overwrite = 0x00001000;
 
 pub const config_heap = 8;
 pub const config_mutex = 10;
-pub const config_getmutex = 11;
 
 pub extern fn sqlite3_config(op: c_int, ...) c_int;
-pub extern fn sqlite3_shutdown() c_int;
 pub extern fn sqlite3_vfs_register(vfs: *Vfs, make_default: c_int) c_int;
 
 pub const Mutex = opaque {};
@@ -293,3 +292,4 @@ pub const Vfs = extern struct {
     get_last_error: *const fn (vfs: *Vfs, bytes: c_int, out: ?[*]u8) callconv(.c) c_int,
     current_time_int64: *const fn (vfs: *Vfs, out: *i64) callconv(.c) c_int,
 };
+pub extern fn sqlite3_randomness(bytes: c_int, out: *anyopaque) void;

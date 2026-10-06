@@ -5,14 +5,13 @@
 1. **Cook: a roux app deployed on the internet with nothing in front.**
    (owner, 2026-10-04) No dependencies, we own everything; one binary;
    TigerStyle; no compatibility with the old Roc API: the best platform we
-   can build (owner, 2026-10-05). SQLite waited for fourneau's base
-   until the owner started it (2026-10-06; WIP 4).
+   can build (owner, 2026-10-05).
    - Where it stands (2026-10-06): M4 first light (2026-10-05): a Roc hello
      app on fourneau, one static executable, handlers on fibers, the body
      effect, Roc leak counting per shard. Split into its own repository
      on 2026-10-06, building against `../fourneau` as a Zig package
      (DIARY). Next: the examples' spec as a Zig step (M4), then crt1/libc
-     from Zig's musl. SQLite (M5) waits for fourneau's base. HTTPS
+     from Zig's musl. SQLite (M5) done 2026-10-06 (Plan, M5). HTTPS
      (2026-10-06): the host serves TLS 1.3 with a certificate from files
      or from ACME at startup, and redirects plain HTTP, all from its
      environment; the templates example ran so against Pebble. Next for
@@ -40,27 +39,6 @@
      on the next request. The glue regenerated with `roc glue` and
      ZigGlue.roc at the nightly's commit (unchanged platform first: byte
      for byte the committed file). Remove once the site runs on roux.
-
-4. **SQLite in roux, designed from scratch: M5.** (owner, 2026-10-06)
-   "Super tiger style": typed queries generated sqlc-style, as rocstache
-   compiles templates; no migrations yet (they need more thought);
-   measured at every step. Do not touch fourneau-dragrace (the owner is
-   working on its site). The design and its steps: Plan, M5. The open
-   decisions were taken as recommended (only generated SQL; one writer,
-   refused to GET and HEAD; `synchronous=FULL`; the process owns the
-   database file once our VFS lands; an exact schema match or no start;
-   `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
-   owner may overturn any.
-   - Where it stands (2026-10-06): steps 1 to 7 done. SQLite 3.53.4
-     vendored with one patch of ours; `tools/roux-db`; `host/database.zig`
-     and `platform/Sqlite.roc`; `examples/sqlite`; roux's VFS over the
-     shard's `std.Io` (SQLite's waits yield the fiber), readers pooled
-     per shard; SQLite's memory one heap made at startup (memsys5).
-     Measured (DIARY): point reads +16% over SQLite's own VFS; a shard's
-     reads beside 100 commits a second at p99 0.3 ms where they were
-     3.8-6.8 ms; the heap costs nothing measurable at 2 shards. Next:
-     `SQLITE_OS_OTHER` (SQLite with no OS code of its own), then this
-     item's end: what is left goes to Todo.
 
 ## Plan
 
@@ -138,6 +116,10 @@ diary. Later: a simulated disk in fourneau's `sim_io` puts SQLite under
 deterministic simulation; group commit (savepoints in one transaction)
 if the fsync floor calls for it.
 
+Done 2026-10-06 (owner: "do everything to implement SQLite in roux"):
+the seven steps, and SQLite built with no OS code of its own; what is
+left is in Todo. Migrations: not yet, by the owner's choice.
+
 ### M6. Everything an app needs
 
 Server-sent events (done 2026-10-06: `Sse`, `examples/sse`); multipart
@@ -199,6 +181,23 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   which a safe build fills with 0xaa on every call: 2.3% of a point
   read's instructions (experiment 21). Size it to the call, or fill
   only what is used. (2026-10-06)
+- [ ] `integrity_check` after a load run, and the exact count invariant
+  (a fixed number of writes, `oha -n`, against the rows), as M5's proof
+  asks: run on 2026-10-06 only as curl checks and counts after
+  duration-bound runs. (2026-10-06)
+- [ ] Migrations (owner, 2026-10-06: "require a lot more thought"). Today a
+  schema change needs a new database (`open!` refuses a schema that is
+  not `schema.sql`'s). (2026-10-06)
+- [ ] The dragrace's database workload and live demos, and its site's
+  "planned" lines, now that roux has SQLite: fourneau-dragrace's own
+  TODO; not touched while the owner works on its site. (2026-10-06)
+- [ ] A simulated disk in fourneau's `sim_io` (torn writes, lost
+  unsynced writes, fsync errors), so SQLite runs under the deterministic
+  simulator through roux's VFS: crash, reopen, `integrity_check`, every
+  committed transaction there. (2026-10-06)
+- [ ] Group commit: one fsync for many requests' transactions
+  (savepoints in one transaction), if writes need more than the disk's
+  ~300 commits a second. (2026-10-06)
 - [ ] A data-only sync for the VFS (`fdatasync`): Evented's `fileSync` is
   a full fsync; io_uring's FSYNC takes `IORING_FSYNC_DATASYNC`. A change
   to fourneau's port (its `// fourneau:` patches), measured on writes

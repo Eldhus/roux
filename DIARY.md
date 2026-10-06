@@ -680,3 +680,29 @@ req/s. Resident memory after both loads: 116 against 123 MB. Not
 measured: eight shards contending for memsys5's one mutex (the laptop
 cannot load eight shards cleanly with the loader beside them): TODO,
 on a race droplet.
+
+## 2026-10-06: SQLite with no OS code of its own (`SQLITE_OS_OTHER`)
+
+SQLite now compiles without its unix VFS or pthread mutexes: roux's VFS
+and mutexes are its only way to the system, so nothing can bypass the
+shard's `Io` (a temporary file, a stray `fstat`). With `OS_OTHER`
+SQLite's default mutexes are no-ops, which SQLite reports
+(`MUTEX_NOOP`, checked by the options test), so `sqlite/mutex.zig` is
+now the whole implementation, not a wrapper: a futex lock per mutex
+(Drepper's), owned by its thread (a thread-local's address), recursive
+where SQLite asks, twelve static and a pool of 64 for the few SQLite
+allocates; the per-thread count of held mutexes stays, and with it the
+VFS's assertion. SQLite calls our exported `sqlite3_os_init` as it
+initializes, which registers the VFS; the configuration is now one
+pass (mutexes, heap, initialize). `HAVE_USLEEP` and `HAVE_FDATASYNC`
+went with the unix VFS.
+
+Checked: SQLite's unix VFS is absent from the binaries (its `unix-excl`
+name is in the build before, not in this one; examples/sqlite 143 KB
+smaller); every test passes (two new: a recursive mutex refused to
+another thread, a waited-for lock handed to the waiter); examples/sqlite
+answers every route as before; the stall test keeps reads beside writes
+at p99 0.3-0.5 ms. Against the build before (SQLite's pthread mutexes,
+wrapped), point reads, three interleaved rounds with the laptop quiet:
+18,699 against 18,703 instructions, 147k against 149k req/s (median,
+within the spread).

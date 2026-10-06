@@ -227,3 +227,15 @@ test "vfs: a connection closing leaves the WAL to the others" {
     try Io.Dir.cwd().access(std.testing.io, wal, .{});
     try std.testing.expectEqual(2, try count(stays));
 }
+
+test "sqlite: roux's mutexes are SQLite's, and count what a thread holds" {
+    try sqlite.initialize();
+    sqlite.vfs.thread_io = std.testing.io;
+    const db = try open_memory();
+    defer _ = c.sqlite3_close_v2(db);
+    // sqlite3_randomness takes SQLite's PRNG mutex: held while it runs,
+    // given back after (SQLite's default here would be a no-op).
+    var bytes: [16]u8 = undefined;
+    c.sqlite3_randomness(bytes.len, &bytes);
+    try std.testing.expectEqual(0, sqlite.mutex.held);
+}

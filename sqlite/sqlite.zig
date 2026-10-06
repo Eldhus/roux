@@ -14,6 +14,13 @@ pub const types = @import("types.zig");
 pub const vfs = @import("vfs.zig");
 pub const mutex = @import("mutex.zig");
 
+comptime {
+    // SQLite calls these as it initializes (`SQLITE_OS_OTHER`): every
+    // program linking SQLite exports them.
+    _ = &vfs.sqlite3_os_init;
+    _ = &vfs.sqlite3_os_end;
+}
+
 /// Statements one `exec` call runs, at most: setup scripts are short.
 pub const exec_statements_max = 256;
 
@@ -68,9 +75,9 @@ pub fn initialize() error{Sqlite}!void {
 }
 
 /// SQLite set up for roux, once per process before any connection (the
-/// build has `SQLITE_OMIT_AUTOINIT`): the counted mutexes, the heap, then
-/// roux's VFS as the default. Every later call returns at once; a heap
-/// must come with the first.
+/// build has `SQLITE_OMIT_AUTOINIT`): roux's mutexes, the heap, and, as
+/// SQLite initializes, roux's VFS (`sqlite3_os_init`, vfs.zig). Every
+/// later call returns at once; a heap must come with the first.
 pub fn initialize_with(setup: Setup) error{Sqlite}!void {
     if (initialized.load(.acquire) == 2) {
         assert(setup.heap == null); // too late for a heap: SQLite is set up
@@ -85,16 +92,12 @@ pub fn initialize_with(setup: Setup) error{Sqlite}!void {
     }
     errdefer initialized.store(0, .release);
     try configure(setup);
-    try vfs.register();
     initialized.store(2, .release);
 }
 
-/// SQLite fills in its defaults only as it initializes, and refuses
-/// sqlite3_config while initialized: initialize, shut down, configure,
-/// initialize again.
+/// sqlite3_config, then sqlite3_initialize (which refuses configuration
+/// after it).
 fn configure(setup: Setup) error{Sqlite}!void {
-    if (c.sqlite3_initialize() != c.ok) return error.Sqlite;
-    if (c.sqlite3_shutdown() != c.ok) return error.Sqlite;
     try mutex.install();
     if (setup.heap) |heap| {
         assert(heap.len >= heap_bytes_min);

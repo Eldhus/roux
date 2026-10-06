@@ -161,8 +161,18 @@ var vfs: c.Vfs = .{
     .current_time_int64 = current_time_int64,
 };
 
-/// Makes this VFS SQLite's default, once, after `sqlite3_initialize`.
-pub fn register() error{Sqlite}!void {
+/// SQLite has no OS code of its own (`SQLITE_OS_OTHER`): as it initializes
+/// it asks for one, and gets this VFS, as the default.
+pub export fn sqlite3_os_init() callconv(.c) c_int {
+    register() catch return c.err_generic;
+    return c.ok;
+}
+
+pub export fn sqlite3_os_end() callconv(.c) c_int {
+    return c.ok;
+}
+
+fn register() error{Sqlite}!void {
     // The kernel's length counts the terminating zero.
     const result = linux.getcwd(&directory, directory.len);
     if (linux.errno(result) != .SUCCESS or result < 2) return error.Sqlite;
