@@ -398,3 +398,36 @@ The generated code calls a platform API that does not exist yet
 an effect in `init!` (`Sqlite.open!(Database.at(path))`), not through
 `Server.Config`: a new config field would break every app's config
 record, the dragrace site's among them.
+
+## 2026-10-06: SQLite, step 3: our patch, sqlite3_column_nullable
+
+Column metadata gives a result column's origin table and column, and
+roux-db typed it by that column's NOT NULL. Wrong in three places, each
+found by reading `columnTypeImpl` and the resolver rather than by luck:
+the inner side of an outer join (LEFT, RIGHT, FULL), a scalar subquery
+(no row is NULL, yet it reports its column as origin), and a compound
+select (typed from its left-most arm; another arm may give NULL).
+
+The patch (vendor/sqlite/README.md, the commit on the pristine copy):
+`sqlite3_column_nullable(stmt, N)`, 1, 0 or -1 for an expression SQLite
+cannot prove never NULL. It follows `columnTypeImpl`'s path through
+subqueries and views, reads the resolver's own `EP_CanBeNull` mark,
+treats a scalar subquery as nullable and ORs every arm of a compound;
+stored as a sixth column-name slot. roux-db now takes a column's
+declared type from `sqlite3_column_decltype` and its nullability from
+the patch, so its `pragma_table_xinfo` lookup went.
+
+Tested on thirteen shapes (inner, left, right, full and reversed joins;
+a view over a left join; a subquery in FROM; a scalar subquery; a CTE;
+compounds with a literal, with NULL, and with a left arm alone
+nullable), each run on rows built so every outer join meets a row with
+no partner: the types are as expected, a column typed never NULL never
+is, and each one typed nullable is NULL in some row. By mutation: the
+outer-join mark ignored, and a scalar subquery taken as never NULL,
+were caught; reading the right-most arm only survived (every compound
+shape's right arm decided alone) until the shape with a nullable left
+arm was added, then caught.
+
+Cost (sqlite-floor, three interleaved rounds against the pristine
+build): stepping a prepared point query unchanged, 4,774 instructions;
+preparing one 23,465 against 22,832 (+2.8%), paid at startup only.

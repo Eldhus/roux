@@ -51,13 +51,13 @@
    database file once our VFS lands; an exact schema match or no start;
    `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
    owner may overturn any.
-   - Where it stands (2026-10-06): steps 1 and 2 done. SQLite 3.53.4
-     vendored, built with `sqlite/options.zig`, floors measured (DIARY);
-     `tools/roux-db` generates typed modules from `db/*.sql`, typed by
-     SQLite, with thirty-one refusals tested and six mutations caught.
-     Known gap until step 3: a column from the inner side of an outer
-     join types as its table declares it (NOT NULL), so a NULL there is a
-     run-time error. Next: step 3, `sqlite3_column_nullable`.
+   - Where it stands (2026-10-06): steps 1 to 3 done. SQLite 3.53.4
+     vendored with one patch of ours (`sqlite3_column_nullable`), built
+     with `sqlite/options.zig`, floors measured (DIARY); `tools/roux-db`
+     generates typed modules from `db/*.sql`, typed by SQLite alone,
+     nullability right across joins, subqueries and compounds (a matrix
+     checked against real rows). Next: step 4, the host and
+     `platform/Sqlite.roc`, `examples/sqlite`.
 
 ## Plan
 
