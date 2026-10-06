@@ -51,14 +51,16 @@
    database file once our VFS lands; an exact schema match or no start;
    `roux-db`, `db/schema.sql`, `db/Module.sql` to `db/Module.roc`); the
    owner may overturn any.
-   - Where it stands (2026-10-06): steps 1 to 6 done. SQLite 3.53.4
+   - Where it stands (2026-10-06): steps 1 to 7 done. SQLite 3.53.4
      vendored with one patch of ours; `tools/roux-db`; `host/database.zig`
      and `platform/Sqlite.roc`; `examples/sqlite`; roux's VFS over the
      shard's `std.Io` (SQLite's waits yield the fiber), readers pooled
-     per shard. Measured (DIARY): point reads +16% over SQLite's own VFS;
-     a shard's reads beside 100 commits a second at p99 0.3 ms where they
-     were 3.8-6.8 ms. Next: step 7, static memory (memsys5, a fixed page
-     cache); then `SQLITE_OS_OTHER` (no unix VFS compiled in).
+     per shard; SQLite's memory one heap made at startup (memsys5).
+     Measured (DIARY): point reads +16% over SQLite's own VFS; a shard's
+     reads beside 100 commits a second at p99 0.3 ms where they were
+     3.8-6.8 ms; the heap costs nothing measurable at 2 shards. Next:
+     `SQLITE_OS_OTHER` (SQLite with no OS code of its own), then this
+     item's end: what is left goes to Todo.
 
 ## Plan
 
@@ -201,6 +203,11 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   a full fsync; io_uring's FSYNC takes `IORING_FSYNC_DATASYNC`. A change
   to fourneau's port (its `// fourneau:` patches), measured on writes
   first. (2026-10-06)
+- [ ] SQLite's heap under eight shards: memsys5 has one mutex for every
+  allocation. Measure contention on a race droplet (the laptop cannot
+  load eight shards cleanly with the loader beside them), and the 4 MiB
+  per connection `heap_bytes` assumes, by SQLite's high-water mark.
+  (2026-10-06)
 - [ ] The writer's lock is not FIFO: a waiter woken may lose to one
   arriving. Measure the spread of write waits under contention before
   doing anything (host/database.zig, WriterLock). (2026-10-06)

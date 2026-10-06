@@ -655,3 +655,28 @@ Mistakes on the way, and their rules:
 - Deleting cached test binaries left Zig's cache pointing at nothing
   ("checking cache failed"); the local `.zig-cache` was removed and
   rebuilt (10 s; SQLite's object came from the global cache).
+
+## 2026-10-06: SQLite, step 7: SQLite's memory, one heap made at startup
+
+`SQLITE_ENABLE_MEMSYS5`, and `sqlite.initialize_with(.{ .heap })`: the
+host allocates SQLite's whole heap before `init!` runs (raw pages,
+untouched until used), sized by `database.heap_bytes(shards, limits)`,
+an itemised sum: the writer's cache, every reader's cache, 4 MiB per
+connection for schema, statements, lookaside and a statement's working
+memory (a bound to check by measurement), all doubled for memsys5's
+power-of-two blocks. 104 MiB reserved for 2 shards, 344 MiB for 8.
+After startup SQLite allocates nothing, and memory running out is an
+error (`SQLITE_NOMEM`, a 500), not a growing process. The configuration
+window (initialize, shut down, configure, initialize: sqlite3_config is
+refused while initialized) now holds the counted mutexes and the heap
+together, in sqlite.zig.
+
+Measured, musl's malloc (the build before) against memsys5, the
+database reseeded, CPUs 0-1 (2 shards), three interleaved rounds
+(bench_heap.sh): point reads 18,686 against 18,694 instructions, 149k
+against 145k req/s (median; within the rounds' spread both ways); the
+join 1,386,227 against 1,385,116 instructions, 5,760 against 5,684
+req/s. Resident memory after both loads: 116 against 123 MB. Not
+measured: eight shards contending for memsys5's one mutex (the laptop
+cannot load eight shards cleanly with the loader beside them): TODO,
+on a race droplet.

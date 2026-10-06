@@ -147,7 +147,9 @@ started it; the choices in TODO.md, WIP 4).
   the writer holds no transaction and no statement mid-step.
 - **A limit on everything**: rows per query (`:many(N)`, more is an
   error), result bytes, statement time (progress handler), every
-  `sqlite3_limit`; every PRAGMA and option set and read back.
+  `sqlite3_limit`; every PRAGMA and option set and read back. SQLite's
+  memory is one heap the host makes at startup (memsys5), sized by an
+  itemised sum of the connections: running out is an error.
 - **No migrations yet**: a new database gets `schema.sql`; an existing
   one must hold exactly the schema `schema.sql` makes, or `open!` fails.
 - Measured (DIARY, 2026-10-06): a prepared point query costs SQLite

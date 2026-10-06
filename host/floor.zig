@@ -253,6 +253,13 @@ pub fn main(init: std.process.Init) !void {
     }
     const port: u16 = if (args.len > 2) try std.fmt.parseInt(u16, args[2], 10) else 8095;
     sqlite.vfs.thread_io = init.io;
+    // As the host: SQLite's heap, made now for every connection.
+    const shards = shard_count();
+    const bytes = database_module.heap_bytes(shards, .{});
+    const page: std.mem.Alignment = .fromByteUnits(std.heap.page_size_min);
+    const heap = std.heap.page_allocator.rawAlloc(bytes, page, @returnAddress()) orelse
+        return error.OutOfMemory;
+    try sqlite.initialize_with(.{ .heap = heap[0..bytes] });
     var report: database_module.Report = .{};
     const description: database_module.Description = .{
         .path = args[1],
@@ -263,7 +270,6 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("roux-db-floor: {s}\n", .{report.message()});
         std.process.exit(1);
     };
-    const shards = shard_count();
     const shards_max = 64;
     var threads: [shards_max]std.Thread = undefined;
     for (threads[1..shards]) |*thread| {

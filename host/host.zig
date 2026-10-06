@@ -26,7 +26,8 @@ const assert = std.debug.assert;
 const abi = @import("roc_platform_abi.zig");
 const database_module = @import("database.zig");
 const RequestsType = @import("requests.zig").RequestsType;
-const sqlite_vfs = @import("sqlite").vfs;
+const sqlite = @import("sqlite");
+const sqlite_vfs = sqlite.vfs;
 const fourneau = @import("fourneau");
 const Evented = @import("zig_io_evented");
 const build_options = @import("build_options");
@@ -760,9 +761,12 @@ fn run() !void {
     roc_host_ready = true;
 
     // `init!` may open the database: SQLite's files wait through this
-    // thread's Io until the shards start (roux's VFS).
+    // thread's Io until the shards start (roux's VFS), and its memory is a
+    // heap made now, sized for every connection the shards will open.
     const startup_io = std.Io.Threaded.global_single_threaded.io();
     sqlite_vfs.thread_io = startup_io;
+    const shards = shard_count();
+    try sqlite_setup(shards);
     const init = abi.roc_init_for_host();
     if (init.tag == .Err) {
         const code = init.payload_err();
@@ -773,7 +777,6 @@ fn run() !void {
     // as it says the address: a local run of an app that asks for 443.
     const app_port = if (started.port == 0) port_default else started.port;
     const port = port_from(environment("ROUX_PORT")) orelse app_port;
-    const shards = shard_count();
     assert(shards >= 1);
     assert(shards <= shards_max);
 
@@ -906,6 +909,16 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
         try group.concurrent(io, run_redirect, .{&redirect_server});
     }
     try server.run();
+}
+
+/// SQLite with a heap of its own, allocated now: untouched pages until
+/// SQLite uses them, nothing allocated after.
+fn sqlite_setup(shards: u32) !void {
+    const bytes = database_module.heap_bytes(shards, .{});
+    const page: std.mem.Alignment = .fromByteUnits(std.heap.page_size_min);
+    const heap = std.heap.page_allocator.rawAlloc(bytes, page, @returnAddress()) orelse
+        return error.OutOfMemory;
+    try sqlite.initialize_with(.{ .heap = heap[0..bytes] });
 }
 
 /// The shard's readers, and its buffer of rows, sized for the largest

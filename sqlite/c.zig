@@ -191,6 +191,7 @@ pub const shm_locks = 8;
 
 pub const iocap_powersafe_overwrite = 0x00001000;
 
+pub const config_heap = 8;
 pub const config_mutex = 10;
 pub const config_getmutex = 11;
 

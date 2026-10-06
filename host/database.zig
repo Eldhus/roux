@@ -65,6 +65,23 @@ pub const schema_statements_max = 1024;
 pub const writer_cache_kib = 8 * 1024;
 /// Smaller than the writer's: a shard has several (`Limits.readers_per_shard`).
 pub const reader_cache_kib = 1024;
+/// What a connection takes from SQLite's heap beside its page cache: the
+/// schema, the prepared statements, lookaside, a statement's working
+/// memory (sorts, joins). A bound to check by measurement (TODO).
+pub const connection_bytes = 4 * 1024 * 1024;
+
+/// SQLite's heap for a host of `shards` shards, as an itemised sum; the
+/// host allocates it at startup (`sqlite.Setup`).
+pub fn heap_bytes(shards: u32, limits: Limits) u64 {
+    assert(shards >= 1);
+    const readers: u64 = @as(u64, shards) * limits.readers_per_shard;
+    const writer_cache: u64 = writer_cache_kib * 1024;
+    const reader_caches: u64 = readers * reader_cache_kib * 1024;
+    const connections: u64 = (1 + readers) * connection_bytes;
+    // memsys5 rounds each allocation up to a power of two: twice, at worst.
+    return 2 * (writer_cache + reader_caches + connections);
+}
+
 /// The write-ahead log is cut back to this after a checkpoint.
 pub const wal_bytes_max = 64 * 1024 * 1024;
 /// Virtual-machine steps between two looks at the clock.

@@ -54,11 +54,28 @@ fn step_to_end(statement: *c.Stmt) error{Sqlite}!void {
 /// 0 not yet, 1 being done, 2 done.
 var initialized: std.atomic.Value(u32) = .init(0);
 
-/// SQLite set up for roux, once per process before any connection (the
-/// build has `SQLITE_OMIT_AUTOINIT`): the counted mutexes, then roux's VFS
-/// as the default. Every later call returns at once.
+pub const Setup = struct {
+    /// SQLite's whole heap (memsys5), allocated by the caller at startup:
+    /// nothing is allocated after it, and memory running out is
+    /// `SQLITE_NOMEM`, an error. Null: the system's allocator (the tools
+    /// and the tests).
+    heap: ?[]u8 = null,
+};
+
+/// SQLite set up for roux with the system's allocator; see `initialize_with`.
 pub fn initialize() error{Sqlite}!void {
-    if (initialized.load(.acquire) == 2) return;
+    return initialize_with(.{});
+}
+
+/// SQLite set up for roux, once per process before any connection (the
+/// build has `SQLITE_OMIT_AUTOINIT`): the counted mutexes, the heap, then
+/// roux's VFS as the default. Every later call returns at once; a heap
+/// must come with the first.
+pub fn initialize_with(setup: Setup) error{Sqlite}!void {
+    if (initialized.load(.acquire) == 2) {
+        assert(setup.heap == null); // too late for a heap: SQLite is set up
+        return;
+    }
     if (initialized.cmpxchgStrong(0, 1, .acquire, .acquire)) |_| {
         // Another thread is setting it up, for microseconds.
         for (0..1 << 24) |_| {
@@ -67,7 +84,28 @@ pub fn initialize() error{Sqlite}!void {
         } else unreachable;
     }
     errdefer initialized.store(0, .release);
-    try mutex.install();
+    try configure(setup);
     try vfs.register();
     initialized.store(2, .release);
 }
+
+/// SQLite fills in its defaults only as it initializes, and refuses
+/// sqlite3_config while initialized: initialize, shut down, configure,
+/// initialize again.
+fn configure(setup: Setup) error{Sqlite}!void {
+    if (c.sqlite3_initialize() != c.ok) return error.Sqlite;
+    if (c.sqlite3_shutdown() != c.ok) return error.Sqlite;
+    try mutex.install();
+    if (setup.heap) |heap| {
+        assert(heap.len >= heap_bytes_min);
+        const length: c_int = @intCast(@min(heap.len, std.math.maxInt(c_int)));
+        if (c.sqlite3_config(c.config_heap, heap.ptr, length, heap_allocation_min) != c.ok) {
+            return error.Sqlite;
+        }
+    }
+    if (c.sqlite3_initialize() != c.ok) return error.Sqlite;
+}
+
+/// memsys5's smallest block: allocations round up to a power of two.
+const heap_allocation_min: c_int = 64;
+const heap_bytes_min = 1 << 20;
