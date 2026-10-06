@@ -2,7 +2,8 @@
 //!
 //!   zig build platform     the host as libhost.a, where roc finds it
 //!   zig build test         tidy over the host (fourneau's rules)
-//!   zig build tools        rocstache-gen, the template compiler (tools-test)
+//!   zig build tools        rocstache-gen, the template compiler (tools-test),
+//!                          and roux-db, the typed-query generator
 //!   zig build examples     the examples' templates, regenerated
 //!   zig build sqlite-floor SQLite alone, timed (sqlite/floor.zig)
 //!
@@ -43,6 +44,20 @@ pub fn build(b: *std.Build) void {
     add_sqlite_c(b, sqlite_test_module);
     const sqlite_tests = b.addTest(.{ .root_module = sqlite_test_module });
     test_step.dependOn(&b.addRunArtifact(sqlite_tests).step);
+    // roux-db's tests: fast, and SQLite's assertions on.
+    const roux_db_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/roux-db/tests.zig"),
+            .target = target,
+            .optimize = .debug,
+            .imports = &.{.{ .name = "sqlite", .module = sqlite_module(b, .{
+                .target = target,
+                .optimize = .debug,
+                .pic = null,
+            }) }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(roux_db_tests).step);
 
     platform_step(b, fourneau);
     tools_step(b, target);
@@ -139,7 +154,22 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
         }),
     });
     const install = b.addInstallArtifact(generator, .{});
-    b.step("tools", "Build rocstache-gen").dependOn(&install.step);
+    const tools = b.step("tools", "Build rocstache-gen and roux-db");
+    tools.dependOn(&install.step);
+    const roux_db = b.addExecutable(.{
+        .name = "roux-db",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/roux-db/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "sqlite", .module = sqlite_module(b, .{
+                .target = target,
+                .optimize = optimize,
+                .pic = null,
+            }) }},
+        }),
+    });
+    tools.dependOn(&b.addInstallArtifact(roux_db, .{}).step);
     // Every example's templates, compiled next to them (the generated .roc
     // is committed, so `roc build` needs nothing else; this keeps it current).
     const examples = b.step("examples", "Regenerate the examples' templates");

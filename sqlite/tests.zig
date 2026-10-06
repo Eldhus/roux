@@ -8,6 +8,11 @@ const sqlite = @import("sqlite.zig");
 const c = @import("c.zig");
 const options = @import("options.zig");
 
+test {
+    _ = @import("authorizer.zig");
+    _ = @import("types.zig");
+}
+
 test "sqlite: the linked SQLite is the vendored release" {
     try sqlite.initialize();
     const linked = std.mem.span(c.sqlite3_libversion());
