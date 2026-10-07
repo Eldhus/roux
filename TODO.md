@@ -14,8 +14,10 @@
      from Zig's musl. SQLite (M5) done 2026-10-06 (Plan, M5). HTTPS
      (2026-10-06): the host serves TLS 1.3 with a certificate from files
      or from ACME at startup, and redirects plain HTTP, all from its
-     environment; the templates example ran so against Pebble. Next for
-     M10: a roux app on the internet (where: the owner's call).
+     environment; the templates example ran so against Pebble. M10's app
+     is live: the dragrace site, https://174.138.75.219/, a roux app with
+     nothing in front, its own certificate, its races in roux's SQLite
+     (2026-10-06; its database 2026-10-07).
 
 2. **Templates: rocstache in roux, no database yet.** (owner,
    2026-10-06) The template compiler (`rocstache-gen`, in the old fork)
@@ -26,19 +28,11 @@
      in the platform (its 19 expects pass on roux's nightly; `url` now
      encodes without the old fork's Url module), and
      `examples/templates` renders a page from `Page.rocstache`, escaped,
-     at ~125k requests/s on this laptop. Next: the dragrace's templates
-     workload (its TODO); tidy over `tools/` (TigerStyle: the old code
-     has no assertions and recursion), and the Zed README pointed here.
+     at ~125k requests/s on this laptop. The dragrace's templates
+     workload runs it (2026-10-06). Next: tidy over `tools/` (TigerStyle:
+     the old code has no assertions and recursion), and the Zed README
+     pointed here.
 
-3. **What the dragrace site needs to run on roux.** (owner, 2026-10-06:
-   the site becomes the roux demo; fourneau-dragrace's TODO, WIP 3)
-   - Where it stands (2026-10-06): done: `Server.Config.static_dir`, served
-     by the host before `respond!` (fourneau's site.zig), and
-     `File.read_utf8!` (bounded, through the shard's `Io`);
-     `examples/files` shows both, a file edited while the app runs shows
-     on the next request. The glue regenerated with `roc glue` and
-     ZigGlue.roc at the nightly's commit (unchanged platform first: byte
-     for byte the committed file). Remove once the site runs on roux.
 
 ## Plan
 
@@ -184,9 +178,9 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] Migrations (owner, 2026-10-06: "require a lot more thought"). Today a
   schema change needs a new database (`open!` refuses a schema that is
   not `schema.sql`'s). (2026-10-06)
-- [ ] The dragrace's database workload and live demos, and its site's
-  "planned" lines, now that roux has SQLite: fourneau-dragrace's own
-  TODO; not touched while the owner works on its site. (2026-10-06)
+- [ ] Live demos on the dragrace site (roux's examples, running). The
+  database workload is done (conduit, 2026-10-07) and the site keeps its
+  races in roux's SQLite. (2026-10-06)
 - [ ] A simulated disk in fourneau's `sim_io` (torn writes, lost
   unsynced writes, fsync errors), so SQLite runs under the deterministic
   simulator through roux's VFS: crash, reopen, `integrity_check`, every
