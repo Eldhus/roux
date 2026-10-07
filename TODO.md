@@ -196,6 +196,21 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   loss or kernel panic can lose the commits since the last checkpoint
   (DIARY, 2026-10-06). Group commit would keep FULL's promise at a part
   of NORMAL's rate. (2026-10-06)
+- [ ] Replication, Litestream or our own (owner, 2026-10-06). Why
+  Litestream cannot just work (v0.5.17 checked, its db.go): it is another
+  process that opens the database with its own SQLite connection,
+  creates `_litestream_seq` and `_litestream_lock` in it, holds a read
+  transaction so no one else checkpoints, takes the write lock to
+  checkpoint itself, and reads the `-wal` file directly. roux's VFS keeps
+  the WAL index in its own memory and an exclusive lock on the file, so
+  another process can neither lock nor see; and `open!` refuses a schema
+  with tables `schema.sql` lacks. Options: (1) the VFS speaks SQLite's
+  cross-process protocol (a mapped `-shm` file, fcntl byte-range locks)
+  and the schema check allows `_litestream_*`: Litestream as it is, at
+  system calls per read transaction; (2) replicate in-process: the VFS
+  sees every WAL frame and commit, so roux ships them (LTX-like) to S3
+  itself, restore tool and all: we own it, a big job; (3) backups only,
+  from the app (`VACUUM INTO`). (2026-10-06)
 - [ ] Group commit: one fsync for many requests' transactions
   (savepoints in one transaction), if writes need more than the disk's
   ~300 commits a second. (2026-10-06)
