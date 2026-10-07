@@ -128,6 +128,7 @@ const Fixture = struct {
     arena_state: std.heap.ArenaAllocator,
     dir: testing.TmpDir,
     path: []const u8,
+    synchronous: database_module.Synchronous = .full,
 
     fn init() !Fixture {
         // roux's VFS waits through the testing Io.
@@ -158,6 +159,7 @@ const Fixture = struct {
             .path = fixture.path,
             .schema = with_schema,
             .statements = with,
+            .synchronous = fixture.synchronous,
         };
         return database_module.open(fixture.arena_state.allocator(), description, limits, report);
     }
@@ -183,6 +185,44 @@ fn write_one(database: *Database, index: u32, params: []const Value, collected: 
         return err;
     };
     try database_module.commit_write(database, testing.io, &report);
+}
+
+test "database: synchronous as the app asks, on the writer and every reader, read back" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const arena = fixture.arena_state.allocator();
+    // The setting is a connection's, not the file's: each open sets it.
+    for ([_]database_module.Synchronous{ .normal, .full, .normal }) |synchronous| {
+        fixture.synchronous = synchronous;
+        const database = try fixture.open(schema, &statements, &report);
+        defer database_module.close(arena, database);
+        const pool = try database_module.ReaderPool.open(arena, database, &report);
+        defer for (pool.readers) |reader| database_module.close_connection(arena, reader);
+        const expected: i64 = switch (synchronous) {
+            .full => 2,
+            .normal => 1,
+        };
+        try testing.expectEqual(synchronous, database.synchronous);
+        try testing.expectEqual(expected, try synchronous_level(database.writer));
+        for (pool.readers) |reader| {
+            try testing.expectEqual(expected, try synchronous_level(reader));
+        }
+    }
+}
+
+/// `PRAGMA synchronous` as the connection reads it.
+fn synchronous_level(connection: *database_module.Connection) !i64 {
+    const c = sqlite.c;
+    var statement: ?*c.Stmt = null;
+    const sql = "PRAGMA synchronous";
+    if (c.sqlite3_prepare_v3(connection.db, sql, sql.len, 0, &statement, null) != c.ok) {
+        return error.Sqlite;
+    }
+    const prepared = statement orelse return error.Sqlite;
+    defer _ = c.sqlite3_finalize(prepared);
+    if (c.sqlite3_step(prepared) != c.row) return error.Sqlite;
+    return c.sqlite3_column_int64(prepared, 0);
 }
 
 test "database: a new file gets the schema, and opens again as it is" {

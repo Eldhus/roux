@@ -199,7 +199,7 @@ pub fn write_database(
     try w.writeAll(". DO NOT EDIT.\nimport pf.Sqlite\n\n");
     try w.writeAll("## The database: `schema.sql`, and every statement the queries beside it\n");
     try w.writeAll("## run, numbered as they call them. In `init!`:\n");
-    try w.writeAll("## `Sqlite.open!(Database.at(path))`.\n");
+    try w.writeAll("## `Sqlite.open!(Database.at(path), settings)`.\n");
     try w.writeAll("Database :: [].{\n");
     try w.writeAll("\tat : Str -> Sqlite.Database\n");
     try w.writeAll("\tat = |path| { path, schema, statements }\n}\n\n");

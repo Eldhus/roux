@@ -3,7 +3,7 @@ import pf.Sqlite
 
 ## The database: `schema.sql`, and every statement the queries beside it
 ## run, numbered as they call them. In `init!`:
-## `Sqlite.open!(Database.at(path))`.
+## `Sqlite.open!(Database.at(path), settings)`.
 Database :: [].{
 	at : Str -> Sqlite.Database
 	at = |path| { path, schema, statements }

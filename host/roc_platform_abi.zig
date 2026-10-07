@@ -1341,6 +1341,34 @@ comptime {
     }
 }
 
+/// Tag union: FullOrNormal
+pub const FullOrNormal = enum(u8) {
+    @"full" = 0,
+    @"normal" = 1,
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        _ = self;
+        _ = roc_host;
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        _ = self;
+        _ = amount;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(FullOrNormal) != 1) @compileError("FullOrNormal size mismatch");
+        if (@alignOf(FullOrNormal) != 1) @compileError("FullOrNormal alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(FullOrNormal) != 1) @compileError("FullOrNormal size mismatch");
+        if (@alignOf(FullOrNormal) != 1) @compileError("FullOrNormal alignment mismatch");
+    }
+}
+
 /// Tag discriminant for Try.
 pub const HostSqlite_runResultTag = enum(u8) {
     @"Err" = 0,
@@ -1679,12 +1707,13 @@ pub const HostResponse_stream_endArgs = extern struct {
 };
 
 /// Arguments for Host.sqlite_open!
-/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }) => Try({}, Str)
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal] => Try({}, Str)
 /// Refcounted fields are owned by the hosted function.
 pub const HostSqlite_openArgs = extern struct {
     arg0: RocStr,
     arg1: RocStr,
     arg2: RocList(__AnonStruct_2d568438e96cd20c),
+    arg3: FullOrNormal,
 };
 
 /// Arguments for Host.sqlite_run!
@@ -2129,14 +2158,15 @@ pub extern fn hosted_response_stream_flush(arg0: u64) callconv(.c) HostResponse_
 pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_stream_startResult;
 
 /// Hosted symbol for Host.sqlite_open!
-/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }) => Try({}, Str)
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal] => Try({}, Str)
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
 ///     arg0.decref(roc_host);
 ///     arg1.decref(roc_host);
 ///     decrefListOf__AnonStruct_2d568438e96cd20c(arg2, roc_host);
+///     arg3.decref(roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
-pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c)) callconv(.c) HostSqlite_openResult;
+pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c), arg3: FullOrNormal) callconv(.c) HostSqlite_openResult;
 
 /// Hosted symbol for Host.sqlite_run!
 /// Roc signature: U64, U32, Bool, List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)]) => Try(List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), { code : U8, message : Str })

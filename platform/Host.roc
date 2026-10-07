@@ -53,8 +53,11 @@ Host := [].{
 	SqliteErr : { code : U8, message : Str }
 
 	## Opens the app's one database, in `init!` (path, schema.sql, the
-	## statements); `Err` says why not.
-	sqlite_open! : Str, Str, List(SqliteStatement) => Try({}, Str)
+	## statements, when a commit is durable); `Err` says why not.
+	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous => Try({}, Str)
+
+	## As host/database.zig's `Synchronous`.
+	SqliteSynchronous : [Full, Normal]
 
 	## Runs statement `index` for the request `body` names: on its shard's
 	## reader, or (`True`) on the writer the request holds.
