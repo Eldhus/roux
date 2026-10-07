@@ -99,9 +99,15 @@ threadlocal var shard_requests: ?*Requests = null;
 /// This shard's readers of the database, leased a statement at a time.
 threadlocal var shard_readers: ?*database_module.ReaderPool = null;
 /// A result's rows, kept here until their count is known: a Roc list of
-/// refcounted items is allocated at its length (database's largest
-/// `rows_max`, allocated as the shard starts).
-threadlocal var shard_rows: []RocRow = &.{};
+/// refcounted items is allocated at its length. A buffer per connection
+/// (the database's largest `rows_max`), never per shard: a statement can
+/// yield mid-step (roux's VFS waits through the fiber) and another of the
+/// shard's requests run its own on another reader meanwhile; with one
+/// buffer a shard, their rows mixed (found 2026-10-07, the conduit race on
+/// two shards: a row of the wrong width). A reader is leased to one
+/// statement at a time, and the writer is one request's at a time.
+threadlocal var shard_reader_rows: [][]RocRow = &.{};
+var writer_rows: []RocRow = &.{};
 
 // Roc's compiled code calls the exported functions; the glue (lists and
 // strings the host builds) calls the `RocHost` table. Both reach the counted
@@ -396,6 +402,8 @@ export fn hosted_sqlite_open(
     };
     database = database_module.open(gpa, description, .{}, &report) catch
         return open_error(report.message());
+    writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
+        return open_error("out of memory");
     var banner: [256]u8 = undefined;
     const line = "roux: database {s}, {d} statements, synchronous {t}";
     write_line(1, std.fmt.bufPrint(&banner, line, .{
@@ -452,7 +460,7 @@ fn sqlite_run(
     var values: [params_max]database_module.Value = undefined;
     for (roc_params, values[0..roc_params.len]) |*param, *value| value.* = value_from_roc(param);
     const columns: u32 = @intCast(opened.statements[index].columns.len);
-    var sink: RowsToRoc = .{ .rows = shard_rows, .columns = columns };
+    var sink: RowsToRoc = .{ .rows = rows_for(opened, connection), .columns = columns };
     database_module.run(
         opened,
         connection,
@@ -975,8 +983,8 @@ fn sqlite_setup(shards: u32) !void {
     try sqlite.initialize_with(.{ .heap = heap[0..bytes] });
 }
 
-/// The shard's readers, and its buffer of rows, sized for the largest
-/// `rows_max` of the database's statements.
+/// The shard's readers, and a buffer of rows for each, sized for the
+/// largest `rows_max` of the database's statements.
 fn open_shard_database(gpa: std.mem.Allocator, opened: *database_module.Database) !void {
     var report: database_module.Report = .{};
     const readers = try gpa.create(database_module.ReaderPool);
@@ -985,9 +993,27 @@ fn open_shard_database(gpa: std.mem.Allocator, opened: *database_module.Database
         return error.DatabaseReader;
     };
     shard_readers = readers;
+    shard_reader_rows = try gpa.alloc([]RocRow, readers.readers.len);
+    for (shard_reader_rows) |*rows| rows.* = try gpa.alloc(RocRow, rows_max_of(opened));
+}
+
+fn rows_max_of(opened: *const database_module.Database) u32 {
     var rows_max: u32 = 1;
     for (opened.statements) |statement| rows_max = @max(rows_max, statement.rows_max);
-    shard_rows = try gpa.alloc(RocRow, rows_max);
+    return rows_max;
+}
+
+/// The connection's own buffer of rows: the writer's, or its reader's.
+fn rows_for(
+    opened: *const database_module.Database,
+    connection: *database_module.Connection,
+) []RocRow {
+    if (connection == opened.writer) return writer_rows;
+    const readers = shard_readers.?;
+    for (readers.readers, shard_reader_rows) |reader, rows| {
+        if (reader == connection) return rows;
+    }
+    unreachable; // a connection is the writer or a reader of this shard
 }
 
 /// Where to listen: `ROUX_ADDRESS`, else loopback. Where a server

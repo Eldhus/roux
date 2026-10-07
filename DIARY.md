@@ -800,3 +800,26 @@ shard's `Io`, and `init!` runs on the main thread before any shard. Now
 `init!` reads through the startup `Io` (the one SQLite's VFS uses there),
 set for `init!` only. examples/files reads notes.txt's first line in
 `init!` and answers it at `/first-line`: checked live.
+
+## 2026-10-07: a row buffer per connection, not per shard (a bug)
+
+The dragrace's conduit workload (reads and writes on SQLite, open loop,
+roux on two shards) crashed roux at once: "roux-db: Conduit.newest: a row
+the host should have refused", a row of the wrong width. Each request
+alone answered right. The host kept a result's rows in one buffer per
+shard; a statement yields mid-step (roux's VFS waits through the fiber),
+another request of the shard runs its own statement on another reader
+meanwhile, and both wrote rows into the same slots. Under concurrent
+reads, a request could have been handed rows of another's: the race's
+checks caught it as a crash only because the widths differed.
+
+Now each connection has its own buffer: each reader of a shard's pool,
+and the writer. A reader is leased to one statement at a time, the
+writer is one request's at a time, so a buffer has one user. Memory: the
+largest `rows_max` times 24 bytes, per connection.
+
+Checked: the same race again (roux and Go, two shards for the server):
+roux answered the contract's checks and climbed to 2,000 requests a
+second without an error. Not checked by a test here: the host is tested
+through its examples, and none ran concurrent reads on one shard; the
+race does (TODO: a concurrent example test).

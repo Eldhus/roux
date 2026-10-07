@@ -194,6 +194,11 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] Group commit: FULL's promise (durable when answered) at a part of
   NORMAL's rate (295 against 9,285 writes/s, DIARY). `synchronous` is
   now the app's to choose in `Sqlite.open!`. (2026-10-06)
+- [ ] A test of concurrent statements on one shard (fibers interleaving
+  through the VFS's waits): the per-shard row buffer bug (DIARY,
+  2026-10-07) was caught by the dragrace, not here. Also: roux-db should
+  refuse a query whose row type shadows a builtin (`list` makes `List`).
+  (2026-10-07)
 - [ ] Several databases per app (owner, 2026-10-06), e.g. a durable
   queue beside the main data, with far more writes and different
   durability. Today: one (`open!` once, one `Database.roc`; the VFS takes
