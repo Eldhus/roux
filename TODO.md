@@ -191,11 +191,9 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   unsynced writes, fsync errors), so SQLite runs under the deterministic
   simulator through roux's VFS: crash, reopen, `integrity_check`, every
   committed transaction there. (2026-10-06)
-- [ ] Decide `synchronous` (owner): FULL now (295 writes/s, every commit
-  durable when answered); NORMAL measured at 9,285 writes/s, and a power
-  loss or kernel panic can lose the commits since the last checkpoint
-  (DIARY, 2026-10-06). Group commit would keep FULL's promise at a part
-  of NORMAL's rate. (2026-10-06)
+- [ ] Group commit: FULL's promise (durable when answered) at a part of
+  NORMAL's rate (295 against 9,285 writes/s, DIARY). `synchronous` is
+  now the app's to choose in `Sqlite.open!`. (2026-10-06)
 - [ ] Several databases per app (owner, 2026-10-06), e.g. a durable
   queue beside the main data, with far more writes and different
   durability. Today: one (`open!` once, one `Database.roc`; the VFS takes

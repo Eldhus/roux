@@ -265,6 +265,7 @@ pub fn main(init: std.process.Init) !void {
         .path = args[1],
         .schema = @embedFile("floor_schema.sql"),
         .statements = &statements,
+        .synchronous = .full,
     };
     database = database_module.open(std.heap.page_allocator, description, .{}, &report) catch {
         std.debug.print("roux-db-floor: {s}\n", .{report.message()});

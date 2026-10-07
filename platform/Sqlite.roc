@@ -7,7 +7,7 @@ import Server
 ##
 ## ```roc
 ## init! = || {
-##     db = Sqlite.open!(Database.at("dishes.db"))?
+##     db = Sqlite.open!(Database.at("dishes.db"), { synchronous: Full })?
 ##     Ok({ config: { port: 8080, static_dir: "" }, context: { db } })
 ## }
 ##
@@ -35,6 +35,12 @@ Sqlite := [].{
 	Database : { path : Str, schema : Str, statements : List(Statement) }
 
 	Statement : Host.SqliteStatement
+
+	## When a commit is durable. `Full`: when `commit!` returns.
+	## `Normal`: at the next checkpoint; a power loss or a kernel panic
+	## may lose the commits since (a crash of the app loses none), for
+	## about 30 times the commits a second (roux's DIARY, 2026-10-06).
+	Settings : { synchronous : [Full, Normal] }
 
 	## A parameter, or a cell of a row.
 	Value : Host.SqliteValue
@@ -75,9 +81,9 @@ Sqlite := [].{
 	Write :: { request : U64 }
 
 	## Opens the database, once, in `init!`.
-	open! : Database => Try(Db, [DbErr(Err)])
-	open! = |database|
-		match Host.sqlite_open!(database.path, database.schema, database.statements) {
+	open! : Database, Settings => Try(Db, [DbErr(Err)])
+	open! = |database, { synchronous }|
+		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous) {
 			Ok({}) => Ok(Db.{ opened: Bool.True })
 			Err(message) => Err(DbErr(Failed(message)))
 		}

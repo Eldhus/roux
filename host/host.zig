@@ -354,6 +354,7 @@ export fn hosted_sqlite_open(
     path: abi.RocStr,
     schema: abi.RocStr,
     statements: SqliteStatements,
+    synchronous: abi.FullOrNormal,
 ) callconv(.c) SqliteOpenResult {
     defer path.decref(host());
     defer schema.decref(host());
@@ -382,12 +383,17 @@ export fn hosted_sqlite_open(
         .path = where,
         .schema = schema.asSlice(),
         .statements = descriptions,
+        .synchronous = switch (synchronous) {
+            .full => .full,
+            .normal => .normal,
+        },
     };
     database = database_module.open(gpa, description, .{}, &report) catch
         return open_error(report.message());
     var banner: [256]u8 = undefined;
-    write_line(1, std.fmt.bufPrint(&banner, "roux: database {s}, {d} statements", .{
-        where, descriptions.len,
+    const line = "roux: database {s}, {d} statements, synchronous {t}";
+    write_line(1, std.fmt.bufPrint(&banner, line, .{
+        where, descriptions.len, description.synchronous,
     }) catch "roux: database");
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
 }

@@ -28,7 +28,7 @@ program = { init!, respond! }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64), DbErr(Sqlite.Err)])
 init! = || {
-	db = Sqlite.open!(Database.at("dishes.db"))?
+	db = Sqlite.open!(Database.at("dishes.db"), { synchronous: Full })?
 	Ok({ config: { port: 8080, static_dir: "" }, context: { db: db } })
 }
 

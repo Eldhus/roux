@@ -739,3 +739,22 @@ last checkpoint's sync (up to `wal_autocheckpoint` pages, ~4 MB here),
 never the database's consistency. Reads beside 100 writes a second, one
 shard: p99 0.27 ms either way (roux's VFS yields on the sync in both).
 `synchronous` stays FULL until the owner decides (TODO).
+
+## 2026-10-06: `synchronous`, the app's choice
+
+The owner decided: the dragrace site's results take FULL, the new
+read-write race workload NORMAL (every platform raced alike). So
+`Sqlite.open!(Database.at(path), { synchronous: Full })` (or `Normal`):
+`Settings`, a record so later settings are named. The host sets it on
+every connection, readers too (the last connection to close
+checkpoints), and reads it back (2 or 1), or the open fails; the startup
+line says which. The setting is a connection's, not the file's: each
+start sets it again.
+
+The glue regenerated (ZigGlue.roc at the nightly's commit; from the
+committed platform first, byte for byte the committed file): a
+`FullOrNormal` enum and the fourth argument, nothing else.
+
+Checked: `zig build test`, with a new test: opened NORMAL, FULL, NORMAL
+on one file, the writer and every reader of a pool read back the level
+asked. examples/sqlite built and started (`synchronous full`).

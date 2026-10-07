@@ -152,6 +152,31 @@ pub const Description = struct {
     path: []const u8,
     schema: []const u8,
     statements: []const StatementDescription,
+    synchronous: Synchronous,
+};
+
+/// When a commit is durable. `full`: when it returns (the WAL synced at
+/// every commit). `normal`: at the next checkpoint (a power loss or a
+/// kernel panic may lose the commits since; a process crash loses
+/// nothing): 31 times the writes on the laptop (DIARY, 2026-10-06).
+pub const Synchronous = enum(u8) {
+    full = 0,
+    normal = 1,
+
+    fn pragma(synchronous: Synchronous) []const u8 {
+        return switch (synchronous) {
+            .full => "PRAGMA synchronous = FULL",
+            .normal => "PRAGMA synchronous = NORMAL",
+        };
+    }
+
+    /// As `PRAGMA synchronous` reads back.
+    fn level(synchronous: Synchronous) i64 {
+        return switch (synchronous) {
+            .full => 2,
+            .normal => 1,
+        };
+    }
 };
 
 pub const Statement = struct {
@@ -179,6 +204,7 @@ pub const Connection = struct {
 
 pub const Database = struct {
     limits: Limits,
+    synchronous: Synchronous,
     path: [:0]const u8,
     statements: []const Statement,
     writer: *Connection,
@@ -199,13 +225,21 @@ pub fn open(
     sqlite.initialize() catch return report.fail(.failed, "sqlite3_initialize failed", .{});
     const statements = try decode_statements(gpa, description.statements, report);
     const path = dupe_sentinel(gpa, description.path) catch return out_of_memory(report);
-    const writer = try open_connection(gpa, path, .writer, statements, report);
+    const writer = try open_connection(
+        gpa,
+        path,
+        .writer,
+        statements,
+        description.synchronous,
+        report,
+    );
     errdefer close_connection(gpa, writer);
     try ensure_schema(writer.db, description.schema, report);
     try prepare_statements(writer, statements, report);
     const database = gpa.create(Database) catch return out_of_memory(report);
     database.* = .{
         .limits = limits,
+        .synchronous = description.synchronous,
         .path = path,
         .statements = statements,
         .writer = writer,
@@ -327,7 +361,14 @@ pub fn open_reader(
     database: *const Database,
     report: *Report,
 ) error{Failed}!*Connection {
-    const reader = try open_connection(gpa, database.path, .reader, database.statements, report);
+    const reader = try open_connection(
+        gpa,
+        database.path,
+        .reader,
+        database.statements,
+        database.synchronous,
+        report,
+    );
     errdefer close_connection(gpa, reader);
     try prepare_statements(reader, database.statements, report);
     return reader;
@@ -396,6 +437,7 @@ fn open_connection(
     path: [:0]const u8,
     role: Role,
     statements: []const Statement,
+    synchronous: Synchronous,
     report: *Report,
 ) error{Failed}!*Connection {
     var db: ?*c.Db = null;
@@ -410,7 +452,7 @@ fn open_connection(
     @memset(prepared, null);
     const connection = gpa.create(Connection) catch return out_of_memory(report);
     connection.* = .{ .db = db.?, .role = role, .prepared = prepared };
-    try configure(connection, report);
+    try configure(connection, synchronous, report);
     c.sqlite3_progress_handler(connection.db, progress_instructions, progress, connection);
     return connection;
 }
@@ -447,7 +489,11 @@ const sqlite_limits = [_]Limit{
     .{ .id = c.limit_worker_threads, .value = 0 },
 };
 
-fn configure(connection: *Connection, report: *Report) error{Failed}!void {
+fn configure(
+    connection: *Connection,
+    synchronous: Synchronous,
+    report: *Report,
+) error{Failed}!void {
     const db = connection.db;
     for (options) |option| {
         var readback: c_int = -1;
@@ -469,7 +515,7 @@ fn configure(connection: *Connection, report: *Report) error{Failed}!void {
             });
         }
     }
-    try configure_pragmas(connection, report);
+    try configure_pragmas(connection, synchronous, report);
 }
 
 const Pragma = struct {
@@ -484,9 +530,6 @@ const cache_writer = "PRAGMA cache_size = -" ++ std.fmt.comptimePrint("{d}", .{w
 const cache_reader = "PRAGMA cache_size = -" ++ std.fmt.comptimePrint("{d}", .{reader_cache_kib});
 
 const pragmas = [_]Pragma{
-    // FULL: a commit is durable when it returns (synchronous, decided
-    // 2026-10-06; the fsync floor is in the diary).
-    .{ .set = "PRAGMA synchronous = FULL", .name = "PRAGMA synchronous", .expected = 2 },
     .{ .set = "PRAGMA foreign_keys = ON", .name = "PRAGMA foreign_keys", .expected = 1 },
     .{ .set = "PRAGMA trusted_schema = OFF", .name = "PRAGMA trusted_schema", .expected = 0 },
     .{ .set = "PRAGMA busy_timeout = 0", .name = "PRAGMA busy_timeout", .expected = 0 },
@@ -523,7 +566,11 @@ const pragmas = [_]Pragma{
     },
 };
 
-fn configure_pragmas(connection: *Connection, report: *Report) error{Failed}!void {
+fn configure_pragmas(
+    connection: *Connection,
+    synchronous: Synchronous,
+    report: *Report,
+) error{Failed}!void {
     const db = connection.db;
     // WAL first: it is the database file's, kept once set.
     // The writer sets WAL; a reader reads it back.
@@ -534,6 +581,16 @@ fn configure_pragmas(connection: *Connection, report: *Report) error{Failed}!voi
     const mode = try pragma_text(db, sql, report);
     if (!std.mem.eql(u8, mode.slice(), "wal")) {
         return report.fail(.failed, "journal_mode {s}, not wal", .{mode.slice()});
+    }
+    // On every connection, readers too: the last to close checkpoints.
+    sqlite.exec(db, synchronous.pragma()) catch
+        return report.fail(.failed, "{s}: {s}", .{ synchronous.pragma(), c.sqlite3_errmsg(db) });
+    const level = try pragma_integer(db, "PRAGMA synchronous", report);
+    if (level != synchronous.level()) {
+        return report.fail(.failed, "PRAGMA synchronous: {d}, not {d}", .{
+            level,
+            synchronous.level(),
+        });
     }
     for (pragmas) |pragma| {
         if (pragma.role) |role| if (role != connection.role) continue;
