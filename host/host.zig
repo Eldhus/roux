@@ -851,7 +851,7 @@ fn run() !void {
     if (static_dir.len > 0) {
         const site = try std.heap.page_allocator.create(fourneau.site.Site);
         const gpa = std.heap.page_allocator;
-        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, "", tls != null);
+        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, "");
         static_site = site;
     }
 
