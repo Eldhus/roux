@@ -196,6 +196,22 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   loss or kernel panic can lose the commits since the last checkpoint
   (DIARY, 2026-10-06). Group commit would keep FULL's promise at a part
   of NORMAL's rate. (2026-10-06)
+- [ ] Several databases per app (owner, 2026-10-06), e.g. a durable
+  queue beside the main data, with far more writes and different
+  durability. Today: one (`open!` once, one `Database.roc`; the VFS takes
+  four). A small plan:
+  1. `Sqlite.open!` returns a handle per database; each has its own
+     `db/` directory, `Database.roc` and generated modules, typed to it.
+  2. Per database: its writer and write lock (a queue's writes never wait
+     behind the main data's), reader pool per shard, heap share, and its
+     own settings: a queue may take `synchronous=NORMAL` (9,285 writes/s
+     against 295 here, DIARY) or group commit, while the main data stays
+     FULL.
+  3. A request holding two writers takes them in one fixed order (or is
+     refused), so two requests cannot wait on each other.
+  4. No atomic commit across two databases (SQLite: atomic per WAL
+     file only): what must commit together stays in one database.
+  (2026-10-06)
 - [ ] Replication, Litestream or our own (owner, 2026-10-06). Why
   Litestream cannot just work (v0.5.17 checked, its db.go): it is another
   process that opens the database with its own SQLite connection,
