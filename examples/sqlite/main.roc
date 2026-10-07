@@ -18,6 +18,7 @@ import db/Reviews
 ## - `POST /reviews?dish_id=D&stars=S`: a dish that is not there, or stars
 ##   outside 1 to 5, is a constraint: 400
 ## - `GET /reviews/count`
+## - `POST /backup`: a copy of the database in `backups/` (three kept)
 ## - `GET /write-on-get`: `Sqlite.write!` for a GET is refused: 500
 ## - `POST /forget`: a write never committed: rolled back, and 500
 ## - `POST /body-during-write`: the body read while holding the writer is
@@ -50,6 +51,10 @@ respond! = |request, { db }| {
 		("GET", ["", "reviews", "count"]) => {
 			{ reviews } = Reviews.count!(Sqlite.read(db, request))?
 			Ok(Server.text("${reviews.to_str()} reviews\n"))
+		}
+		("POST", ["", "backup"]) => {
+			name = Sqlite.backup!(db, request, { directory: "backups", keep: 3 })?
+			Ok(Server.text("${name}\n"))
 		}
 		("GET", ["", "write-on-get"]) => {
 			_ = Sqlite.write!(db, request)?

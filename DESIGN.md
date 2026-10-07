@@ -152,6 +152,13 @@ started it; the choices in TODO.md, WIP 4).
   itemised sum of the connections: running out is an error.
 - **No migrations yet**: a new database gets `schema.sql`; an existing
   one must hold exactly the schema `schema.sql` makes, or `open!` fails.
+- **Durability is the app's choice**, per database: `synchronous` FULL
+  (a commit is on the disk when `commit!` returns) or NORMAL (at the next
+  checkpoint), set and read back on every connection.
+- **Backups from inside.** The VFS's lock keeps other processes out, so
+  `Sqlite.backup!` copies the database (SQLite's online backup, a
+  snapshot from a reader; writes go on) into dated files, synced, then
+  renamed, the oldest past `keep` deleted (`host/backup.zig`).
 - Measured (DIARY, 2026-10-06): a prepared point query costs SQLite
   ~4,800 instructions; a connection per request would cost 24 to 167
   times that; a commit's fdatasync on the laptop is ~3 ms. With SQLite's

@@ -1581,6 +1581,72 @@ comptime {
 }
 
 /// Tag discriminant for Try.
+pub const HostSqlite_backupResultTag = enum(u8) {
+    @"Err" = 0,
+    @"Ok" = 1,
+};
+
+/// Payload union for Try.
+pub const HostSqlite_backupResultPayload = extern union {
+        @"err": __AnonStruct_4c605145331877e7,
+        @"ok": RocStr,
+};
+
+/// Tag union: Try
+pub const HostSqlite_backupResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: HostSqlite_backupResultTag,
+    pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
+        const ptr: *const __AnonStruct_4c605145331877e7 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_backupResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_backupResult(self, amount);
+    }
+} else extern struct {
+    payload: HostSqlite_backupResultPayload,
+    tag: HostSqlite_backupResultTag,
+    pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
+        return self.payload.@"err";
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        return self.payload.@"ok";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostSqlite_backupResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostSqlite_backupResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostSqlite_backupResult) != 40) @compileError("HostSqlite_backupResult size mismatch");
+        if (@alignOf(HostSqlite_backupResult) != 8) @compileError("HostSqlite_backupResult alignment mismatch");
+        if (@offsetOf(HostSqlite_backupResult, "tag") != 32) @compileError("HostSqlite_backupResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostSqlite_backupResult) != 20) @compileError("HostSqlite_backupResult size mismatch");
+        if (@alignOf(HostSqlite_backupResult) != 4) @compileError("HostSqlite_backupResult alignment mismatch");
+        if (@offsetOf(HostSqlite_backupResult, "tag") != 16) @compileError("HostSqlite_backupResult tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
 pub const Init_for_hostResultTag = enum(u8) {
     @"Err" = 0,
     @"Ok" = 1,
@@ -1740,6 +1806,15 @@ pub const HostSqlite_commitArgs = extern struct {
     arg0: u64,
 };
 
+/// Arguments for Host.sqlite_backup!
+/// Roc signature: U64, Str, U32 => Try(Str, { code : U8, message : Str })
+/// Refcounted fields are owned by the hosted function.
+pub const HostSqlite_backupArgs = extern struct {
+    arg0: u64,
+    arg1: RocStr,
+    arg2: u32,
+};
+
 // Platform Type Aliases
 
 pub const HostFile_read_utf8Err = FileNotFoundOrFileTooLargeOrFileUnreadable;
@@ -1771,6 +1846,7 @@ pub const HostSqlite_commitResult = HostSqlite_write_beginResult;
 pub const HostSqlite_commitResultPayload = HostSqlite_write_beginResultPayload;
 pub const HostSqlite_commitResultTag = HostSqlite_write_beginResultTag;
 pub const HostSqlite_commitErr = __AnonStruct_4c605145331877e7;
+pub const HostSqlite_backupErr = __AnonStruct_4c605145331877e7;
 pub const Init_for_hostOk = __AnonStruct_2a70a3dd551fa8a1;
 pub const Respond_for_hostArg0 = __AnonStruct_28781edfe447a702;
 pub const Respond_for_hostArg0Headers = __AnonStruct_82a96c5d55d63488;
@@ -1987,6 +2063,34 @@ pub const HostSqlite_write_beginResultRelease = struct {
     }
 };
 
+fn decrefHostSqlite_backupResult(value: HostSqlite_backupResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().decref(roc_host);
+        },
+        .@"Ok" => {
+        value.payload_ok().decref(roc_host);
+        },
+    }
+}
+
+fn increfHostSqlite_backupResult(value: HostSqlite_backupResult, amount: isize) void {
+    switch (value.tag) {
+        .@"Err" => {
+        value.payload_err().incref(amount);
+        },
+        .@"Ok" => {
+        value.payload_ok().incref(amount);
+        },
+    }
+}
+
+pub const HostSqlite_backupResultRelease = struct {
+    pub fn release(value: HostSqlite_backupResult, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 fn decrefInit_for_hostResult(value: Init_for_hostResult, roc_host: *RocHost) void {
     switch (value.tag) {
         .@"Err" => {},
@@ -2078,6 +2182,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == RocList(BlobOrIntegerOrNullOrRealOrText)) return RocListRelease(RocList(BlobOrIntegerOrNullOrRealOrText), BlobOrIntegerOrNullOrRealOrTextRelease);
     if (T == BlobOrIntegerOrNullOrRealOrText) return BlobOrIntegerOrNullOrRealOrTextRelease;
     if (T == HostSqlite_write_beginResult) return HostSqlite_write_beginResultRelease;
+    if (T == HostSqlite_backupResult) return HostSqlite_backupResultRelease;
     if (T == Init_for_hostResult) return Init_for_hostResultRelease;
     if (T == __AnonStruct_2a70a3dd551fa8a1) return __AnonStruct_2a70a3dd551fa8a1Release;
     if (T == __AnonStruct_a14cd3b7d5755441) return __AnonStruct_a14cd3b7d5755441Release;
@@ -2185,6 +2290,14 @@ pub extern fn hosted_sqlite_write_begin(arg0: u64) callconv(.c) HostSqlite_write
 /// Roc signature: U64 => Try({}, { code : U8, message : Str })
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_sqlite_commit(arg0: u64) callconv(.c) HostSqlite_write_beginResult;
+
+/// Hosted symbol for Host.sqlite_backup!
+/// Roc signature: U64, Str, U32 => Try(Str, { code : U8, message : Str })
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     arg1.decref(roc_host);
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_sqlite_backup(arg0: u64, arg1: RocStr, arg2: u32) callconv(.c) HostSqlite_backupResult;
 
 
 /// Default memory management functions for Roc platforms.

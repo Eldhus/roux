@@ -9,6 +9,7 @@ const testing = std.testing;
 const assert = std.debug.assert;
 const Io = std.Io;
 const database_module = @import("database.zig");
+const backup_module = @import("backup.zig");
 const Database = database_module.Database;
 const Description = database_module.Description;
 const Report = database_module.Report;
@@ -213,16 +214,98 @@ test "database: synchronous as the app asks, on the writer and every reader, rea
 
 /// `PRAGMA synchronous` as the connection reads it.
 fn synchronous_level(connection: *database_module.Connection) !i64 {
+    return integer_of(connection.db, "PRAGMA synchronous");
+}
+
+/// The first column of the first row of `sql`, an integer.
+fn integer_of(db: *sqlite.c.Db, sql: []const u8) !i64 {
     const c = sqlite.c;
     var statement: ?*c.Stmt = null;
-    const sql = "PRAGMA synchronous";
-    if (c.sqlite3_prepare_v3(connection.db, sql, sql.len, 0, &statement, null) != c.ok) {
+    if (c.sqlite3_prepare_v3(db, sql.ptr, @intCast(sql.len), 0, &statement, null) != c.ok) {
         return error.Sqlite;
     }
     const prepared = statement orelse return error.Sqlite;
     defer _ = c.sqlite3_finalize(prepared);
     if (c.sqlite3_step(prepared) != c.row) return error.Sqlite;
     return c.sqlite3_column_int64(prepared, 0);
+}
+
+test "database: backups, a snapshot each, the oldest past keep deleted" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const arena = fixture.arena_state.allocator();
+    const database = try fixture.open(schema, &statements, &report);
+    defer database_module.close(arena, database);
+    var pool = try database_module.ReaderPool.open(arena, database, &report);
+    defer for (pool.readers) |reader| database_module.close_connection(arena, reader);
+    const io = testing.io;
+    try fixture.dir.dir.createDir(io, "backups", .default_dir);
+    const here = std.fs.path.dirname(fixture.path).?;
+    const directory = try std.fs.path.join(arena, &.{ here, "backups" });
+    // A partial copy left by a crash goes; what is not a copy stays.
+    const partial = "backups/backup-19700101T000001Z.partial";
+    try fixture.dir.dir.writeFile(io, .{ .sub_path = partial, .data = "" });
+    try fixture.dir.dir.writeFile(io, .{ .sub_path = "backups/notes.txt", .data = "mine" });
+    var added = collect(&fixture);
+    for ([_][]const u8{ "soup", "bread", "fish" }) |name| {
+        try write_one(database, add, &.{ .{ .text = name }, .{ .integer = 95 }, .null }, &added);
+    }
+    const reader = try pool.lease(io, limits, &report);
+    defer pool.release(io, reader);
+    const first = try backup_at(reader, directory, 2, 1000, &report);
+    try testing.expectEqualStrings("backup-19700101T001640Z.db", &first);
+    try write_one(database, add, &.{ .{ .text = "cake" }, .{ .integer = 45 }, .null }, &added);
+    _ = try backup_at(reader, directory, 2, 1001, &report);
+    try testing.expectEqual(3, try rows_in_copy(arena, directory, "backup-19700101T001640Z.db"));
+    try testing.expectEqual(4, try rows_in_copy(arena, directory, "backup-19700101T001641Z.db"));
+    // The same second again is refused; a bad keep is the app's bug.
+    try testing.expectError(error.Failed, backup_at(reader, directory, 2, 1001, &report));
+    try testing.expectError(error.Failed, backup_at(reader, directory, 0, 1002, &report));
+    try testing.expectEqual(database_module.Failure.misuse, report.failure);
+    _ = try backup_at(reader, directory, 2, 1002, &report);
+    var left: std.ArrayList([]const u8) = .empty;
+    var backups = try fixture.dir.dir.openDir(io, "backups", .{ .iterate = true });
+    defer backups.close(io);
+    var entries = backups.iterate();
+    while (try entries.next(io)) |entry| try left.append(arena, try arena.dupe(u8, entry.name));
+    std.mem.sort([]const u8, left.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+    try testing.expectEqual(3, left.items.len);
+    try testing.expectEqualStrings("backup-19700101T001641Z.db", left.items[0]);
+    try testing.expectEqualStrings("backup-19700101T001642Z.db", left.items[1]);
+    try testing.expectEqualStrings("notes.txt", left.items[2]);
+}
+
+fn backup_at(
+    reader: *database_module.Connection,
+    directory: []const u8,
+    keep: u32,
+    now_s: i64,
+    report: *Report,
+) !backup_module.Name {
+    const options: backup_module.Options = .{
+        .directory = directory,
+        .keep = keep,
+        .now_s = now_s,
+    };
+    return backup_module.backup(reader, testing.io, options, report);
+}
+
+/// The dishes in a copy, after its integrity check.
+fn rows_in_copy(arena: std.mem.Allocator, directory: []const u8, name: []const u8) !i64 {
+    const c = sqlite.c;
+    const path = try std.fmt.allocPrintSentinel(arena, "{s}/{s}", .{ directory, name }, 0);
+    var db: ?*c.Db = null;
+    defer _ = c.sqlite3_close_v2(db);
+    if (c.sqlite3_open_v2(path, &db, c.open_readwrite, null) != c.ok) return error.Sqlite;
+    // integrity_check answers the text "ok": its first row, as an integer, 0.
+    try testing.expectEqual(0, try integer_of(db.?, "PRAGMA integrity_check"));
+    try testing.expectEqual(0, try integer_of(db.?, "PRAGMA quick_check"));
+    return integer_of(db.?, "SELECT count(*) FROM dish");
 }
 
 test "database: a new file gets the schema, and opens again as it is" {

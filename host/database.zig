@@ -70,6 +70,9 @@ pub const reader_cache_kib = 1024;
 /// memory (sorts, joins). A bound to check by measurement (TODO).
 pub const connection_bytes = 4 * 1024 * 1024;
 
+/// The page cache of a backup's copy (backup.zig), one at a time.
+pub const backup_cache_kib = 1024;
+
 /// SQLite's heap for a host of `shards` shards, as an itemised sum; the
 /// host allocates it at startup (`sqlite.Setup`).
 pub fn heap_bytes(shards: u32, limits: Limits) u64 {
@@ -77,9 +80,11 @@ pub fn heap_bytes(shards: u32, limits: Limits) u64 {
     const readers: u64 = @as(u64, shards) * limits.readers_per_shard;
     const writer_cache: u64 = writer_cache_kib * 1024;
     const reader_caches: u64 = readers * reader_cache_kib * 1024;
-    const connections: u64 = (1 + readers) * connection_bytes;
+    const backup_cache: u64 = backup_cache_kib * 1024;
+    // The writer, the readers and a backup's copy.
+    const connections: u64 = (2 + readers) * connection_bytes;
     // memsys5 rounds each allocation up to a power of two: twice, at worst.
-    return 2 * (writer_cache + reader_caches + connections);
+    return 2 * (writer_cache + reader_caches + backup_cache + connections);
 }
 
 /// The write-ahead log is cut back to this after a checkpoint.

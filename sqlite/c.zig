@@ -293,3 +293,15 @@ pub const Vfs = extern struct {
     current_time_int64: *const fn (vfs: *Vfs, out: *i64) callconv(.c) c_int,
 };
 pub extern fn sqlite3_randomness(bytes: c_int, out: *anyopaque) void;
+
+/// SQLite's online backup: a database copied page by page.
+pub const Backup = opaque {};
+pub extern fn sqlite3_backup_init(
+    destination: *Db,
+    destination_name: [*:0]const u8,
+    source: *Db,
+    source_name: [*:0]const u8,
+) ?*Backup;
+/// Pages to copy; -1 for all of them, in one read transaction.
+pub extern fn sqlite3_backup_step(backup: *Backup, pages: c_int) c_int;
+pub extern fn sqlite3_backup_finish(backup: *Backup) c_int;

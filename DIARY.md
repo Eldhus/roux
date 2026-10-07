@@ -758,3 +758,36 @@ committed platform first, byte for byte the committed file): a
 Checked: `zig build test`, with a new test: opened NORMAL, FULL, NORMAL
 on one file, the writer and every reader of a pool read back the level
 asked. examples/sqlite built and started (`synchronous full`).
+
+## 2026-10-06: `Sqlite.backup!`
+
+The dragrace site keeps its races in roux's SQLite, and the owner wants
+backups that need no thought. Nothing outside the app can copy the
+database: roux's VFS holds an open file description lock on it, so
+`sqlite3 .backup` (or a cron's copy) is kept out by design. So the app
+asks: `Sqlite.backup!(db, request, { directory, keep })`.
+
+`host/backup.zig`: SQLite's online backup from a leased reader of the
+request's shard, `step(-1)`: one read transaction, a snapshot, the
+writer committing meanwhile. Into `backup-<UTC>.partial` with no journal
+(a failed copy is deleted, not rolled back), the file synced, renamed to
+`backup-20261006T235959Z.db`, the directory synced: a copy under its
+dated name is whole. Names sort as their times, so rotation deletes the
+first `count - keep` (and any `.partial` a crash left). Bounded: keep 1
+to 256, 512 copies, 4096 directory entries; one backup at a time in the
+process, one a second (the name exists: refused). Refused to GET, HEAD,
+OPTIONS and TRACE, as `write!`. The copy's connection takes 1 MiB of
+page cache and a connection's share from SQLite's heap, added to
+`heap_bytes`. The clock comes in as a parameter, so the test is exact.
+
+Checked: `zig build test`: names (the epoch, a leap day), and a test on
+real files: three dishes copied, a fourth added, copied again (3 and 4
+rows, each copy passing `integrity_check`), the same second refused,
+keep 0 refused, a third copy deleting the first and the crash's
+partial, a file not a copy left alone. Mutation: rotation off fails the
+test; the file's sync off does not (no simulated disk yet: the sim_io
+TODO). examples/sqlite gained `POST /backup`: two copies, a GET 404, the
+same second 500 with the reason logged; the copy read by the sqlite3
+shell: `ok`, journal `wal` (the header copied), 3 rows. The glue
+regenerated (from the committed platform first: byte for byte), only
+additions.
