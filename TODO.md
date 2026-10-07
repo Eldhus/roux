@@ -206,9 +206,6 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] The writer's lock is not FIFO: a waiter woken may lose to one
   arriving. Measure the spread of write waits under contention before
   doing anything (host/database.zig, WriterLock). (2026-10-06)
-- [ ] File the Roc segfault (`x ? mapper` with an argument type that does
-  not fit): ~/devel/rocbugs/try-mapper-mismatch; the owner's call.
-  (2026-10-06)
 - [ ] TigerStyle for `tools/rocstache-gen` (owner: TigerStyle,
   data-oriented). Measured 2026-10-06 with tidy pointed at it: 212
   findings, 202 lines over 100 columns, 6 hidden indirections (the
@@ -219,3 +216,15 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   (2026-10-06)
 
 ## Tickler
+
+### 2026-10-09
+
+- roc-lang/roc#12120 (`x ? mapper` whose argument type does not fit
+  segfaults `roc check`; filed 2026-10-06, owner: "Feldman is really on
+  top of these"). Fixed? Then: try ~/devel/rocbugs/try-mapper-mismatch
+  on the nightly that has it, take that nightly at the weekly Latest Roc
+  chore, strike the gotcha in the roc skill and the row in
+  compiler-bugs.md, update rocbugs' STATUS. roux has no workaround to
+  undo (examples/sqlite's mapper is correct as written); if the fix also
+  reports `{ id }` or record patterns better, nothing here depends on it.
+  Not fixed: a comment on the issue only if something new was learned.
