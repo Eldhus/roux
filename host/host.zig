@@ -81,6 +81,9 @@ threadlocal var roc_allocations_idle: u64 = 0;
 /// This shard's `Io`, for effects that wait (file reads): a fiber waiting
 /// on the disk yields like one waiting on the network.
 threadlocal var shard_io: ?std.Io = null;
+/// The main thread's Io while `init!` runs, before any shard: what a file
+/// read in `init!` (a secret, a setting) waits through.
+var init_io: ?std.Io = null;
 /// The app's static files (`static_dir`), served before `respond!`; read
 /// once at startup and shared read-only by every shard.
 var static_site: ?*const fourneau.site.Site = null;
@@ -171,7 +174,8 @@ const FileResult = @typeInfo(@TypeOf(abi.hosted_file_read_utf8)).@"fn".return_ty
 /// A file read whole through the shard's `Io`, at most `limit_bytes`.
 export fn hosted_file_read_utf8(path: abi.RocStr, limit_bytes: u64) callconv(.c) FileResult {
     defer path.decref(host());
-    const io = shard_io orelse return file_error(.file_unreadable); // not on a shard
+    // On a shard, or in `init!` (the main thread, before the shards).
+    const io = shard_io orelse init_io orelse return file_error(.file_unreadable);
     const gpa = std.heap.smp_allocator;
     const limit: std.Io.Limit = .limited(@intCast(@min(limit_bytes, file_bytes_max) + 1));
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path.asSlice(), gpa, limit) catch |err|
@@ -813,6 +817,7 @@ fn run() !void {
     // heap made now, sized for every connection the shards will open.
     const startup_io = std.Io.Threaded.global_single_threaded.io();
     sqlite_vfs.thread_io = startup_io;
+    init_io = startup_io;
     const shards = shard_count();
     try sqlite_setup(shards);
     const init = abi.roc_init_for_host();
@@ -820,6 +825,7 @@ fn run() !void {
         const code = init.payload_err();
         std.process.exit(@intCast(@max(0, @min(code, 255))));
     }
+    init_io = null;
     const started = init.payload_ok();
     // The app names its port; the deployment may say otherwise (ROUX_PORT),
     // as it says the address: a local run of an app that asks for 443.
