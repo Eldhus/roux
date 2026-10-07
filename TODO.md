@@ -15,7 +15,7 @@
      (2026-10-06): the host serves TLS 1.3 with a certificate from files
      or from ACME at startup, and redirects plain HTTP, all from its
      environment; the templates example ran so against Pebble. M10's app
-     is live: the dragrace site, https://104.248.175.105/, a roux app with
+     is live: the dragrace site, https://fourneau.y2kbugger.com/, a roux app with
      nothing in front, its own certificate, its races in roux's SQLite
      (2026-10-06; its database 2026-10-07; moved to lon1 the same day).
 
