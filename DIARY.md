@@ -716,3 +716,26 @@ table afterwards (the count of answers, exactly); 45,353 reads, every
 one 200; no error logged. After the server stopped, the `sqlite3` shell
 (SQLite's own VFS, recovering roux's WAL): `PRAGMA integrity_check` ok,
 `PRAGMA foreign_key_check` empty. M5 is done.
+
+## 2026-10-06: `synchronous` FULL against NORMAL, on roux's VFS
+
+Asked by the owner (many deployments run NORMAL and accept the
+trade). A NORMAL build from a temporary edit (reverted), against FULL
+(the host's), the database reseeded, CPUs 0-1, three interleaved rounds
+(bench_sync.sh, stall.sh), btrfs on the laptop's NVMe:
+
+| writes, 16 connections | FULL | NORMAL |
+|---|---:|---:|
+| req/s | 295, 300, 213 | 9,475, 9,285, 7,664 |
+| p50 / p99 | 53 / 69-116 ms | 1.3 / 13-25 ms |
+| instructions, user | ~55,700 | ~53,600 |
+| kernel time | 372-444 us | 75-76 us |
+
+31 times the writes. In WAL mode NORMAL does not sync the WAL at each
+commit, only at a checkpoint: a commit is in the kernel's page cache
+when it returns. A process crash loses nothing (the kernel has it); a
+power loss, kernel panic or host failure can lose the commits since the
+last checkpoint's sync (up to `wal_autocheckpoint` pages, ~4 MB here),
+never the database's consistency. Reads beside 100 writes a second, one
+shard: p99 0.27 ms either way (roux's VFS yields on the sync in both).
+`synchronous` stays FULL until the owner decides (TODO).

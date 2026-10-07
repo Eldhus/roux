@@ -191,6 +191,11 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   unsynced writes, fsync errors), so SQLite runs under the deterministic
   simulator through roux's VFS: crash, reopen, `integrity_check`, every
   committed transaction there. (2026-10-06)
+- [ ] Decide `synchronous` (owner): FULL now (295 writes/s, every commit
+  durable when answered); NORMAL measured at 9,285 writes/s, and a power
+  loss or kernel panic can lose the commits since the last checkpoint
+  (DIARY, 2026-10-06). Group commit would keep FULL's promise at a part
+  of NORMAL's rate. (2026-10-06)
 - [ ] Group commit: one fsync for many requests' transactions
   (savepoints in one transaction), if writes need more than the disk's
   ~300 commits a second. (2026-10-06)
