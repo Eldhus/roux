@@ -791,3 +791,12 @@ same second 500 with the reason logged; the copy read by the sqlite3
 shell: `ok`, journal `wal` (the header copied), 3 rows. The glue
 regenerated (from the committed platform first: byte for byte), only
 additions.
+
+## 2026-10-06: `File.read_utf8!` in `init!`
+
+The dragrace site reads its API tokens once, at start. `File.read_utf8!`
+in `init!` answered `FileUnreadable`: the host read files only through a
+shard's `Io`, and `init!` runs on the main thread before any shard. Now
+`init!` reads through the startup `Io` (the one SQLite's VFS uses there),
+set for `init!` only. examples/files reads notes.txt's first line in
+`init!` and answers it at `/first-line`: checked live.
