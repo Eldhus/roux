@@ -9,6 +9,7 @@ const std = @import("std");
 const tidy = @import("tidy");
 
 test {
+    _ = @import("backup.zig");
     _ = @import("database.zig");
     _ = @import("database_test.zig");
     _ = @import("requests.zig");

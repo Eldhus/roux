@@ -25,6 +25,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const abi = @import("roc_platform_abi.zig");
 const database_module = @import("database.zig");
+const backup_module = @import("backup.zig");
 const RequestsType = @import("requests.zig").RequestsType;
 const sqlite = @import("sqlite");
 const sqlite_vfs = sqlite.vfs;
@@ -334,6 +335,7 @@ const SqliteRunResult = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".return_t
 const SqliteParams = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".param_types[3].?;
 const SqliteWriteResult = @typeInfo(@TypeOf(abi.hosted_sqlite_write_begin)).@"fn".return_type.?;
 const SqliteCommitResult = @typeInfo(@TypeOf(abi.hosted_sqlite_commit)).@"fn".return_type.?;
+const SqliteBackupResult = @typeInfo(@TypeOf(abi.hosted_sqlite_backup)).@"fn".return_type.?;
 /// `List(List(Value))`, a row a `List(Value)`, a cell a `Value`.
 const RocRows = @FieldType(@FieldType(SqliteRunResult, "payload"), "ok");
 const RocRow = ListItem(RocRows);
@@ -576,6 +578,46 @@ fn sqlite_write_begin(handle: u64, report: *database_module.Report) error{Failed
     }
     try database_module.begin_write(opened, shard_io.?, report);
     entry.holds_writer = true;
+}
+
+/// `Sqlite.backup!`: the database copied from a reader of the request's
+/// shard (host/backup.zig).
+export fn hosted_sqlite_backup(
+    handle: u64,
+    directory: abi.RocStr,
+    keep: u32,
+) callconv(.c) SqliteBackupResult {
+    defer directory.decref(host());
+    var report: database_module.Report = .{};
+    const name = sqlite_backup(handle, directory.asSlice(), keep, &report) catch
+        return .{ .tag = .Err, .payload = .{ .err = sqlite_error(&report) } };
+    return .{ .tag = .Ok, .payload = .{ .ok = .fromSlice(&name, host()) } };
+}
+
+fn sqlite_backup(
+    handle: u64,
+    directory: []const u8,
+    keep: u32,
+    report: *database_module.Report,
+) error{Failed}!backup_module.Name {
+    const opened = database orelse return no_database(report);
+    const entry = request_entry(handle) orelse return report.fail(.misuse, "not a request", .{});
+    const head = entry.request.?.head;
+    switch (head.method) {
+        .get, .head, .options, .trace => return report.fail(.write_refused, "a {s} request " ++
+            "makes no backup", .{head.method_text}),
+        .post, .put, .delete, .patch, .other => {},
+    }
+    const io = shard_io.?; // a request's effect runs on its shard
+    const readers = shard_readers.?;
+    const reader = try readers.lease(io, opened.limits, report);
+    defer readers.release(io, reader);
+    const now_s = std.Io.Timestamp.now(io, .real).toSeconds();
+    return backup_module.backup(reader, io, .{
+        .directory = directory,
+        .keep = keep,
+        .now_s = now_s,
+    }, report);
 }
 
 /// `Sqlite.commit!`: commits, and gives the writer back (a failed commit

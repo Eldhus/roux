@@ -24,6 +24,7 @@ platform "roux"
 		"hosted_sqlite_run": Host.sqlite_run!,
 		"hosted_sqlite_write_begin": Host.sqlite_write_begin!,
 		"hosted_sqlite_commit": Host.sqlite_commit!,
+		"hosted_sqlite_backup": Host.sqlite_backup!,
 	}
 	targets: {
 		inputs_dir: "targets/",

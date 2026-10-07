@@ -68,4 +68,8 @@ Host := [].{
 
 	## Commits the request's transaction, and gives the writer back.
 	sqlite_commit! : U64 => Try({}, SqliteErr)
+
+	## Copies the database into a directory for the request `body` names,
+	## keeping that many copies; gives the copy's name.
+	sqlite_backup! : U64, Str, U32 => Try(Str, SqliteErr)
 }

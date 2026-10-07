@@ -71,6 +71,9 @@ Sqlite := [].{
 		Misuse(Str),
 	]
 
+	## Where `backup!` writes copies, and how many it keeps (1 to 256).
+	Backup : { directory : Str, keep : U32 }
+
 	## The opened database, for the app's context.
 	Db :: { opened : Bool }
 
@@ -104,6 +107,20 @@ Sqlite := [].{
 	commit! = |Write.{ request }|
 		match Host.sqlite_commit!(request) {
 			Ok({}) => Ok({})
+			Err(err) => Err(DbErr(from_host(err)))
+		}
+
+	## Copies the database as it is now into `directory` (which must
+	## exist), as `backup-20261006T235959Z.db` (UTC), and deletes the
+	## oldest copies past `keep`; gives the copy's name. A copy with its
+	## name is whole and on the disk. It reads a snapshot, so writes go
+	## on meanwhile; outside the app the database cannot be copied (roux
+	## holds a lock on it). A copy writes files: refused to a GET or a
+	## HEAD (`WriteRefused`); one at a time, one a second (`Failed`).
+	backup! : Db, Server.Request, Backup => Try(Str, [DbErr(Err)])
+	backup! = |_db, request, { directory, keep }|
+		match Host.sqlite_backup!(request.body, directory, keep) {
+			Ok(name) => Ok(name)
 			Err(err) => Err(DbErr(from_host(err)))
 		}
 
