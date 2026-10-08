@@ -40,8 +40,10 @@ host). A bare `roc build` makes only an archive now.
 
 `roux dev APP.roc` builds fast, runs the app, and on each save rebuilds
 only what changed and restarts it; the page in the browser reloads
-itself. A markup edit is on the screen in about half a second (no roc),
-a contract or Roc change in about a second (docs/dev-server.md).
+itself. A page's markup edit is on the screen in about 0.3 s (one
+object, no roc), a contract or Roc change in about a second (on the
+dragrace site; docs/dev-server.md). It also runs roux-db when the app
+has `db/`, as `roux build` does.
 `--port=N`, `--static=DIR` (the app's static files, which restart it).
 
 Zig 0.17.0 (`.zig-version`) and the Roc nightly in `.roc-version`.

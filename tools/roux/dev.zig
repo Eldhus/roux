@@ -125,18 +125,20 @@ const State = struct {
         const start = Io.Timestamp.now(io, .awake);
         const before = try digests(arena, io, state.options);
         if (before.sql_files > 0 and before.sql != state.built.sql) {
-            try state.query_types(arena, io, stderr);
+            pipeline.query_types(arena, io, app) catch |err| return state.failed(stderr, err);
         }
         const paths: pipeline.Paths = try .of(arena, app);
         const generated = pipeline.generate(arena, io, paths, app, stderr) catch |err|
             return state.failed(stderr, err);
         // After generation: a contract that changed rewrote its Page.roc.
         const now = try digests(arena, io, state.options);
-        const parts: pipeline.Parts = .{
-            .roc = now.roc != state.built.roc,
-            .templates = now.templates != state.built.templates or generated.contracts_changed,
-        };
-        const changed = parts.roc or parts.templates or now.static != state.built.static;
+        const roc = now.roc != state.built.roc;
+        // Only the templates an edit touched compile (their objects are
+        // named by what they are made from); none, when only Roc changed.
+        const objects = generated.objects;
+        const compiled = pipeline.compile(arena, io, paths, app, .dev, roc, objects) catch |err|
+            return state.failed(stderr, err);
+        const changed = roc or compiled > 0 or now.static != state.built.static;
         // Nothing changed, and the app runs: nothing to do. (Exited: start
         // it again, it may have been a passing failure.)
         if (!changed and state.child != null) {
@@ -147,21 +149,18 @@ const State = struct {
             state.failing = false;
             return;
         }
-        if (parts.roc or parts.templates) {
-            pipeline.compile(arena, io, paths, app, .dev, parts) catch |err|
+        if (roc or compiled > 0) {
+            pipeline.link(arena, io, paths, app, .dev, generated.objects) catch |err|
                 return state.failed(stderr, err);
-            pipeline.link(arena, io, paths, app) catch |err| return state.failed(stderr, err);
         }
         state.built = now;
         state.build += 1;
         state.failing = false;
         try state.restart(arena, io);
-        const what = if (parts.roc)
-            "roc and templates"
-        else if (parts.templates) "templates" else "a restart";
-        try stderr.print("roux dev: build {d} ok ({s}) in {d} ms\n", .{
+        try stderr.print("roux dev: build {d} ok ({s}{d} objects) in {d} ms\n", .{
             state.build,
-            what,
+            if (roc) "roc, " else "",
+            compiled,
             pipeline.milliseconds(start, Io.Timestamp.now(io, .awake)),
         });
     }
@@ -197,20 +196,6 @@ const State = struct {
             state.build,
         }) catch {};
         return err;
-    }
-
-    /// `roux-db gen db`, from beside this roux.
-    fn query_types(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer) !void {
-        var buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const self_len = try Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &buffer);
-        const bin = std.fs.path.dirname(buffer[0..self_len]) orelse ".";
-        const roux_db = try std.fs.path.join(arena, &.{ bin, "roux-db" });
-        var child = try std.process.spawn(io, .{
-            .argv = &.{ roux_db, "gen", "db" },
-            .cwd = .{ .path = state.options.app.dir },
-            .stdin = .ignore,
-        });
-        if (!(try child.wait(io)).success()) return state.failed(stderr, error.ChildFailed);
     }
 
     /// The old build stopped (its database closed), the new one started,

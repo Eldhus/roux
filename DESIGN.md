@@ -205,7 +205,11 @@ tree and no interpreter.
    glue`** runs on that platform, only when a contract changed (~0.5 s):
    it emits each `Ctx` as a Zig `extern struct` in the layout the Roc
    compiler chose. Nothing guesses an offset.
-3. **`zig build-obj`** compiles `templates.o`. The renderer is one
+3. **`zig build-obj`** compiles an object per template (`part.zig`, its
+   root naming the template) and a dispatcher (`object.zig`), each only
+   when no object exists by the hash of what it is made from: the
+   template, the partials it reaches, the registry, the glue, the
+   renderer. Editing one page compiles one object. The renderer is one
    hand-written generic, `Compiled(registry, index)` (render.zig): Zig's
    comptime runs the parser on the embedded source, checks every field
    read against the glue struct (roux build has checked the same already,
@@ -227,14 +231,18 @@ tree and no interpreter.
    out.write_static("</table>…");
    ```
 
-   The object exports `hosted_template_render(id, box)`: a switch on the
-   id, a pass that measures the output exactly, one allocation of that
-   size, the render (asserted to fill it), the box released, a Roc `Str`
+   A part exports its template's measure and render functions, named by
+   its id; the dispatcher exports `hosted_template_render(id, box)`: a
+   switch on the id, the measure (exact), one allocation of that size,
+   the render (asserted to fill it), the box released, a Roc `Str`
    returned. Partials (`{{> Top}}`) compile inline, in the includer's
-   scope.
+   scope; a line holding only a section, comment or partial tag goes
+   with it (Mustache's standalone rule, as before). Both use a panic
+   handler that reports through the host's `roc_crashed`, not std's,
+   whose stack traces cost ~290 ms of every Debug compile.
 4. **`roc build`** emits the app as an archive (the platform's target is
    `output: Archive`: crt1.o, the host, the app, Roc's builtins, musl).
-5. **roux links** the archive and `templates.o` (`zig ld.lld`, ~40 ms)
+5. **roux links** the archive and the objects (`zig ld.lld`, 40-80 ms)
    into the one static binary.
 
 At run time `Page.render!(ctx)` boxes the record and calls the host,
@@ -243,12 +251,17 @@ which runs the code compiled for that template.
 ### Development and production
 
 The same source and the same generated code; only the optimization
-differs. Development builds `templates.o` Debug (~370 ms, Zig's own
-backend) and the app `--opt=dev`; production ReleaseSafe (~15 s; safe,
-as the host ships) and `--opt=speed`. Editing markup is steps 3 and 5 and a restart, no roc,
-no glue: ~0.45 s against 3.0 s when templates were Roc. A contract
-change is all five. [docs/dev-server.md](docs/dev-server.md) has the
-rest.
+differs. Development builds the objects Debug (Zig's own backend; a page
+of the dragrace site ~220 ms, an empty registry ~40 ms) and the app
+`--opt=dev`; production ReleaseSafe (safe, as the host ships) and
+`--opt=speed`. Editing a page's markup is one object, the link and a
+restart, no roc, no glue: ~0.3 s on the site against 3.0 s when
+templates were Roc; a partial in nine pages ~0.9 s. A contract change is
+all five. [docs/dev-server.md](docs/dev-server.md) has the rest.
+
+A template that reads nothing (`Bottom`) has the contract `{}`, which
+glue cannot lay out (a hosted function drops a zero-sized argument): its
+module boxes a `U8` placeholder instead.
 
 ### What it costs the app
 
@@ -298,8 +311,8 @@ platform too. A module returns when an app needs it, not before.
   named at its own build. Its template compiler is `tools/rocstache/`.
   `roux dev APP.roc` (`tools/roux/dev.zig`) runs the app and rebuilds
   it as it is edited: content hashes decide what an edit needs (a query:
-  roux-db; a template: the templates object; Roc: roc), never roc for
-  markup; then the link, and the app restarted on two shards with
+  roux-db; a template: its object and its includers'; Roc: roc), never
+  roc for markup; then the link, and the app restarted on two shards with
   `ROUX_DEV`. A failed build leaves the last good one serving; the
   app's own exit is reported; SIGINT or SIGTERM stops both. The
   language server the old compiler had (`rocstache-gen lsp`, for Zed) is

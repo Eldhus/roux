@@ -1014,3 +1014,61 @@ Found on the way:
   command contained killed that shell (exit 144). Stop processes by PID
   or by exact command name (`ps -eo pid,comm`), as the benchmarking
   skill says.
+
+## 2026-10-07: the dragrace site on the branch; an object per template
+
+The site (fourneau-dragrace, branch `templates`), 12 templates with
+partials, built by `roux build --dev site/main.roc`. What it took:
+- Two things roux lacked. `roux build` now runs roux-db when the app
+  has `db/schema.sql` (one step, as `roux dev` does). And `Bottom` reads
+  nothing: its contract is `{}`, and glue drops a hosted function's
+  zero-sized argument (`param_types[0]` of none), so such a template's
+  module boxes a `U8` placeholder and glue never sees it.
+- The site: `render` is `render!` (and `not_found!` effectful); its view
+  records carried what no template reads (a class's tab `label`, chart
+  lines' `end_x`/`end_y` for spreading labels): the lines are drafts
+  until their labels are placed, then the contract's records, and the
+  one class shown is mapped to its contract at the page.
+- Its pages differed from main's by a byte or two: the old compiler
+  removed a line holding only a section, comment or partial tag
+  (Mustache's standalone rule), which the new parser did not. Now it
+  does, as before (a test). Then main's site build (`out/dev/dragrace-
+  site`) and the branch's, each on a copy of site.db: 17 pages and data
+  files byte for byte (`/`, `/history`, the tab fragments, the JSON).
+
+Then `roux dev` on a copy of the site (port 8099, `--static=static`):
+markup edits took 1.43-1.50 s, every edit compiling all 12 templates in
+one Debug object (1.22 s, 29 MB). Where it went:
+
+| object, Debug | compile |
+|---|---|
+| no templates, std's panic handler | 327 ms |
+| no templates, `no_panic` | 35 ms |
+| no templates, `FullPanic` over the host's `roc_crashed` | 43 ms |
+| the site's 12, std's handler / ours | 1,218 / 988 ms |
+| one template alone, ours: Top, AboutPage, RaceClasses, IndexPage | 111, 159, 272, 392 ms |
+| a Zig cache hit of one (same inputs) | ~145 ms |
+
+So: our panic handler (it reports through the host, which prints and
+aborts), and an object per template (part.zig; object.zig is the
+dispatcher, calling each part's `rocstache_measure_<id>` and
+`rocstache_render_<id>` through `@extern`; `Out` is `extern` now). roux
+compiles an object only when none exists by the hash of what it is made
+from (template, partials reached, registry, glue, renderer; Zig's own
+cache hit costs 145 ms), up to 16 at once beside roc, links them all,
+and deletes this mode's stale ones. `std.debug.simple_panic` does not
+compile on 0.17 ("error set is discarded" in debug/simple_panic.zig).
+
+Save to new page, `roux dev` on the site copy:
+
+| edit | before (one object) | now |
+|---|---|---|
+| a page's markup (AboutPage) | 1.43-1.50 s | 266-298 ms (1 object, ~220 ms) |
+| a partial in nine pages (Top) | | 927-948 ms (9 objects at once) |
+| Roc (`main.roc`) | 1.28-1.33 s | (roc, ~1.2 s) |
+| a static file | 78-82 ms | |
+| `dragrace site dev` today, any template | 3.0 s | |
+
+Every example builds in ~160 ms of compiling (`--dev`), from ~450.
+Checked again after: examples/templates byte for byte as main's, the
+site's 17 pages too; `zig build test` and tidy.

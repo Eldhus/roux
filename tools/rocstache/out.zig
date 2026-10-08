@@ -7,8 +7,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 /// What a template renders into: a buffer of exactly the measured size,
-/// so writes never check for room (asserted in safe builds).
-pub const Out = struct {
+/// so writes never check for room (asserted in safe builds). `extern`: the
+/// dispatcher hands it to a part, another object.
+pub const Out = extern struct {
     buffer: [*]u8,
     capacity: usize,
     len: usize = 0,

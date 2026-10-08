@@ -120,10 +120,15 @@ pub fn parse(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!voi
     var at: usize = try skip_block(source, tree, diagnostic);
     var text_start = at;
     while (std.mem.indexOfPos(u8, source, at, "{{")) |tag_start| {
-        if (tag_start > text_start) {
-            try push_text(tree, source[text_start..tag_start], text_start, diagnostic);
+        const found = try bounds(source, tag_start, diagnostic);
+        // A standalone tag takes its whole line with it (Mustache's rule).
+        const line = standalone(source, text_start, tag_start, found);
+        const text_end = if (line) |l| l.start else tag_start;
+        if (text_end > text_start) {
+            try push_text(tree, source[text_start..text_end], text_start, diagnostic);
         }
-        at = try tag(source, tag_start, tree, &open, &open_len, diagnostic);
+        try add_tag(found, tag_start, tree, &open, &open_len, diagnostic);
+        at = if (line) |l| l.after else found.end;
         text_start = at;
     }
     if (open_len != 0) {
@@ -145,18 +150,20 @@ fn skip_block(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!us
     tree.block = source[3..end];
     tree.block_offset = 3;
     const after = end + 3;
+    if (std.mem.startsWith(u8, source[after..], "\r\n")) return after + 2;
     return if (after < source.len and source[after] == '\n') after + 1 else after;
 }
 
-/// One tag at `start`; returns the offset after it.
-fn tag(
-    source: []const u8,
-    start: usize,
-    tree: *Tree,
-    open: *[depth_max]u16,
-    open_len: *usize,
-    diagnostic: *Diagnostic,
-) Error!usize {
+const Bounds = struct {
+    /// What is between the braces, trimmed.
+    inner: []const u8,
+    /// The offset after the tag.
+    end: usize,
+    triple: bool,
+};
+
+/// The tag at `start`.
+fn bounds(source: []const u8, start: usize, diagnostic: *Diagnostic) Error!Bounds {
     const triple = std.mem.startsWith(u8, source[start..], "{{{");
     const close: []const u8 = if (triple) "}}}" else "}}";
     const inner_start = start + close.len;
@@ -164,6 +171,53 @@ fn tag(
         return fail(diagnostic, start, "a tag that never closes", "");
     const inner = std.mem.trim(u8, source[inner_start..inner_end], " \t");
     if (inner.len == 0) return fail(diagnostic, start, "an empty tag", "");
+    return .{ .inner = inner, .end = inner_end + close.len, .triple = triple };
+}
+
+const Line = struct {
+    /// Where the tag's line starts.
+    start: usize,
+    /// After its line break (or the end of the file).
+    after: usize,
+};
+
+/// The tag's line, when the tag stands alone on it: a section, inverted,
+/// conditional or closing tag, a comment or a partial, with only spaces or
+/// tabs around it, and no other tag earlier on the line (`text_start` is
+/// after the last tag). The template then reads as written in a file, a
+/// tag a line, without blank lines where the tags were.
+fn standalone(source: []const u8, text_start: usize, tag_start: usize, found: Bounds) ?Line {
+    if (found.triple) return null;
+    switch (found.inner[0]) {
+        '#', '^', '?', '/', '!', '>' => {},
+        else => return null,
+    }
+    const before = source[0..tag_start];
+    const line_start = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |n| n + 1 else 0;
+    if (line_start < text_start) return null;
+    if (std.mem.trim(u8, source[line_start..tag_start], " \t").len != 0) return null;
+    var after = found.end;
+    while (after < source.len and (source[after] == ' ' or source[after] == '\t')) after += 1;
+    const rest = source[after..];
+    const line_break: usize = if (rest.len == 0)
+        0
+    else if (rest[0] == '\n')
+        1
+    else if (std.mem.startsWith(u8, rest, "\r\n")) 2 else return null;
+    return .{ .start = line_start, .after = after + line_break };
+}
+
+/// The tag `found` at `start`, into the tree.
+fn add_tag(
+    found: Bounds,
+    start: usize,
+    tree: *Tree,
+    open: *[depth_max]u16,
+    open_len: *usize,
+    diagnostic: *Diagnostic,
+) Error!void {
+    const inner = found.inner;
+    const triple = found.triple;
     const rest = std.mem.trim(u8, inner[1..], " \t");
     if (triple and inner[0] != '!' and !is_path_start(inner[0])) {
         return fail(diagnostic, start, "`{{{ }}}` takes a value", inner);
@@ -208,7 +262,6 @@ fn tag(
             try push(tree, node, diagnostic);
         },
     }
-    return inner_end + close.len;
 }
 
 fn close_section(
@@ -382,6 +435,22 @@ test "parse: partials, conditionals, raw values, parents, arguments with spaces"
     try testing.expectEqual(@as(u8, 1), n[4].up);
     try testing.expectEqualStrings("a dish", n[4].pipes[0].args[0]);
     try testing.expectEqual(@as(u8, 0), n[5].path_len);
+}
+
+test "parse: a tag alone on its line takes the line with it" {
+    var tree: Tree = .{};
+    var diagnostic: Diagnostic = .{};
+    // Standalone: `{{#a}}`, `  {{/a}}` (indented), `{{> Bottom}}` at the
+    // end. Not: `{{ x }}` (a value), `<p>{{#b}}` (text before it).
+    const source = "{{#a}}\n<li>{{ x }}</li>\n  {{/a}}\n<p>{{#b}}y{{/b}}</p>\n{{> Bottom}}\n";
+    try parse(source, &tree, &diagnostic);
+    const n = tree.slice();
+    try testing.expectEqualStrings("<li>", n[1].text);
+    try testing.expectEqualStrings("</li>\n", n[3].text);
+    try testing.expectEqualStrings("<p>", n[4].text);
+    try testing.expectEqualStrings("</p>\n", n[7].text);
+    try testing.expectEqual(Kind.partial, n[8].kind);
+    try testing.expectEqual(@as(u16, 9), tree.len);
 }
 
 test "parse: each mistake says where and what" {

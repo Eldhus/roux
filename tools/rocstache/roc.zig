@@ -23,6 +23,13 @@ pub const Module = struct {
     /// The contract as one line (contract.write_line), and its hash.
     line: []const u8,
     id: u64,
+
+    /// A template that reads nothing (`Bottom`, a closing partial): glue
+    /// cannot lay out `{}` (a hosted function drops a zero-sized
+    /// argument), so its box holds a `U8` placeholder instead.
+    pub fn empty(module: Module) bool {
+        return std.mem.eql(u8, module.line, "{}");
+    }
 };
 
 /// The app's `Page.roc`.
@@ -45,8 +52,8 @@ pub fn write_module(module: Module, writer: *Writer) Writer.Error!void {
     try writer.print(
         "\n\n\t## The page: the template as compiled into the app, rendered by the host.\n" ++
             "\trender! : Ctx => Str\n" ++
-            "\trender! = |ctx| Rocstache.compiled_render!(0x{x:0>16}, Box.box(ctx))\n}}\n",
-        .{module.id},
+            "\trender! = |{s}| Rocstache.compiled_render!(0x{x:0>16}, Box.box({s}))\n}}\n",
+        if (module.empty()) .{ "_ctx", module.id, "0.U8" } else .{ "ctx", module.id, "ctx" },
     );
 }
 
@@ -107,6 +114,7 @@ pub fn hosted_name(name: []const u8, buffer: []u8) []const u8 {
 pub fn write_contracts(modules: []const Module, writer: *Writer) Writer.Error!void {
     try writer.writeAll("Contracts := [].{\n");
     for (modules) |module| {
+        if (module.empty()) continue;
         var buffer: [256]u8 = undefined;
         const lower = hosted_name(module.name, &buffer);
         try writer.print("\t{s}! : {s} => {{}}\n", .{ lower, module.line });
@@ -122,6 +130,7 @@ pub fn write_platform(modules: []const Module, writer: *Writer) Writer.Error!voi
         "\tprovides { \"contracts_main\": main_for_host! }\n" ++
         "\thosted {\n");
     for (modules) |module| {
+        if (module.empty()) continue;
         var buffer: [256]u8 = undefined;
         const lower = hosted_name(module.name, &buffer);
         try writer.print("\t\t\"contract_{s}\": Contracts.{s}!,\n", .{ lower, lower });
@@ -142,15 +151,24 @@ pub fn write_registry(modules: []const Module, writer: *Writer) Writer.Error!voi
         \\    return @typeInfo(@TypeOf(f)).@"fn".param_types[0].?;
         \\}
         \\
+        \\/// A template that reads nothing: its box holds a `U8` placeholder.
+        \\pub const Empty = extern struct { placeholder: u8 };
+        \\
         \\pub const all = .{
         \\
     );
     for (modules) |module| {
         var buffer: [256]u8 = undefined;
+        var ctx_buffer: [300]u8 = undefined;
+        const lower = hosted_name(module.name, &buffer);
+        const ctx = if (module.empty())
+            "Empty"
+        else
+            std.fmt.bufPrint(&ctx_buffer, "Arg(abi.contract_{s})", .{lower}) catch unreachable;
         try writer.print(
-            "    .{{ .name = \"{s}\", .id = 0x{x:0>16}, .Ctx = Arg(abi.contract_{s}), " ++
+            "    .{{ .name = \"{s}\", .id = 0x{x:0>16}, .Ctx = {s}, " ++
                 ".source = @embedFile(\"{s}.rocstache\") }},\n",
-            .{ module.name, module.id, hosted_name(module.name, &buffer), module.name },
+            .{ module.name, module.id, ctx, module.name },
         );
     }
     try writer.writeAll("};\n");
