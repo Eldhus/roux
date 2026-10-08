@@ -65,12 +65,15 @@
      byte the `templates` branch's; the Menu at 17,300 instructions a
      request against 15,200 (comptime) and 39,030 (main); a markup edit
      served in 0.11-0.15 s, Roc 2.0 s (DESIGN.md, Templates; DIARY).
-     The owner chooses between the branches; this one's competitor and
-     site ports are scratch only. Next, if chosen: port the site and the
-     competitor on fourneau-dragrace's branch; throughput measured on a
-     quiet machine; loop rotation in the compiler (a row's closing run
-     merged with the next row's opening, measured 1,928 against 2,345 in
-     the microbenchmark).
+     The competitor is ported on fourneau-dragrace's branch
+     `templates-vm`; raced against `templates` with `dragrace adhoc race`
+     on dedicated cores, six races: 3.6-5.2% behind (139k against
+     144-147k requests a second). The site's port is still scratch only.
+     The owner chooses between the branches; item 5 (one renderer in the
+     platform, no walkers) comes first. Then, if this one is chosen: the
+     site on fourneau-dragrace's branch; loop rotation in the compiler (a
+     row's closing run merged with the next row's opening, measured 1,928
+     against 2,345 in the microbenchmark).
    - Todo (owner, 2026-10-08): **in dev, reread the bytecode, no link and
      no restart**, for a markup edit. The biggest benefit is not losing
      the server's state to change a page (its memory, open SSE streams,
