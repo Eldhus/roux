@@ -1167,3 +1167,70 @@ the comptime renderer in the host (5,610, ReleaseSafe, prototype); and
 the host's tricks apply to the comptime renderer as well (its measure
 pass and byte-at-a-time tails). My 25-30k was wrong by ~5x: the cost
 was never interpretation, it was concatenating strings.
+
+## 2026-10-08: templates as bytecode, built (branch templates-vm)
+
+The comptime renderer replaced, on this branch: `tools/rocstache`'s
+render, object, part, symbols and out go; bytecode.zig (the compiler),
+elf.zig (the object) and a new roc.zig (the walkers) come; the host's
+templates.zig writes the parts. DESIGN.md, Templates, says how it works.
+Choices made on the way, each for the hot path or the loop:
+
+- **The mode rides in the run word.** A Str value's formatting (escaped,
+  raw, upper, lower, url, and upper/lower unescaped for triple braces)
+  is the top byte of the run word the bytecode holds, so the walker
+  appends `Value(run, s0.name)` without looking at it, and the part type
+  is four tags, not eight.
+- **`../` is counted in the contract.** A walker per contract scope takes
+  its enclosing scopes as arguments (`s0`, `s1`, ...), so a selector is
+  (scopes up, field index by name), contract-only. The template's scopes
+  differ when a section opens an ancestor's field: the compiler
+  translates, and refuses a read the contract does not enclose.
+- **No compiler for markup.** roux writes the object itself, an ELF
+  relocatable of one section and one symbol (`rocstache_data`: the
+  lengths, the code, the text, 32 bytes of slack for block copies). The
+  link (`zig ld.lld`) is all a markup edit costs after the 10 ms of
+  generation; the glue for contracts and the per-template objects go.
+- **One program for all templates**, with a header of ranges: a
+  template's module names only its index, and a partial edit is the
+  same as a page edit.
+
+Checked: both examples' pages and the dragrace site's twelve pages and
+patches, byte for byte the `templates` branch's (a scratch copy of the
+site at /tmp/claude-1000/vmsite, its main.roc ported to `render(code,
+ctx)`; the competitor likewise at /tmp/claude-1000/vmcomp). Tests and
+tidy pass.
+
+Measured (`/tmp/claude-1000/bench/ab-vm.sh`, scratch: the server on CPUs
+0-1, two shards, oha on 2-7, `perf stat -e instructions:u` on the
+server, five interleaved rounds):
+
+| competitor | instructions/request |
+|---|---|
+| comptime (`templates`) | 15,180-15,253 |
+| VM (this) | 17,276-17,333 |
+
+Throughput was not measurable: load 2.2 (a browser and an editor), the
+comptime build swinging between 26k and 74k requests a second within
+the run. The VM's profile (`perf record -e instructions:u`):
+`hosted_templates_bytes` 25.5% and `digits` 5.8% (~5.4k: the
+microbenchmark's 3.8k plus the parts' release and dispatch), the walker
+16.9% (~2.9k, against 1.9k rotated in the microbenchmark: no rotation
+here, and ReleaseSafe's checks).
+
+The loop (`roux dev` on the site copy, five edits each, from the write
+to the change served; roux dev's own line in brackets):
+
+| edit | VM | `templates` branch |
+|---|---|---|
+| a page's markup | 110-140 ms (51-92) | 266-298 ms |
+| Top, a called partial in eight pages | 110-154 ms | 427-574 ms |
+| main.roc | 1,951-2,057 ms | ~1.3 s |
+
+A Roc edit costs more: 15,000 lines of walkers on the site
+(`roc check` 1.4 s; a cold `--opt=dev` 3.1 s). The site's release
+build: roc 78 s against 50 s. Learned: `roux build` without `--dev` is
+`--opt=speed`, so its 78 s is LLVM, not a slow dev backend (I first
+read it so, and timed `--no-cache` and the cache before finding it).
+Also: `**` is gone in Zig 0.17 (`@splat`, `splatByteAll`), as the zig
+skill notes say.

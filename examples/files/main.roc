@@ -2,6 +2,7 @@ app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.File
+import pf.Rocstache
 import Notes
 
 ## Static files and file reads: `public/` is served by the host before
@@ -9,7 +10,7 @@ import Notes
 ## from disk on every request, so a change shows without a restart;
 ## `/first-line` answers notes.txt's first line as `init!` read it once, at
 ## start (as a secret or a setting is read).
-Context : { first_line : Str }
+Context : { first_line : Str, code : Rocstache.Templates }
 
 program = { init!, respond! }
 
@@ -21,16 +22,16 @@ init! = || {
 			Ok({ before, .. }) => before
 			Err(_) => notes
 		}
-	Ok({ config: { port: 8080, static_dir: "public" }, context: { first_line } })
+	Ok({ config: { port: 8080, static_dir: "public" }, context: { first_line, code: Rocstache.load!() } })
 }
 
 respond! : Server.Request, Context => Try(Server.Response, [NotFound, FileErr(File.FileErr)])
-respond! = |request, { first_line }|
+respond! = |request, { first_line, code }|
 	match request.target {
 		"/first-line" => Ok(Server.text("${first_line}\n"))
 		"/notes" => {
 			notes = File.read_utf8!("notes.txt", 64 * 1024)?
-			Ok(Server.html(Notes.render!({ notes: notes })))
+			Ok(Rocstache.html!(Notes.render(code, { notes: notes })))
 		}
 		"/missing" => {
 			_ = File.read_utf8!("no-such-file.txt", 1024)?

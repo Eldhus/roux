@@ -28,6 +28,7 @@ const database_module = @import("database.zig");
 const backup_module = @import("backup.zig");
 const RequestsType = @import("requests.zig").RequestsType;
 const dev = @import("dev.zig");
+const templates = @import("templates.zig");
 const sqlite = @import("sqlite");
 const sqlite_vfs = sqlite.vfs;
 const fourneau = @import("fourneau");
@@ -167,6 +168,16 @@ export fn hosted_stdout_line(line: abi.RocStr) callconv(.c) void {
 export fn hosted_stderr_line(line: abi.RocStr) callconv(.c) void {
     write_line(2, line.asSlice());
     line.decref(host());
+}
+
+/// The templates' bytecode the build linked in (templates.zig).
+export fn hosted_templates_load() callconv(.c) templates.Code {
+    return templates.load(host());
+}
+
+/// A page's parts written out (templates.zig); the parts are released.
+export fn hosted_templates_bytes(parts: templates.Parts) callconv(.c) templates.Bytes {
+    return templates.bytes(parts, host());
 }
 
 /// A whole line to a standard stream. Rare (logs), so a plain blocking

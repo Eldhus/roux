@@ -25,7 +25,8 @@ platform "roux"
 		"hosted_sqlite_write_begin": Host.sqlite_write_begin!,
 		"hosted_sqlite_commit": Host.sqlite_commit!,
 		"hosted_sqlite_backup": Host.sqlite_backup!,
-		"hosted_template_render": Host.template_render!,
+		"hosted_templates_load": Host.templates_load!,
+		"hosted_templates_bytes": Host.templates_bytes!,
 	}
 	# An archive, not an executable: `roux build` links it with the app's
 	# templates object (DESIGN.md, Templates).

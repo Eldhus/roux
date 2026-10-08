@@ -31,18 +31,18 @@ zig build sqlite-floor             # SQLite alone, timed (vendor/sqlite, sqlite/
 zig build db-floor                 # the database workloads without Roc (host/floor.zig)
 ```
 
-`roux build APP.roc` builds an app: its templates' contracts (each
-`Page.rocstache` beside it gets a `Page.roc`), then roc and the templates
-compiled by Zig at once, then the link, into `APP` beside `APP.roc`
-(DESIGN.md, Templates). `--dev` builds in about half a second; without
-it, optimized (roc `--opt=speed`, the templates ReleaseSafe, as the
-host). A bare `roc build` makes only an archive now.
+`roux build APP.roc` builds an app: its templates (each
+`Page.rocstache` beside it gets a `Page.roc`, its contract and the Roc
+walkers that render it; all the templates' bytecode goes into one object
+roux writes itself), then roc, then the link, into `APP` beside
+`APP.roc` (DESIGN.md, Templates). `--dev` builds with roc `--opt=dev`;
+without it, `--opt=speed`. A bare `roc build` makes only an archive now.
 
 `roux dev APP.roc` builds fast, runs the app, and on each save rebuilds
 only what changed and restarts it; the page in the browser reloads
-itself. A page's markup edit is on the screen in about 0.3 s (one
-object, no roc), a contract or Roc change in about a second (on the
-dragrace site; docs/dev-server.md). It also runs roux-db when the app
+itself. A markup edit is on the screen in about 0.15 s (no compiler
+runs: the bytecode is regenerated and linked), a contract or Roc change
+in about 2 s (on the dragrace site; docs/dev-server.md). It also runs roux-db when the app
 has `db/`, as `roux build` does.
 `--port=N`, `--static=DIR` (the app's static files, which restart it).
 

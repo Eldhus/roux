@@ -55,6 +55,23 @@
      dev lacks against the Go `site dev` (docs/dev-server.md, on main),
      then the language server.
 
+4. **Templates as bytecode, rendered by pure Roc: the experiment against
+   item 3.** (owner, 2026-10-08: "couldn't you optimize bytecode and
+   render() to be FAR better than the roc code-gen style ... be creative
+   on the vm hot path ... do the templates-vm on yet another worktree")
+   - Where it stands (2026-10-08, branch `templates-vm`, worktree
+     `../roux-templates-vm`, on top of `templates`): built. The examples
+     and every page of the dragrace site (a scratch copy, ported) byte for
+     byte the `templates` branch's; the Menu at 17,300 instructions a
+     request against 15,200 (comptime) and 39,030 (main); a markup edit
+     served in 0.11-0.15 s, Roc 2.0 s (DESIGN.md, Templates; DIARY).
+     The owner chooses between the branches; this one's competitor and
+     site ports are scratch only. Next, if chosen: port the site and the
+     competitor on fourneau-dragrace's branch; throughput measured on a
+     quiet machine; loop rotation in the compiler (a row's closing run
+     merged with the next row's opening, measured 1,928 against 2,345 in
+     the microbenchmark).
+
 
 ## Plan
 

@@ -167,123 +167,148 @@ started it; the choices in TODO.md, WIP 4).
 
 ## Templates
 
-Built on the `templates` branch (TODO, WIP 3; DIARY, 2026-10-07). It
-replaced the compiler that turned a template into Roc code
-(`tools/rocstache-gen`, gone).
+This branch (`templates-vm`, DIARY 2026-10-08) is the second of two
+experiments; the `templates` branch has the first, templates compiled to
+machine code by Zig. Both replace the compiler that turned a template
+into Roc code (`tools/rocstache-gen`).
 
-A rocstache template is compiled to machine code by Zig. Not to Zig
-source, not to a bytecode: Zig's compiler runs the template parser
-while it compiles, and what it emits is straight-line x86 specialized to
-that one template and its contract. At run time there is no parser, no
-tree and no interpreter.
+A rocstache template is compiled to **bytecode**, and the page is
+rendered by **pure Roc**: generated walkers run the bytecode over the
+page's record and return the page as a list of parts, which the host
+writes out. The bytecode is data: editing markup changes it and nothing
+else, so no compiler runs. The walkers are Roc written from the contract
+alone, so they change only when the contract does.
 
 ### What a build does
 
-1. **`roux build`** (`tools/roux`, with the template compiler
-   `tools/rocstache`) parses each `Page.rocstache` beside the app and
-   decides its **contract**, the record it reads: the `Ctx` its `{{% %}}`
-   block declares, or one inferred from its tags (dotted paths are
-   records, a section reading its element is a list, one that does not
-   is a Bool, other leaves are `Str`). It writes `Page.roc`, which holds
-   only that:
+1. **`roux build`** (`tools/roux`, with `tools/rocstache`) parses each
+   `Page.rocstache` and decides its **contract** (below: declared or
+   inferred). It writes `Page.roc`: the contract, `render`, and one
+   **walker** per scope of the contract (the root record, each record
+   field, each list's element, each Bool a section opens):
 
    ```roc
    Page :: [].{
-       Ctx : { title : Str, items : List({ name : Str, price : Str }) }
-       render! : Ctx => Str
-       render! = |ctx| Rocstache.compiled_render!(0x<id>, Box.box(ctx))
+       Ctx : { items : List({ name : Str, price : U32 }), title : Str }
+       render : Rocstache.Templates, Ctx -> Rocstache.Html
+       walk : Rocstache.Templates, Ctx, Rocstache.Html -> Rocstache.Html
    }
+   w3 = |s0, s1, code, start, end, parts| {    # an item, then the root
+       ...
+       while $pc < end {
+           w = List.get(code, $pc) ?? 0
+           op = w % 16
+           if op == 0 {
+               $parts = $parts.append(Text(w // 1048576))
+               $pc = $pc + 1
+           } else if op == 1 {
+               run = List.get(code, $pc + 1) ?? 0
+               $parts = match (w // 16) % 65536 {
+                   0 => $parts.append(Value(run, s0.name))
+                   4097 => $parts.append(Value(run, s1.title))
+                   _ => $parts
+               }
+               $pc = $pc + 2
+           } else if ...
    ```
 
-   The id hashes the template's name and its contract. The file is
-   written only when its content changes, so editing markup leaves it
-   alone: its history in git is the history of the template's type.
-2. For the Zig side, in the app's build directory: a copy of the
-   template, `templates.zig` (a registry: each template's name, id,
-   `@embedFile` of its source and its contract's Zig type), and a
-   throwaway Roc platform with one hosted function per contract. **`roc
-   glue`** runs on that platform, only when a contract changed (~0.5 s):
-   it emits each `Ctx` as a Zig `extern struct` in the layout the Roc
-   compiler chose. Nothing guesses an offset.
-3. **`zig build-obj`** compiles an object per template (`part.zig`, its
-   root naming the template) and a dispatcher (`object.zig`), each only
-   when no object exists by the hash of what it is made from: the
-   template, the partials it reaches, the registry, the glue, the
-   renderer. Editing one page compiles one object. The renderer is one
-   hand-written generic, `Compiled(registry, index)` (render.zig): Zig's
-   comptime runs the parser on the embedded source, checks every field
-   read against the glue struct (roux build has checked the same already,
-   so its messages name the template's line; Zig's are a backstop), and
-   walks the tree with `inline` loops, each step of
-   which happens in the compiler and leaves behind only the code for its
-   node: static text becomes a fixed-size copy, `{{ title }}` a load at
-   a fixed offset and an escape (16 bytes at a time), `{{#items}}` a
-   real loop with its body unrolled the same way. For the race's Menu it
-   is as if someone had written by hand:
+   A walker is a loop over the words with a branch per op, and in each
+   branch a `match` over the fields that op can read there: its own
+   scope's and every enclosing scope's (the selector says which: how many
+   scopes up, and the field's index by name), so `../` works without the
+   walker knowing the template.
+2. It compiles every template to one **program** (bytecode.zig): a
+   header (each template's `[start, end)`), then the code; and one
+   **text**, every static run of every template. A word is a `u64`: the
+   op in 4 bits, the selector in 16, the rest a section's length or a
+   static run (`offset * 65536 + length` into the text). The compiler
+   does the work the walkers would repeat: it fuses each value with the
+   static run before it into one part (`Value(run, s0.name)`), resolves
+   `../` along the contract (the template's scopes and the contract's
+   differ: `{{#../b}}` inside `{{#a}}`), opens dotted paths as record
+   sections, and puts a value's formatting (escaped, raw, upper, lower,
+   url) in the run word's top byte, which the walker hands on unread.
+3. It writes the program and the text as an **ELF object** itself
+   (elf.zig: one read-only section, one symbol, `rocstache_data`). No
+   compiler runs: a markup edit costs the generation (~10 ms for the
+   site) and the link.
+4. **`roc build`** emits the app as an archive, walkers included, when
+   any Roc changed (a contract change rewrote a module).
+5. **roux links** the archive and the object (`zig ld.lld`, 40-80 ms).
 
-   ```zig
-   out.write_static("<!doctype html>…<tr><th>Dish</th><th>Price</th></tr>\n");
-   for (ctx.dishes.items()) |*d| {
-       out.write_static("<tr><td>");  escape(d.name.asSlice(), out);
-       out.write_static("</td><td>"); write_int(d.price, out);
-       out.write_static("</td></tr>\n");
-   }
-   out.write_static("</table>…");
-   ```
+At run time the app calls `Rocstache.load!()` once, in `init!` (the
+program, copied into a Roc list, kept in its context), then per request
+`Page.render(code, ctx)`, pure: it reads the template's range from the
+header and runs the root's walker, which calls the others. The result,
+`Rocstache.Html`, is a list of parts:
+`[Text(U64), Value(U64, Str), Signed(U64, I64), Unsigned(U64, U64)]`.
+`Rocstache.html!` (or `bytes!`, `str!`) hands it to the host, which
+writes it in one pass into a buffer of the shard's (host/templates.zig):
+static runs copied in 32-byte blocks (the text has slack after it),
+values escaped 16 bytes at a time through loads that cannot cross a page,
+numbers two digits at a time, then one allocation of the exact size.
 
-   A part exports its template's measure and render functions, named by
-   its id; the dispatcher exports `hosted_template_render(id, box)`: a
-   switch on the id, the measure (exact), one allocation of that size,
-   the render (asserted to fill it), the box released, a Roc `Str`
-   returned. A partial comes two ways. `{{> Top}}` compiles inline, in
-   the includer's scope: its fields are the includer's. `{{> Top frame}}`
-   is called: Top has its own contract, the includer's field `frame` is
-   of that type (`frame : Top.Ctx` in the includer's module), and Top
-   compiles once, in its own object, which the includer calls by symbol,
-   so editing Top recompiles one object, not every page that has it. A
-   line holding only a section, comment or partial tag goes
-   with it (Mustache's standalone rule, as before). Both use a panic
-   handler that reports through the host's `roc_crashed`, not std's,
-   whose stack traces cost ~290 ms of every Debug compile.
-4. **`roc build`** emits the app as an archive (the platform's target is
-   `output: Archive`: crt1.o, the host, the app, Roc's builtins, musl).
-5. **roux links** the archive and the objects (`zig ld.lld`, 40-80 ms)
-   into the one static binary.
+A partial comes two ways. `{{> Top}}` is inlined: its code is compiled
+into the includer's, in the includer's scope. `{{> Top frame}}` is
+called: Top has its own contract, the includer's field `frame` is
+`Top.Ctx`, and the CALL op runs `Top.walk(code, s0.frame, parts)`.
+Either way, editing Top's markup is the same as any markup edit: the
+program is regenerated whole (it is milliseconds) and linked.
 
-At run time `Page.render!(ctx)` boxes the record and calls the host,
-which runs the code compiled for that template.
+### Contracts
+
+A template's **contract** is the record it reads: the `Ctx` its
+`{{% %}}` block declares, or one inferred from its tags (dotted paths are
+records, a section reading its element is a list, one that does not is a
+Bool, other leaves are `Str`). The template is checked against it, so a
+mistake is roux build's message naming the template's line, never a Roc
+type error in a walker. A line holding only a section, comment or
+partial tag goes with it (Mustache's standalone rule). `Page.roc` is
+written only when its content changes: its history in git is the
+history of the template's type.
 
 ### Development and production
 
-The same source and the same generated code; only the optimization
-differs. Development builds the objects Debug (Zig's own backend; a page
-of the dragrace site ~220 ms, an empty registry ~40 ms) and the app
-`--opt=dev`; production ReleaseSafe (safe, as the host ships) and
-`--opt=speed`. Editing a page's markup is one object, the link and a
-restart, no roc, no glue: ~0.3 s on the site against 3.0 s when
-templates were Roc; a partial in eight pages ~0.9 s inlined, ~0.45 s
-called (one object). A contract change is
-all five. [docs/dev-server.md](docs/dev-server.md) has the rest.
-
-A template that reads nothing (`Bottom`) has the contract `{}`, which
-glue cannot lay out (a hosted function drops a zero-sized argument): its
-module boxes a `U8` placeholder instead.
+The same source and the same bytecode; only roc's optimization differs
+(`--opt=dev`, `--opt=speed`). Editing markup, a page's or a partial's,
+is the generation, the link and a restart: 51-92 ms inside `roux dev`
+on the dragrace site, 110-154 ms from the save to the page served
+(against 0.27-0.57 s on the `templates` branch, 3.0 s when templates
+were Roc). Editing Roc, or a contract, is roc too: ~2.0 s on the site
+(1.3 s on the `templates` branch: the walkers are Roc to compile).
+[docs/dev-server.md](docs/dev-server.md) has the rest.
 
 ### What it costs the app
 
-- `render!` is effectful: hosted functions are, so code that renders is
-  effectful too.
+- The app keeps the program in its context (`Rocstache.load!` in
+  `init!`) and passes it to `render`.
+- `render` is pure; writing the page out (`html!`, `bytes!`, `str!`) is
+  a hosted call, effectful.
 - A contract is a concrete record: the app passes exactly its fields
   (an inferred contract's leaves are `Str`; numbers need a declared
   `Ctx`).
-- Formatters are Zig built-ins (`len`, `plural`, `upper`, `lower`,
-  `url`); anything else is computed in Roc into a field.
-- `Rocstache.compiled_render!` trusts its caller: only generated modules
-  call it, with the id that matches the box's type.
+- Formatters are the host's (`len`, `plural`, `upper`, `lower`, `url`);
+  anything else is computed in Roc into a field.
+- A section into a field of a scope that the contract does not hold the
+  current one in is refused (the walkers follow the contract).
+- A template's index among the app's (sorted by name) is in its module:
+  adding a template before it in the alphabet rewrites the module.
 
-Measured on the prototype (DIARY, 2026-10-07): the Menu page in 4,280
-instructions against 29,700 for the Roc renderer, and 188k against
-112k requests a second.
+### Against the `templates` branch
+
+Measured 2026-10-08 (DIARY), the race's Menu page over HTTP, the
+competitor built by each; instructions per request (steady within 0.3%;
+throughput was not measurable that day, the laptop busy):
+
+| | instructions/request | markup edit, served | Roc edit | site release build |
+|---|---|---|---|---|
+| templates as Roc (main) | 39,030 | 3.0 s | | |
+| comptime Zig (`templates`) | 15,200 | 0.27-0.57 s | 1.3 s | 50 s |
+| bytecode VM (this) | 17,300 | 0.11-0.15 s | 2.0 s | 78 s |
+
+The VM's render is ~2.9k instructions of walker and ~5.4k of writing
+out, against ~6.2k for the comptime render: 14% more for the whole
+request, and 2.3 times fewer than templates as Roc.
 
 ## What the platform provides
 

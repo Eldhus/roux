@@ -4,10 +4,10 @@
 //! One loop, one pass at a time, so a build never races a generator. A
 //! pass hashes the app's sources by kind and runs only what changed: a
 //! query (`*.sql`) runs roux-db; then the templates are generated, which
-//! rewrites a `Page.roc` only when its contract changed; Roc sources
-//! changed, roc builds (`--opt=dev`); templates changed, Zig compiles the
-//! templates object (Debug); either, the link and a restart. Editing
-//! markup never starts roc. Content decides, never mtimes: a save that
+//! rewrites a `Page.roc` only when its contract changed, and the templates'
+//! bytecode object when the markup did; Roc sources changed, roc builds
+//! (`--opt=dev`); either, the link and a restart. Editing markup never
+//! starts roc, nor any compiler. Content decides, never mtimes: a save that
 //! changes nothing, and the generators' own writes, cost nothing more.
 //!
 //! The app runs with `ROUX_DEV` set to the build's number, so the host
@@ -133,12 +133,13 @@ const State = struct {
         // After generation: a contract that changed rewrote its Page.roc.
         const now = try digests(arena, io, state.options);
         const roc = now.roc != state.built.roc;
-        // Only the templates an edit touched compile (their objects are
-        // named by what they are made from); none, when only Roc changed.
-        const objects = generated.objects;
-        const compiled = pipeline.compile(arena, io, paths, app, .dev, roc, objects) catch |err|
-            return state.failed(stderr, err);
-        const changed = roc or compiled > 0 or now.static != state.built.static;
+        if (roc) {
+            pipeline.compile(io, paths, app, .dev) catch |err| return state.failed(stderr, err);
+        }
+        // Markup compiles to the templates' object, written directly: an
+        // edit's whole cost is the link.
+        const templates = generated.object_changed or state.build == 0;
+        const changed = roc or templates or now.static != state.built.static;
         // Nothing changed, and the app runs: nothing to do. (Exited: start
         // it again, it may have been a passing failure.)
         if (!changed and state.child != null) {
@@ -149,18 +150,16 @@ const State = struct {
             state.failing = false;
             return;
         }
-        if (roc or compiled > 0) {
-            pipeline.link(arena, io, paths, app, .dev, generated.objects) catch |err|
-                return state.failed(stderr, err);
+        if (roc or templates) {
+            pipeline.link(arena, io, paths, app) catch |err| return state.failed(stderr, err);
         }
         state.built = now;
         state.build += 1;
         state.failing = false;
         try state.restart(arena, io);
-        try stderr.print("roux dev: build {d} ok ({s}{d} objects) in {d} ms\n", .{
+        try stderr.print("roux dev: build {d} ok ({s}) in {d} ms\n", .{
             state.build,
-            if (roc) "roc, " else "",
-            compiled,
+            built_what(roc, templates),
             pipeline.milliseconds(start, Io.Timestamp.now(io, .awake)),
         });
     }
@@ -228,6 +227,14 @@ const State = struct {
         state.child = null;
     }
 };
+
+/// What a pass built, for its line.
+fn built_what(roc: bool, templates: bool) []const u8 {
+    if (roc and templates) return "roc, templates";
+    if (roc) return "roc";
+    if (templates) return "templates";
+    return "static";
+}
 
 /// Whether a path in the app's directory is under its static files.
 fn in_static(options: Options, path: []const u8) bool {

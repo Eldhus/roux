@@ -73,9 +73,17 @@ Host := [].{
 	## keeping that many copies; gives the copy's name.
 	sqlite_backup! : U64, Str, U32 => Try(Str, SqliteErr)
 
-	## The template the id names, rendered from its contract, boxed. The
-	## app's templates object implements it (DESIGN.md, Templates), not
-	## the host: one function for every template, the box's type known to
-	## the object by the id.
-	template_render! : U64, Box(a) => Str
+	## One piece of a rendered page (Rocstache.Html): a run of the
+	## templates' static text (`offset * 65536 + length` into the text the
+	## build linked in; 0 for none), and after it, for all but `Text`, a
+	## value. A `Value`'s Str is written as the run's top byte says (escaped,
+	## raw, upper- or lowercased and escaped, percent-encoded): the bytecode
+	## holds the word ready, so the walker never looks at it.
+	TemplatePart : [Text(U64), Value(U64, Str), Signed(U64, I64), Unsigned(U64, U64)]
+
+	## The templates' bytecode, as the build linked it in: once, at startup.
+	templates_load! : {} => List(U64)
+
+	## A page's parts written out, HTML-escaped where the parts say.
+	templates_bytes! : List(TemplatePart) => List(U8)
 }

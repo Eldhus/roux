@@ -14,6 +14,7 @@ test {
     _ = @import("database_test.zig");
     _ = @import("dev.zig");
     _ = @import("requests.zig");
+    _ = @import("templates.zig");
 }
 
 const trees = [_]tidy.Tree{
@@ -52,17 +53,11 @@ const trees = [_]tidy.Tree{
     },
     .{
         .dir = "tools/rocstache",
-        // root.zig is the `rocstache` module's root; object.zig (the
-        // dispatcher) and part.zig (one template) the objects compiled in
-        // an app's build directory beside its registry (generate.zig
-        // writes them there), with symbols.zig, which they share.
-        .roots = &.{ "tests.zig", "root.zig", "object.zig", "part.zig" },
-        .untested = &.{ "tests.zig", "object.zig", "part.zig", "symbols.zig" },
+        // root.zig is the `rocstache` module's root.
+        .roots = &.{ "tests.zig", "root.zig" },
+        .untested = &.{"tests.zig"},
         .generated = &.{},
-        // object.zig: the Roc ABI (the hosted function, the glue's
-        // allocation table over the host's exports); symbols.zig: the
-        // objects' own ABI, each template's functions by exported name.
-        .interfaces = &.{ "object.zig", "symbols.zig" },
+        .interfaces = &.{},
     },
     .{
         .dir = "tools/roux",

@@ -1,7 +1,6 @@
-//! The rocstache parser, one for every use: Zig runs it at comptime to
-//! compile a template (render.zig), and at run time for the contract
-//! (contract.zig) and the language server. It allocates nothing: the tree
-//! is fixed-capacity arrays, so comptime can build it too.
+//! The rocstache parser, one for every use: the contract (contract.zig),
+//! the bytecode (bytecode.zig) and the language server. It allocates
+//! nothing: the tree is fixed-capacity arrays.
 //!
 //! The tree is flat, in source order: a section's body is the nodes after
 //! it up to its `end`, so a walk jumps from a node to `node.end`.

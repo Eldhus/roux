@@ -198,7 +198,6 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
             .{ .name = "roux_options", .module = roux_options.createModule() },
         },
     });
-    roux_module.addAnonymousImport("zig_glue", .{ .root_source_file = b.path("vendor/roc-glue/ZigGlue.roc") });
     const roux = b.addExecutable(.{ .name = "roux", .root_module = roux_module });
     const tools = b.step("tools", "Build roux and roux-db");
     tools.dependOn(&b.addInstallArtifact(roux, .{}).step);
