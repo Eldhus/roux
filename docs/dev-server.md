@@ -1,10 +1,10 @@
 # The dev server
 
-Notes toward `roux dev`: an app rebuilt and back on the screen as it is
-edited, for people and for agents. Kept as thoughts and integration
-points arrive, while the templates move to Zig (TODO, WIP); not a design
-yet, and nothing here is built unless it says so. The contract, once
-settled, goes in DESIGN.md.
+`roux dev`: an app rebuilt and back on the screen as it is edited, for
+people and for agents. These notes collect what was thought and learned
+on the way; what is built is on the branch `templates` (TODO, WIP 3),
+described in its DESIGN.md (Templates; Tools) once merged. What is not
+built says so.
 
 ## The goal
 
@@ -14,106 +14,119 @@ in development is what runs in production, compiled from the same
 source (owner, 2026-10-07: "I cannot accept two implementations"). So
 no template interpreter in dev, though the prototype had one.
 
-## What a save costs today
+## Where it stands (branch `templates`, 2026-10-07)
 
-Measured 2026-10-07 on the laptop (nightly-2026-10-04-130536d, Zig 0.17.0):
+`roux dev [--port=N] [--static=DIR] APP.roc` is built and measured on a
+copy of examples/templates (save with sed, then curl until the new page;
+an EventSource-like client for the reload):
+
+| edit | save to new page | reload event | today's `dragrace site dev` |
+|---|---|---|---|
+| a template's markup | 461-529 ms | +40-50 ms | 3.0 s |
+| a contract and the app's record (a field) | 1.08 s | | (every edit 3.0 s) |
+| a mistake in a template | refused at once with `Page.rocstache:10:17: ...`; the old build serves | | |
+
+Each step's cost, on the laptop (nightly-2026-10-04-130536d, Zig 0.17.0):
 
 | step | time | where |
 |---|---|---|
-| `roc build --opt=speed` (the dragrace site) | 83-94 s, changed or not | fourneau-dragrace DIARY |
-| `roc build --opt=dev` (the site) | 1.8-2.9 s, 1.5-1.7 s of it lowering the whole program | same |
-| `dragrace site dev`, save to reloaded page | 3.0 s for a template, 10 ms for a static file | same |
-| the templates object, Zig Debug (self-hosted backend) | 370-380 ms | prototype, `zig build-obj` |
-| the same, ReleaseFast | ~15 s | prototype |
+| the templates generated (contracts, registry) | ~1 ms | roux dev |
+| glue, when a contract changed | ~0.6 s | roux dev |
+| the templates object, Zig Debug (self-hosted backend) | 370-450 ms | roux dev |
+| the same, ReleaseSafe or Fast (production) | 14-17 s | roux build |
 | `zig build -fincremental --watch` on it, a markup edit | 1.2 s and more: slower than a fresh build | prototype |
-| linking an app: roc's archive + templates object, `zig ld.lld` | 40 ms | prototype |
-| restarting the site | 40-70 ms | fourneau-dragrace DIARY |
+| the link, `zig ld.lld` of roc's archive and the object | 40-80 ms | roux dev |
+| `roc build --opt=dev`, the example | ~0.1 s | roux dev |
+| `roc build --opt=dev`, the dragrace site | 1.8-2.9 s, 1.5-1.7 s lowering the whole program | fourneau-dragrace DIARY |
+| `roc build --opt=speed`, the site | 83-94 s, changed or not | same |
+| the app restarted (two shards) | tens of ms | roux dev |
 
 ## Kinds of edit
 
-Each kind takes a different, shorter path; the watcher decides by
-content (hashes), not by mtimes or event kinds, as `dragrace site dev`
-does.
+Each takes its own path; content hashes decide (never mtimes or event
+kinds), so a save that changes nothing, and the generators' own writes,
+cost a hash pass and no more.
 
 | edit | what runs |
 |---|---|
-| a template's markup | the templates object (Debug), the link, a restart. No Roc. |
-| a template's contract (a field added, a type) | rocstache-gen writes the template's `.roc`; glue for the layout; `roc build --opt=dev`; the object; the link; a restart |
-| Roc source | `roc build --opt=dev`, the link, a restart |
-| a query (`db/*.sql`) | roux-db, then as Roc source |
-| a static file | nothing but the browser's reload |
+| a template's markup | the templates object (Debug), the link, a restart. No roc, no glue. |
+| a template's contract | the template's `Page.roc` rewritten, glue, roc and the object at once, the link, a restart |
+| Roc source | roc, the link, a restart |
+| a query (`*.sql`) | roux-db, then as Roc source |
+| a static file (`--static`) | a restart (the host reads them at startup) |
 
-## Integration points
+## Integration points, as built
 
-- **The link is roux's.** The platform's target is `output: Archive`
-  (roc emits `app.a` with crt1.o, the host, the app, the builtins and
-  musl in it); roux links it with the app's templates object. That is
-  what lets a markup edit skip roc entirely, and gives each app its own
-  templates object without writing into the shared `platform/targets/`.
-- **The renderer is one Zig source**, compiled Debug in development and
-  ReleaseSafe for production (safe, as the host ships; branch
-  `templates`, 2026-10-07). The comptime-generated code is the same.
-- **`roux build --dev` is the dev server's build step** (branch
-  `templates`): it already runs roc and the templates object at once
-  and prints one line with each phase's time. `roux dev` is a loop
-  around it that knows which phases an edit needs: a markup edit must
-  not start roc at all (today `roux build` always runs it; on a small
-  app it answers from its cache in ~0.1 s, on the site it is the 1.8-2.9
-  s lowering).
-- **Errors from the generator, not from Zig.** roux build checks a
-  template (parse, fields against the contract) and prints
-  `Page.rocstache:12:5: ...`, file:line:column as compilers do, so an
-  editor or an agent jumps to it; a Zig compile error in the templates
-  object is a bug in roux. The dev server shows the generator's message
-  over the page.
-- **A restart can overlap** (thought, 2026-10-07): fourneau's shards
-  bind with SO_REUSEPORT, so a new binary can bind beside the old one
-  and take connections before the old is stopped: no window where the
-  port refuses. The same property is a trap: a stale instance (or
-  another app on the port) silently shares the traffic, as happened
-  with the dragrace site on 8091 (branch DIARY). The dev server must own
-  its instances (PIDs it started), and the host could refuse to start in
-  dev when the port already has a listener it did not hand over.
-- **Reload without a proxy.** roux owns the server, so the host can
-  serve `/_dev/events` itself (an `EventSource`), in dev only, sending
-  the build's id on connect. A restart drops the stream; the browser
-  reconnects by itself, sees a new id, reloads. The script that listens:
-  added by the host to `text/html` responses in dev, not by the
-  templates (their output stays production's).
-- **A failed build** leaves the old binary serving. How it learns the
-  error to show: the dev supervisor writes the status where the host
-  reads it (a file named in `ROUX_DEV`?), or the supervisor serves the
-  error page itself until a build succeeds. Undecided.
-- **Dev-only code is off the hot path**: decided once at startup (an
-  environment variable read before `init!`), never per request. The
-  prototype read an environment variable per render: 31% of its cost.
+- **The link is roux's.** The platform's target is `output: Archive`;
+  roux links roc's archive with the app's templates object. That lets a
+  markup edit skip roc, and gives each app its own templates object.
+- **One renderer source**, Debug in development, ReleaseSafe in
+  production (as the host ships; ReleaseFast measured 6% fewer
+  instructions a request, inside the noise in throughput).
+- **Errors from the generator, not from Zig**: `Page.rocstache:12:5:
+  ...`, file:line:column as compilers print them, so an editor or an
+  agent jumps to it. A Zig compile error in the templates object is a bug
+  in roux.
+- **Reload without a proxy.** `ROUX_DEV` (the build's number) puts the
+  host in development mode, decided once at startup: it answers
+  `/_dev/events` itself (`retry: 50`, the number, then held open) and
+  appends the listening script to `text/html` answers. A restart drops
+  the stream; the browser reconnects 50 ms later, hears another number,
+  reloads. Production pays one comparison a request.
+- **Two shards in development** (`ROUX_SHARDS=2`): eight shards
+  restarted right after eight failed half the time, the kernel not yet
+  having freed the old process's io_uring memory (8 MiB locked memory on
+  the laptop). Production restarts may meet the same (roux TODO).
+- **roux dev owns its app**: a SIGINT or SIGTERM handler stops the app,
+  then roux dev (a blocked signal would pass to the app across exec, and
+  the app must die by SIGTERM). The app exiting on its own is reported
+  with its code; the next save starts it again.
+- **A restart could overlap** (thought, not built): fourneau's shards
+  bind with SO_REUSEPORT, so a new binary could take connections before
+  the old one stops. Not with SQLite: roux's VFS holds the database file
+  locked, so the old must close it first. And the same property is a
+  trap: a stale instance silently shares the port, as one did with the
+  dragrace site on 8091 (branch DIARY).
 - **State across restarts**: `init!` runs again (the site reads its
-  tokens and opens SQLite: 40-70 ms). Open SSE streams drop and
-  reconnect.
+  tokens and opens SQLite). Open SSE streams drop and reconnect.
+
+## Next, not built
+
+- **The error over the page.** A failed build leaves the old app
+  serving and prints the error in the terminal; the browser shows
+  nothing. The old app cannot learn of the failure without a channel:
+  roux dev writes the status to a file `ROUX_DEV_STATUS` names and the
+  host reads it on each `/_dev/events` connection (and roux dev pokes
+  the stream by restarting nothing)? Or roux dev serves `/_dev/events`
+  itself on another port and the script listens there. Undecided.
+- **Faster markup edits.** 30 ms of quiet before a pass and a 50 ms
+  reconnect could be 10 and 20. The object's 370-450 ms is Zig compiling
+  Debug: where it goes is not measured (`--time-report`); the glue file is
+  ~10k lines and std comes in, and a smaller import set may halve it.
+  Then the link and the restart (~0.1 s) could go: a self-contained
+  position-independent templates blob loaded into the running app by
+  our own loader (static musl has no `dlopen`: map it, apply its
+  `R_X86_64_RELATIVE` relocations, refuse anything else), a pointer
+  swapped between renders. The same compiled code, loaded differently.
+- **Directories made after start** are not watched (the watch set is
+  built once). A new `db/` or template directory needs a restart of roux
+  dev.
+- **Static files** are named with `--static`: the host knows its
+  `static_dir` only after `init!`. In development it could say so
+  (a line roux dev reads), and roux dev watch it without a flag.
+- **The dragrace site** is the real test: 14 templates with partials,
+  roc at 1.8-2.9 s for every Roc edit. Its `site dev` (Go, a proxy)
+  moves onto `roux dev`.
 
 ## For agents
 
-- One command that builds, serves and prints one machine-readable line
-  per build (`build 7 ok 412ms`, `build 8 error Page.rocstache:12: ...`),
-  so an agent can wait on a line instead of polling.
-- `/_dev/status` as JSON (build id, ok or the error, the time it took),
-  so `curl` answers "is my edit live yet?".
-- Generated files written only when their content changes, so an
-  agent's diff shows only what it changed.
-
-## Faster than a restart, later
-
-A markup edit is ~0.45 s by the numbers above, almost all of it Zig
-compiling Debug. The link and restart (~0.1 s) could go: compile the
-templates as a self-contained position-independent blob, load it into
-the running app (static musl has no `dlopen`: our own loader, mapping
-it and applying its `R_X86_64_RELATIVE` relocations, refusing anything
-else), and swap a pointer between renders. The same compiled code
-still, only loaded differently. Worth it only if the restart shows up in
-the measured loop.
-
-Where the 370 ms goes is not measured yet (`--time-report`): the glue
-file is ~10k lines and std comes in; a smaller import set may halve it.
+- Built: one line per pass on stderr, `roux dev: build 4 ok (templates)
+  in 419 ms`, `roux dev: build 5 failed; build 4 still serving`, `roux
+  dev: build 5 exited, code 1`, so an agent waits on a line instead of
+  polling. Generated files are written only when their content changes,
+  so an agent's diff shows only what it changed.
+- Not built: `/_dev/status` as JSON (the build's number, ok or the
+  error, its time), so `curl` answers "is my edit live yet?".
 
 ## The example app repository
 
@@ -121,5 +134,7 @@ The owner's plan (2026-10-07): a standard roux app as its own
 repository, assuming the toolchain is installed and taking the Roc
 nightly, hosted on the dragrace site's machine. What it needs from here:
 `roux build` and `roux dev` usable from outside roux's tree (the
-renderer's Zig source shipped with the tool, not read from a checkout),
-and the platform as a bundle roc can fetch.
+renderer's Zig source and roc's glue spec are embedded in the tool
+already; the tool finds the pinned Zig and roc by path), and the
+platform as a bundle roc can fetch, with `libhost.a`, crt1.o and musl's
+libc.a inside (roc's archive output then carries them).
