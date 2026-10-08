@@ -823,3 +823,48 @@ roux answered the contract's checks and climbed to 2,000 requests a
 second without an error. Not checked by a test here: the host is tested
 through its examples, and none ran concurrent reads on one shard; the
 race does (TODO: a concurrent example test).
+
+## 2026-10-07: templates compiled by Zig, the prototype
+
+The owner's idea: the Roc a template generates is only its contract (the
+type and a typed `render!`), and Zig compiles the template at comptime.
+Prototyped in a scratch copy of roux (nothing committed), four
+prototypes and three experiments, before the branch `templates`
+(DESIGN, Templates, says how it works).
+
+The race's Menu page (742 bytes, byte for byte the reference), one
+render, `perf stat -e instructions:u,cycles:u` minus the n=0 run:
+
+| renderer | instructions | cycles |
+|---|---|---|
+| today's generated Roc | 29,700 | 10,900 |
+| Roc improved by hand (escape into the output, capacity 2048) | 20,600 | 7,100 |
+| Zig comptime, standalone | 3,240 | 1,115 |
+| Zig comptime in the host, ReleaseSafe | 5,610 | 1,980 |
+| Zig comptime as its own ReleaseFast library | 4,280 | 1,385 |
+
+Over HTTP (server on CPUs 0-1, oha on 2-7, interleaved A/B rounds, CPU
+from /proc/stat): Zig 188k requests a second at 2.5 µs user CPU each,
+Roc 112k at 8.9 µs (load ~1.2; the server's share of the gap not
+attributed).
+
+Learned:
+- A hosted function must be effectful, and a type variable may appear
+  only inside a `Box`: `template_render! : U64, Box(a) => Str` serves
+  every template; the id says which.
+- The box's payload is laid out by Roc's rules; `roc glue` on a
+  throwaway platform whose hosted functions take each contract
+  concretely gives the layout as `extern struct`s (0.5 s). Releasing it:
+  `decrefBoxWith` with the struct's own `decref`.
+- Reading an environment variable per render was 31% of its cost: read
+  development settings once at startup.
+- The host rebuilt is ~62 s; the templates as a separate object, ~15 s
+  ReleaseFast and 370 ms Debug. Zig's incremental `--watch` on that
+  object took 1.2 s and more per markup edit: slower than a fresh build.
+- roc's `output: Archive` (crt1.o, the host, the app, builtins and musl
+  in one `app.a`) linked with the templates object by `zig ld.lld
+  -static`: 40 ms, and it served the same bytes. So roux can own the
+  link, and a markup edit needs no roc.
+- A development interpreter rendered byte for byte as the compiled
+  renderer, but it is a second implementation: dropped (owner: "I
+  cannot accept two implementations").

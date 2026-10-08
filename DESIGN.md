@@ -165,6 +165,103 @@ started it; the choices in TODO.md, WIP 4).
   own VFS that wait held its shard (reads beside 100 commits a second:
   p99 3.8-6.8 ms); with roux's, 0.3 ms, and point reads 16% faster.
 
+## Templates
+
+Being built on the `templates` branch (TODO, WIP 3): what follows is the
+design, true of the branch as each step lands (DIARY says which have).
+It replaces the compiler that turned a template into Roc code.
+
+A rocstache template is compiled to machine code by Zig. Not to Zig
+source, not to a bytecode: Zig's compiler runs the template parser
+while it compiles, and what it emits is straight-line x86 specialized to
+that one template and its contract. At run time there is no parser, no
+tree and no interpreter.
+
+### What a build does
+
+1. **rocstache-gen** (at build time) parses each `Page.rocstache` and
+   decides its **contract**, the record it reads: the `Ctx` its `{{% %}}`
+   block declares, or one inferred from its tags (dotted paths are
+   records, a section reading its element is a list, one that does not
+   is a Bool, other leaves are `Str`). It writes `Page.roc`, which holds
+   only that:
+
+   ```roc
+   Page :: [].{
+       Ctx : { title : Str, items : List({ name : Str, price : Str }) }
+       render! : Ctx => Str
+       render! = |ctx| Rocstache.compiled_render!(0x<id>, Box.box(ctx))
+   }
+   ```
+
+   The id hashes the template's name and its contract. The file is
+   written only when its content changes, so editing markup leaves it
+   alone: its history in git is the history of the template's type.
+2. For the Zig side, in the app's build directory: a copy of the
+   template, `templates.zig` (a registry: each template's name, id,
+   `@embedFile` of its source and its contract's Zig type), and a
+   throwaway Roc platform with one hosted function per contract. **`roc
+   glue`** runs on that platform, only when a contract changed (~0.5 s):
+   it emits each `Ctx` as a Zig `extern struct` in the layout the Roc
+   compiler chose. Nothing guesses an offset.
+3. **`zig build-obj`** compiles `templates.o`. The renderer is one
+   hand-written generic, `Template(name, source, Ctx)`: Zig's comptime
+   runs the parser on the embedded source, checks every field read
+   against the glue struct (a wrong name is a compile error naming the
+   template's line), and walks the tree with `inline` loops, each step of
+   which happens in the compiler and leaves behind only the code for its
+   node: static text becomes a fixed-size copy, `{{ title }}` a load at
+   a fixed offset and an escape (16 bytes at a time), `{{#items}}` a
+   real loop with its body unrolled the same way. For the race's Menu it
+   is as if someone had written by hand:
+
+   ```zig
+   out.write_static("<!doctype html>…<tr><th>Dish</th><th>Price</th></tr>\n");
+   for (ctx.dishes.items()) |*d| {
+       out.write_static("<tr><td>");  escape(d.name.asSlice(), out);
+       out.write_static("</td><td>"); write_int(d.price, out);
+       out.write_static("</td></tr>\n");
+   }
+   out.write_static("</table>…");
+   ```
+
+   The object exports `hosted_template_render(id, box)`: a switch on the
+   id, a pass that measures the output, one allocation, the render, the
+   box released, a Roc `Str` returned.
+4. **`roc build`** emits the app as an archive (the platform's target is
+   `output: Archive`: crt1.o, the host, the app, Roc's builtins, musl).
+5. **roux links** the archive and `templates.o` (`zig ld.lld`, ~40 ms)
+   into the one static binary.
+
+At run time `Page.render!(ctx)` boxes the record and calls the host,
+which runs the code compiled for that template.
+
+### Development and production
+
+The same source and the same generated code; only the optimization
+differs. Development builds `templates.o` Debug (~370 ms, Zig's own
+backend) and the app `--opt=dev`; production ReleaseFast (~15 s) and
+`--opt=speed`. Editing markup is steps 3 and 5 and a restart, no roc,
+no glue: ~0.45 s against 3.0 s when templates were Roc. A contract
+change is all five. [docs/dev-server.md](docs/dev-server.md) has the
+rest.
+
+### What it costs the app
+
+- `render!` is effectful: hosted functions are, so code that renders is
+  effectful too.
+- A contract is a concrete record: the app passes exactly its fields
+  (an inferred contract's leaves are `Str`; numbers need a declared
+  `Ctx`).
+- Formatters are Zig built-ins (`len`, `plural`, `upper`, `lower`,
+  `url`); anything else is computed in Roc into a field.
+- `Rocstache.compiled_render!` trusts its caller: only generated modules
+  call it, with the id that matches the box's type.
+
+Measured on the prototype (DIARY, 2026-10-07): the Menu page in 4,280
+instructions against 29,700 for the Roc renderer, and 188k against
+112k requests a second.
+
 ## What the platform provides
 
 The modules apps use, and only those: `Server`, `Stdout`, `Stderr`,
