@@ -55,50 +55,42 @@
      dev lacks against the Go `site dev` (docs/dev-server.md, on main),
      then the language server.
 
-4. **Templates as bytecode, rendered by pure Roc: the experiment against
-   item 3.** (owner, 2026-10-08: "couldn't you optimize bytecode and
-   render() to be FAR better than the roc code-gen style ... be creative
-   on the vm hot path ... do the templates-vm on yet another worktree")
+4. **Templates as bytecode, rendered by one VM in the host: the
+   experiment against item 3.** (owner, 2026-10-08: "couldn't you
+   optimize bytecode and render() to be FAR better than the roc code-gen
+   style ... do the templates-vm on yet another worktree"; then "This
+   Walker shit all seems like a bad idea ... a single renderer that
+   compiles once"; "Remove walkers and use a constant VM in host")
    - Where it stands (2026-10-08, branch `templates-vm`, worktree
-     `../roux-templates-vm`, on top of `templates`): built. The examples
-     and every page of the dragrace site (a scratch copy, ported) byte for
-     byte the `templates` branch's; the Menu at 17,300 instructions a
-     request against 15,200 (comptime) and 39,030 (main); a markup edit
-     served in 0.11-0.15 s, Roc 2.0 s (DESIGN.md, Templates; DIARY).
-     The competitor is ported on fourneau-dragrace's branch
-     `templates-vm`; raced against `templates` with `dragrace adhoc race`
-     on dedicated cores, six races: 3.6-5.2% behind (139k against
-     144-147k requests a second). The site's port is still scratch only.
-     The owner chooses between the branches; item 5 (one renderer in the
-     platform, no walkers) comes first. Then, if this one is chosen: the
-     site on fourneau-dragrace's branch; loop rotation in the compiler (a
-     row's closing run merged with the next row's opening, measured 1,928
-     against 2,345 in the microbenchmark).
+     `../roux-templates-vm`, on top of `templates`): the generated Roc
+     walkers are gone (they were `16f3bdf`). One VM in the host runs every
+     template, reading the boxed record at offsets `roc glue` gives
+     (DESIGN.md, Templates). A pure Roc renderer that is not generated
+     per template cannot exist (no reflection), so there was no pure
+     variant to race. The examples and every page of the dragrace site (a
+     scratch copy, ported) byte for byte the `templates` branch's. Menu:
+     15,595 instructions a request (comptime 15,085, walkers 17,184);
+     on dedicated cores (`dragrace adhoc race`, three rounds each)
+     131k requests a second against 136k (comptime, -3.1%) and 127k
+     (walkers, -6.3%). The site: 410 generated lines (was ~15,000), release build
+     39 s (78; comptime 50), a Roc edit 1.2 s (2.0; comptime 1.3), markup
+     88-111 ms. The competitor is ported on fourneau-dragrace's branch
+     `templates-vm` (`51b803a`). The site's port is still scratch only.
+     The owner chooses between the branches. Then, if this one is chosen:
+     the site on fourneau-dragrace's branch.
    - Todo (owner, 2026-10-08): **in dev, reread the bytecode, no link and
      no restart**, for a markup edit. The biggest benefit is not losing
      the server's state to change a page (its memory, open SSE streams,
      anything `init!` built), not the latency (owner, 2026-10-08). Today
-     it is linked into the binary
-     as in production (40-80 ms) and the app restarted (tens of ms, its
-     `init!` again, SSE connections dropped). Needs: the dev host
-     rereading `templates.o` (or the raw program) when roux dev rewrites
-     it; `Rocstache.load!` giving the current program on every call and
-     apps loading it per request rather than once in `init!` (a few KB);
-     the text append-only in dev, so a request rendered against the old
-     text (it may yield between `render` and `bytes!`) still reads valid
-     runs; a "changed" event on `/_dev/events`, since no restart drops the
-     stream. Contract and Roc edits keep roc, the link and a restart.
-     Expected ~50 ms save to page (unmeasured); production unchanged.
-
-5. **Next, queued (owner, 2026-10-08): no generated Roc at all.** "This
-   Walker shit all seems like a bad idea": one renderer, written once in
-   Roc in the platform (compiled once, imported by apps), that runs every
-   template's bytecode; no per-template walkers. Pure if it can be, else
-   effectful (a hosted call per field read, the host reading the record
-   through the contract's layout); if both are possible and differ in
-   speed, build both and race them (`dragrace adhoc race`). Start after
-   the ad-hoc racer (fourneau-dragrace TODO, item 3) works.
-   - Where it stands: queued; not started.
+     it is linked into the binary as in production (40-80 ms) and the app
+     restarted (tens of ms, its `init!` again, SSE connections dropped).
+     Simpler since the VM is the host's: no Roc holds the program. Needs:
+     the dev host rereading the program and text when roux dev rewrites
+     them (between requests, or the old kept until no render uses it); a
+     "changed" event on `/_dev/events`, since no restart drops the
+     stream. Contract and Roc edits keep glue, roc, the link and a
+     restart. Expected ~50 ms save to page (unmeasured); production
+     unchanged.
 
 
 ## Plan

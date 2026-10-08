@@ -172,88 +172,78 @@ experiments; the `templates` branch has the first, templates compiled to
 machine code by Zig. Both replace the compiler that turned a template
 into Roc code (`tools/rocstache-gen`).
 
-A rocstache template is compiled to **bytecode**, and the page is
-rendered by **pure Roc**: generated walkers run the bytecode over the
-page's record and return the page as a list of parts, which the host
-writes out. The bytecode is data: editing markup changes it and nothing
-else, so no compiler runs. The walkers are Roc written from the contract
-alone, so they change only when the contract does.
+A rocstache template is compiled to **bytecode**, and one **VM in the
+host** (host/templates.zig), the same for every template of every app,
+runs it over the page's record, reading the record where Roc's compiler
+laid it out. The bytecode is data: editing markup changes it and nothing
+else, so no compiler runs. No Roc is generated but each template's
+contract and a one-line `render!`. (Until 2026-10-08 the branch
+generated pure Roc walkers per template instead, ~15,000 lines on the
+dragrace site; the owner had them removed. A renderer in pure Roc that
+is not generated per template cannot be written: Roc has no reflection,
+so a generic function cannot read field N of a record it does not know.)
 
 ### What a build does
 
 1. **`roux build`** (`tools/roux`, with `tools/rocstache`) parses each
    `Page.rocstache` and decides its **contract** (below: declared or
-   inferred). It writes `Page.roc`: the contract, `render`, and one
-   **walker** per scope of the contract (the root record, each record
-   field, each list's element, each Bool a section opens):
+   inferred). It writes `Page.roc`:
 
    ```roc
    Page :: [].{
        Ctx : { items : List({ name : Str, price : U32 }), title : Str }
-       render : Rocstache.Templates, Ctx -> Rocstache.Html
-       walk : Rocstache.Templates, Ctx, Rocstache.Html -> Rocstache.Html
+       render! : Ctx => Rocstache.Html
+       render! = |ctx| Rocstache.render!(0, Box.box(ctx))
    }
-   w3 = |s0, s1, code, start, end, parts| {    # an item, then the root
-       ...
-       while $pc < end {
-           w = List.get(code, $pc) ?? 0
-           op = w % 16
-           if op == 0 {
-               $parts = $parts.append(Text(w // 1048576))
-               $pc = $pc + 1
-           } else if op == 1 {
-               run = List.get(code, $pc + 1) ?? 0
-               $parts = match (w // 16) % 65536 {
-                   0 => $parts.append(Value(run, s0.name))
-                   4097 => $parts.append(Value(run, s1.title))
-                   _ => $parts
-               }
-               $pc = $pc + 2
-           } else if ...
    ```
 
-   A walker is a loop over the words with a branch per op, and in each
-   branch a `match` over the fields that op can read there: its own
-   scope's and every enclosing scope's (the selector says which: how many
-   scopes up, and the field's index by name), so `../` works without the
-   walker knowing the template.
-2. It compiles every template to one **program** (bytecode.zig): a
+   The number is the template's index among the app's, sorted by name.
+2. **`roc glue`** lays the contracts out, only when one changed (~0.3 s;
+   layout.zig). roux writes a throwaway platform with one hosted
+   function per contract, taking it concretely, and runs glue on it with
+   its own spec (`tools/rocstache/Layout.roc`), which writes the
+   compiler's layout facts as ZON (`layouts.zon` in the build
+   directory): every type's kind and size, each record's fields'
+   offsets. Nothing guesses an offset. Glue runs with `--no-cache`: its
+   cache handed back another spec's compiled script (nightly-2026-10-04).
+3. It compiles every template to one **program** (bytecode.zig): a
    header (each template's `[start, end)`), then the code; and one
    **text**, every static run of every template. A word is a `u64`: the
-   op in 4 bits, the selector in 16, the rest a section's length or a
-   static run (`offset * 65536 + length` into the text). The compiler
-   does the work the walkers would repeat: it fuses each value with the
-   static run before it into one part (`Value(run, s0.name)`), resolves
-   `../` along the contract (the template's scopes and the contract's
-   differ: `{{#../b}}` inside `{{#a}}`), opens dotted paths as record
-   sections, and puts a value's formatting (escaped, raw, upper, lower,
-   url) in the run word's top byte, which the walker hands on unread.
-3. It writes the program and the text as an **ELF object** itself
+   op in 4 bits, how many scopes up the read starts in 4, the byte
+   offset from that scope in 24, the rest (a section's length, an
+   integer's type, a called template) in 32. A dotted path is one offset
+   (records are inline: `a.b.c` is the sum of three); `../` counts the
+   template's own scopes. Each value is fused with the static run before
+   it, and a Str's formatting (escaped, raw, upper, lower, url) rides in
+   the run word's top byte.
+4. It writes the program and the text as an **ELF object** itself
    (elf.zig: one read-only section, one symbol, `rocstache_data`). No
    compiler runs: a markup edit costs the generation (~10 ms for the
    site) and the link.
-4. **`roc build`** emits the app as an archive, walkers included, when
-   any Roc changed (a contract change rewrote a module).
-5. **roux links** the archive and the object (`zig ld.lld`, 40-80 ms).
+5. **`roc build`** emits the app as an archive, when any Roc changed (a
+   contract change rewrote a module).
+6. **roux links** the archive and the object (`zig ld.lld`, 40-80 ms).
 
-At run time the app calls `Rocstache.load!()` once, in `init!` (the
-program, copied into a Roc list, kept in its context), then per request
-`Page.render(code, ctx)`, pure: it reads the template's range from the
-header and runs the root's walker, which calls the others. The result,
-`Rocstache.Html`, is a list of parts:
-`[Text(U64), Value(U64, Str), Signed(U64, I64), Unsigned(U64, U64)]`.
-`Rocstache.html!` (or `bytes!`, `str!`) hands it to the host, which
-writes it in one pass into a buffer of the shard's (host/templates.zig):
-static runs copied in 32-byte blocks (the text has slack after it),
-values escaped 16 bytes at a time through loads that cannot cross a page,
-numbers two digits at a time, then one allocation of the exact size.
+At run time `Page.render!(ctx)` boxes the record and calls the host
+(`hosted_template_render(index, box)`). The VM keeps a stack of scope
+pointers, the record's address first: a list's section pushes each
+element's address in turn (its stride the element's size), a record's
+pushes the record's, and a read is a load at a scope's address plus the
+offset (a `Str` read as Roc's `RocStr`, small strings too). It writes in
+one pass into a buffer of the shard's: static runs copied in 32-byte
+blocks (the text has slack after it), values escaped 16 bytes at a time
+through loads that cannot cross a page, numbers two digits at a time;
+then one allocation of the exact size, a Roc `List(U8)`. The box goes
+back to Roc untouched (`{ bytes, context }`), and Roc releases it: Roc
+knows the record's type, the host never needs to.
 
 A partial comes two ways. `{{> Top}}` is inlined: its code is compiled
 into the includer's, in the includer's scope. `{{> Top frame}}` is
 called: Top has its own contract, the includer's field `frame` is
-`Top.Ctx`, and the CALL op runs `Top.walk(code, s0.frame, parts)`.
-Either way, editing Top's markup is the same as any markup edit: the
-program is regenerated whole (it is milliseconds) and linked.
+`Top.Ctx`, and the CALL op runs Top's code with the field's address as
+its record (the same Roc type, so the same layout). Either way, editing
+Top's markup is the same as any markup edit: the program is regenerated
+whole (it is milliseconds) and linked.
 
 ### Contracts
 
@@ -262,7 +252,7 @@ A template's **contract** is the record it reads: the `Ctx` its
 records, a section reading its element is a list, one that does not is a
 Bool, other leaves are `Str`). The template is checked against it, so a
 mistake is roux build's message naming the template's line, never a Roc
-type error in a walker. A line holding only a section, comment or
+type error, nor a wrong read in the host. A line holding only a section, comment or
 partial tag goes with it (Mustache's standalone rule). `Page.roc` is
 written only when its content changes: its history in git is the
 history of the template's type.
@@ -271,44 +261,47 @@ history of the template's type.
 
 The same source and the same bytecode; only roc's optimization differs
 (`--opt=dev`, `--opt=speed`). Editing markup, a page's or a partial's,
-is the generation, the link and a restart: 51-92 ms inside `roux dev`
-on the dragrace site, 110-154 ms from the save to the page served
-(against 0.27-0.57 s on the `templates` branch, 3.0 s when templates
-were Roc). Editing Roc, or a contract, is roc too: ~2.0 s on the site
-(1.3 s on the `templates` branch: the walkers are Roc to compile).
-[docs/dev-server.md](docs/dev-server.md) has the rest.
+is the generation, the link and a restart: 88-111 ms from the save to
+the page served on the dragrace site (against 0.27-0.57 s on the
+`templates` branch, 3.0 s when templates were Roc). Editing Roc is roc
+too: 1.2 s on the site (1.3 s on the `templates` branch); a contract
+change adds glue's ~0.3 s. [docs/dev-server.md](docs/dev-server.md) has
+the rest.
 
 ### What it costs the app
 
-- The app keeps the program in its context (`Rocstache.load!` in
-  `init!`) and passes it to `render`.
-- `render` is pure; writing the page out (`html!`, `bytes!`, `str!`) is
-  a hosted call, effectful.
+- `render!` is effectful: hosted functions are, so code that renders is
+  effectful too. `Rocstache.html` and `str` (a response, a Datastar
+  patch's Str) are pure.
 - A contract is a concrete record: the app passes exactly its fields
   (an inferred contract's leaves are `Str`; numbers need a declared
   `Ctx`).
 - Formatters are the host's (`len`, `plural`, `upper`, `lower`, `url`);
-  anything else is computed in Roc into a field.
-- A section into a field of a scope that the contract does not hold the
-  current one in is refused (the walkers follow the contract).
+  anything else is computed in Roc into a field. Integers up to 64 bits
+  render; other leaf types (`F64`, `Dec`, tags) are refused by roux
+  build.
+- `Rocstache.render!` trusts its caller: only generated modules call it,
+  with the index that matches the box's type.
 - A template's index among the app's (sorted by name) is in its module:
   adding a template before it in the alphabet rewrites the module.
 
-### Against the `templates` branch
+### Against the other ways
 
 Measured 2026-10-08 (DIARY), the race's Menu page over HTTP, the
-competitor built by each; instructions per request (steady within 0.3%;
-throughput was not measurable that day, the laptop busy):
+competitor built by each; instructions per request on the laptop
+(steady within 0.1%), requests a second on dedicated cores (`dragrace
+adhoc race`), and the dev loop and release build on the dragrace site:
 
-| | instructions/request | markup edit, served | Roc edit | site release build |
-|---|---|---|---|---|
-| templates as Roc (main) | 39,030 | 3.0 s | | |
-| comptime Zig (`templates`) | 15,200 | 0.27-0.57 s | 1.3 s | 50 s |
-| bytecode VM (this) | 17,300 | 0.11-0.15 s | 2.0 s | 78 s |
+| | instructions/request | requests/s | markup edit, served | Roc edit | site release build | generated Roc |
+|---|---|---|---|---|---|---|
+| templates as Roc (main) | 39,030 | | 3.0 s | | | |
+| comptime Zig (`templates`) | 15,085 | 135,639 | 0.27-0.57 s | 1.3 s | 50 s | contracts |
+| bytecode, Roc walkers (`16f3bdf`) | 17,184 | 127,027 | 0.11-0.15 s | 2.0 s | 78 s | ~15,000 lines |
+| bytecode, host VM (this) | 15,595 | 131,374 | 0.09-0.11 s | 1.2 s | 39 s | 410 lines, contracts |
 
-The VM's render is ~2.9k instructions of walker and ~5.4k of writing
-out, against ~6.2k for the comptime render: 14% more for the whole
-request, and 2.3 times fewer than templates as Roc.
+The host VM is 3.4% more instructions than comptime and 9.2% fewer than
+the walkers; on dedicated cores (one race, three rounds each, medians)
+3.1% behind comptime and 3.4% ahead of the walkers.
 
 ## What the platform provides
 

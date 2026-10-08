@@ -1234,3 +1234,47 @@ build: roc 78 s against 50 s. Learned: `roux build` without `--dev` is
 read it so, and timed `--no-cache` and the cache before finding it).
 Also: `**` is gone in Zig 0.17 (`@splat`, `splatByteAll`), as the zig
 skill notes say.
+
+## 2026-10-08: one VM in the host, no walkers
+
+The owner: "This Walker shit all seems like a bad idea ... a single
+renderer that compiles once", then "Remove walkers and use a constant VM
+in host". Done (`591de12`). A pure renderer written once in Roc cannot
+read a record it does not know (Roc has no reflection), so the pure
+variant would have been generated code again; there was nothing to race
+on that side.
+
+How: `Page.roc` is the contract and `render! = |ctx|
+Rocstache.render!(index, Box.box(ctx))`. The hosted function
+`template_render! : U64, Box(a) => { bytes : List(U8), context : Box(a)
+}` hands the box back, so Roc releases it and the host needs no layout
+of what it does not read. The offsets come from the compiler: roux
+writes a throwaway platform (one hosted function per contract) and runs
+`roc glue` on it with its own spec, `tools/rocstache/Layout.roc`, which
+writes `layouts.zon` (kinds, sizes, field offsets). The bytecode's reads
+became `(up, byte offset)`; a dotted path is one sum; `../` counts the
+template's scopes, since the VM keeps a stack of scope pointers.
+
+Learned: `roc glue`'s cache ran ZigGlue's script when given my spec in
+the same directory, and crashed on cut-down specs; `--no-cache` ran each
+right, 0.27 s (roc skill, gotchas). The no-shell-edits hook read a loop
+variable named `ex` as the editor.
+
+Checked: `zig build test`; both examples, and all 12 pages and patches
+of the dragrace site copy (ported: no `code` in the context,
+`render!`, `Rocstache.html`/`str` pure), byte for byte the walkers' and
+the `templates` branch's (`compare.sh`).
+
+Measured, the race's Menu over HTTP, instructions:u per request (server
+on CPUs 0-1, 200,000 requests, three interleaved rounds, within 0.1%):
+comptime 15,085, walkers 17,184, the VM 15,870; with `read_int` and
+`Sink.number` inline, 15,595. The VM's loop is 37% of the profile, flat
+(copies and escaping). On dedicated cores (`dragrace adhoc race -workloads
+templates`, three rounds, the under-driven ones rerun by the race):
+comptime 135,639 requests a second, the VM 131,374 (-3.1%), the
+walkers 127,027 (-6.3%).
+
+The site copy: generated Roc 410 lines (was ~15,000); release build
+39 s (78; comptime 50). `roux dev`: cold start 1.3-2.2 s (5.4-5.6),
+warm 1.0 s (1.9-2.1); a page's markup 88-111 ms save to page, Top's
+91-110 ms (110-154); main.roc 1.16-1.20 s (2.0; comptime 1.3).
