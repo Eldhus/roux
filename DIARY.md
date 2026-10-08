@@ -1072,3 +1072,9 @@ Save to new page, `roux dev` on the site copy:
 Every example builds in ~160 ms of compiling (`--dev`), from ~450.
 Checked again after: examples/templates byte for byte as main's, the
 site's 17 pages too; `zig build test` and tidy.
+
+The optimized build of the site, `roux build` (roc `--opt=speed`, 13
+objects ReleaseSafe beside it): 50 s, all of it roc; the dragrace DIARY
+measured 83-94 s for `roc build --opt=speed` of the site while its
+templates were Roc. Its 15 pages and data files are byte for byte
+main's (on a copy of site.db).

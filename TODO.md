@@ -46,11 +46,14 @@
      `../roux-templates`): `tools/rocstache` replaces rocstache-gen;
      `roux build` builds every example; the race's competitor ported
      (fourneau-dragrace branch `templates`) and measured, 165k against
-     109k requests/s, 14,807 against 39,030 instructions; `roux dev` in
-     use, a markup edit on the page in ~0.5 s, a contract change in
-     ~1.1 s. Next, in order: the dragrace site on the branch (its 14
-     templates, partials, `site dev` onto `roux dev`); the language
-     server.
+     109k requests/s, 14,807 against 39,030 instructions; the dragrace
+     site ported on its branch, every page byte for byte main's, dev
+     and optimized, and its `site dev` is `roux dev`: a page's markup
+     on the screen in ~0.3 s (an object per template), Roc ~1.3 s,
+     against 3.0 s. Both branches are ready for the owner to review and
+     merge together (fourneau-dragrace's needs roux's). Next: what roux
+     dev lacks against the Go `site dev` (docs/dev-server.md, on main),
+     then the language server.
 
 
 ## Plan
