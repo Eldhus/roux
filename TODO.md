@@ -43,12 +43,13 @@
    Every dev-server thought goes in [docs/dev-server.md](docs/dev-server.md)
    (on main).
    - Where it stands (2026-10-07, branch `templates`, worktree
-     `../roux-templates`): step 1 done: `tools/rocstache` replaces
-     rocstache-gen, `roux build` builds every example (templates' page
-     byte for byte as before), tidy clean over `tools/`. Next, in order:
-     measure (Menu's instructions, ReleaseSafe against ReleaseFast; HTTP
-     A/B against main); the dragrace's competitor and site on the branch
-     (fourneau-dragrace, its own branch); `roux dev`; the language
+     `../roux-templates`): `tools/rocstache` replaces rocstache-gen;
+     `roux build` builds every example; the race's competitor ported
+     (fourneau-dragrace branch `templates`) and measured, 165k against
+     109k requests/s, 14,807 against 39,030 instructions; `roux dev` in
+     use, a markup edit on the page in ~0.5 s, a contract change in
+     ~1.1 s. Next, in order: the dragrace site on the branch (its 14
+     templates, partials, `site dev` onto `roux dev`); the language
      server.
 
 
@@ -257,6 +258,15 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] The writer's lock is not FIFO: a waiter woken may lose to one
   arriving. Measure the spread of write waits under contention before
   doing anything (host/database.zig, WriterLock). (2026-10-06)
+- [ ] A restart of an eight-shard roux right after it stopped failed
+  half the time on the laptop (`roux: shard: SystemResources`, io_uring
+  ENOMEM): the kernel frees a dead process's rings a moment after it
+  exits, and two sets of eight 4096-entry rings did not fit the 8 MiB of
+  locked memory (`ulimit -l`); four shards or fewer never failed (DIARY,
+  2026-10-07). `roux dev` runs two (`ROUX_SHARDS`). Production restarts
+  too: does the dragrace site's systemd restart hit it on the droplet?
+  Measure the rings' locked memory; then a smaller ring, a retry at
+  startup, or a higher `LimitMEMLOCK` in the unit. (2026-10-07)
 - [ ] The templates' language server, for Zed: rocstache-gen had one
   (`rocstache-gen lsp`: diagnostics, hovers, completions) and went with
   it. Port it onto tools/rocstache (its diagnostics are roux build's),

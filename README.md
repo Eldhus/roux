@@ -25,6 +25,7 @@ zig build platform                 # the host, as platform/targets/x64musl/libho
 zig build tools                    # roux, which builds apps, and roux-db
 zig-out/bin/roux build examples/hello.roc && examples/hello   # http://127.0.0.1:8080
 zig-out/bin/roux build --dev examples/templates/main.roc      # the fast build, same code
+zig-out/bin/roux dev examples/templates/main.roc              # served, rebuilt as you edit
 zig build examples                 # regenerate the examples' db/
 zig build sqlite-floor             # SQLite alone, timed (vendor/sqlite, sqlite/floor.zig)
 zig build db-floor                 # the database workloads without Roc (host/floor.zig)
@@ -36,6 +37,12 @@ compiled by Zig at once, then the link, into `APP` beside `APP.roc`
 (DESIGN.md, Templates). `--dev` builds in about half a second; without
 it, optimized (roc `--opt=speed`, the templates ReleaseSafe, as the
 host). A bare `roc build` makes only an archive now.
+
+`roux dev APP.roc` builds fast, runs the app, and on each save rebuilds
+only what changed and restarts it; the page in the browser reloads
+itself. A markup edit is on the screen in about half a second (no roc),
+a contract or Roc change in about a second (docs/dev-server.md).
+`--port=N`, `--static=DIR` (the app's static files, which restart it).
 
 Zig 0.17.0 (`.zig-version`) and the Roc nightly in `.roc-version`.
 `platform/targets/x64musl/` also needs `crt1.o` and `libc.a` (musl), copied

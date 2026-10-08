@@ -962,3 +962,55 @@ Also: `roux build --roc=PATH` (the dragrace installs its pinned roc
 elsewhere; same pin), and roux writes stderr streaming: a positional
 writer wrote at offset 0 of a log file it was redirected to, over what
 roc had written.
+
+## 2026-10-07: `roux dev`
+
+`roux dev [--port=N] [--static=DIR] APP.roc` (tools/roux/dev.zig; the
+build steps moved to pipeline.zig, shared with `roux build`): one loop,
+one pass at a time. A pass hashes the app's sources by kind (`.roc`,
+`.rocstache`, `.sql`, the static directory) and runs only what changed:
+roux-db for a query, the templates' generation always (1 ms; it rewrites
+a `Page.roc` only when its contract changed), roc when Roc sources
+differ after that, the templates object when templates do, then the link
+and a restart. inotify wakes it; a pass starts once the sources are
+quiet 30 ms. The app runs with `ROUX_DEV` set to the build's number:
+the host (host/dev.zig) answers `/_dev/events` itself and appends the
+reload script to HTML, so no proxy. One line per pass: `roux dev: build
+4 ok (templates) in 419 ms`, or `failed; build 3 still serving`, or the
+app's own exit with its code.
+
+Measured on a scratch copy of examples/templates (roux dev on port 8096,
+an EventSource-like client reconnecting 50 ms after a drop), the time
+from the save (sed) to the new page answered by curl:
+
+| edit | new page | reload event | the pass |
+|---|---|---|---|
+| markup, 13 saves | 461-529 ms | +40-50 ms | 416-483 ms (templates) |
+| contract and app (a field) | 1,078 ms | | 1,056 ms (roc and templates) |
+| a field the declared contract lacks | refused, `Page.rocstache:10:17: `nope` the contract has no such field here (it has: items, title)`; the old build kept serving | | |
+
+Today's `dragrace site dev` takes 3.0 s for a template edit.
+
+Found on the way:
+- Restarts failed every other time: `roux: shard: SystemResources`, the
+  new instance's io_uring setup refused memory while the old one's
+  rings were not yet freed (eight 4096-entry rings a process; `ulimit
+  -l` 8 MiB). Back-to-back restarts, six each: 1, 2 and 4 shards never
+  failed, 8 failed 3 times. The host takes `ROUX_SHARDS` now, and roux
+  dev runs the app on two. Production restarts may meet the same
+  (TODO).
+- Stopping roux dev with SIGTERM left the app running (the defer never
+  ran). Now a SIGINT or SIGTERM handler stops the app, then roux dev; a
+  blocked signal and a signalfd would not do, since a blocked mask
+  passes to the app across exec and the app must die by SIGTERM.
+- An app without queries got roux-db run on it (the empty digest
+  differed from the initial one): roux-db runs only when there are
+  `.sql` files.
+- A save that brings the sources back to the build that serves rebuilds
+  nothing; it now says so, after a failure.
+- `roux build` and `roux dev` leaked nothing (the debug allocator found
+  a 4 KiB buffer on the first try, fixed).
+- Twice in testing, `pgrep -f`/`pkill -f` on a pattern my own shell's
+  command contained killed that shell (exit 144). Stop processes by PID
+  or by exact command name (`ps -eo pid,comm`), as the benchmarking
+  skill says.

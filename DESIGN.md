@@ -281,22 +281,35 @@ reads `ROUX_TLS_CERT` and `ROUX_TLS_KEY`, or `ROUX_ACME_DIRECTORY`,
 `ROUX_ACME_IDENTIFIER` and `ROUX_ACME_STATE` (and `_PROFILE`,
 `_HTTP_PORT`, `_CA`) to obtain a certificate at startup, and
 `ROUX_REDIRECT_PORT` (with `ROUX_HTTPS_HOST`) for plain HTTP redirecting
-beside it; fourneau's https.zig does the work, as for fourneau-static. The pages under `/_dev` (DevTools, M6) are answered by
-the platform. A module returns
-when an app needs it, not before.
+beside it; fourneau's https.zig does the work, as for fourneau-static.
+`ROUX_SHARDS` caps the shards (one per CPU of the process's affinity
+otherwise). `ROUX_DEV`, set by `roux dev` to the build's number, is
+development mode (`host/dev.zig`), decided once at startup: the host
+answers `/_dev/events` itself (the build's number, as server-sent
+events, the stream held open) and appends the reload script to every
+`text/html` answer; without it, a request pays one comparison. The
+other pages under `/_dev` (DevTools, M6) will be answered by the
+platform too. A module returns when an app needs it, not before.
 
 ## Tools
 
 - `roux` (`tools/roux/`, `zig build tools`): `roux build [--dev]
   APP.roc` builds an app (Templates, above), with the pinned toolchain
   named at its own build. Its template compiler is `tools/rocstache/`.
-  The language server the old compiler had (`rocstache-gen lsp`, for
-  Zed) is not ported yet (TODO).
+  `roux dev APP.roc` (`tools/roux/dev.zig`) runs the app and rebuilds
+  it as it is edited: content hashes decide what an edit needs (a query:
+  roux-db; a template: the templates object; Roc: roc), never roc for
+  markup; then the link, and the app restarted on two shards with
+  `ROUX_DEV`. A failed build leaves the last good one serving; the
+  app's own exit is reported; SIGINT or SIGTERM stops both. The
+  language server the old compiler had (`rocstache-gen lsp`, for Zed) is
+  not ported yet (TODO).
 - `roux-db` (`tools/roux-db/`, `zig build tools`): `roux-db gen DIR`, an
   app's typed queries (The database, above), written from scratch
   (2026-10-06), not the old fork's. Migrations: not yet.
-- Not planned until asked: the old fork's `new`, `check`, `test`. `roux
-  dev` is asked (2026-10-07): [docs/dev-server.md](docs/dev-server.md).
+- Not planned until asked: the old fork's `new`, `check`, `test`. What
+  `roux dev` is for and what is next for it:
+  [docs/dev-server.md](docs/dev-server.md).
 
 ## Testing, in one paragraph
 

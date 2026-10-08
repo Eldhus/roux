@@ -27,6 +27,7 @@ const abi = @import("roc_platform_abi.zig");
 const database_module = @import("database.zig");
 const backup_module = @import("backup.zig");
 const RequestsType = @import("requests.zig").RequestsType;
+const dev = @import("dev.zig");
 const sqlite = @import("sqlite");
 const sqlite_vfs = sqlite.vfs;
 const fourneau = @import("fourneau");
@@ -92,6 +93,9 @@ var static_site: ?*const fourneau.site.Site = null;
 var database: ?*database_module.Database = null;
 /// Set as the shards start: `init!` is over (`Sqlite.open!` is its).
 var serving = false;
+/// The build `roux dev` is serving (`ROUX_DEV`): development mode
+/// (dev.zig). Null in production; read once, before the shards.
+var dev_build: ?[]const u8 = null;
 
 const Requests = RequestsType(Server.Request);
 /// This shard's requests in Roc, by handle (requests.zig).
@@ -666,10 +670,16 @@ const App = struct {
         /// The request's handle (requests.zig), ended at release; 0 for a
         /// static file, which never reached Roc.
         handle: u64,
+        /// Development only: the body with the reload script, freed at
+        /// release (dev.zig).
+        dev_body: ?[]u8 = null,
     };
 
     pub fn handle(app: *App, request: *Server.Request) Response {
         requests_in_flight += 1;
+        if (dev_build) |build| {
+            if (dev.is_events(request.head.path_and_query)) return dev_events(request, build);
+        }
         if (static_site) |site| {
             if (site.respond(request.head, request.scratch)) |file| {
                 return .{
@@ -717,13 +727,56 @@ const App = struct {
         for (roc_headers[0..count], table[0..count]) |*roc_header, *header| {
             header.* = .{ .name = roc_header.name.asSlice(), .value = roc_header.value.asSlice() };
         }
-        return .{
+        var response: Response = .{
             .status = roc.status,
             .headers = table[0..count],
             .body = roc.body.items(),
             .roc = roc,
             .handle = request_handle,
         };
+        if (dev_build != null) add_reload_script(&response);
+        return response;
+    }
+
+    /// In development, an HTML page gets the reload script (dev.zig).
+    fn add_reload_script(response: *Response) void {
+        for (response.headers) |header| {
+            if (!std.ascii.eqlIgnoreCase(header.name, "content-type")) continue;
+            if (!dev.is_html(header.value)) return;
+            // Out of memory: the page goes without the script.
+            const body = dev.with_script(std.heap.smp_allocator, response.body) catch return;
+            response.body = body;
+            response.dev_body = body;
+            return;
+        }
+    }
+
+    /// `/_dev/events`, in development: the build's name, then a comment
+    /// every `keepalive_seconds` until the client leaves (a day at most).
+    fn dev_events(request: *Server.Request, build: []const u8) Response {
+        const over: Response = .{
+            .status = fourneau.server.streamed_status,
+            .headers = &.{},
+            .body = "",
+            .roc = null,
+            .handle = 0,
+        };
+        const headers = [_]Header{
+            .{ .name = "Content-Type", .value = "text/event-stream" },
+            .{ .name = "Cache-Control", .value = "no-store" },
+        };
+        request.stream_start(200, &headers) catch return over;
+        var buffer: [128]u8 = undefined;
+        request.stream_send(dev.first_event(build, &buffer)) catch return over;
+        request.stream_flush() catch return over;
+        const keepalives_max = std.time.s_per_day / dev.keepalive_seconds;
+        for (0..keepalives_max) |_| {
+            shard_io.?.sleep(.fromSeconds(dev.keepalive_seconds), .awake) catch break;
+            request.stream_send(": \n\n") catch break;
+            request.stream_flush() catch break;
+        }
+        if (request.stream_state() == .streaming) request.stream_end() catch {};
+        return over;
     }
 
     /// An answer of a status alone, Roc's response released after it.
@@ -750,6 +803,7 @@ const App = struct {
 
     pub fn release(app: *App, response: *Response) void {
         _ = app;
+        if (response.dev_body) |body| std.heap.smp_allocator.free(body);
         if (response.roc) |roc| roc.decref(host());
         if (response.handle != 0) shard_requests.?.end(response.handle);
         response.* = undefined;
@@ -855,6 +909,8 @@ fn run() !void {
         static_site = site;
     }
 
+    // `roux dev` names the build: development mode, decided once (dev.zig).
+    dev_build = if (environment("ROUX_DEV")) |build| (if (build.len > 0) build else null) else null;
     var app: App = .{ .context = started.context };
     // `init!` is over: the database is open, or there is none.
     serving = true;
@@ -910,7 +966,10 @@ fn port_from(text: ?[]const u8) ?u16 {
 }
 
 /// One shard per CPU this process may run on (its affinity mask, so
-/// `taskset` decides), at most `shards_max`.
+/// `taskset` decides), at most `shards_max`, and at most `ROUX_SHARDS` when
+/// the deployment says (`roux dev` runs two: a restart right after a stop
+/// found the old process's io_uring memory not yet freed, and eight shards
+/// twice over did not fit the laptop's 8 MiB of locked memory).
 fn shard_count() u32 {
     var set: std.os.linux.cpu_set_t = @splat(0);
     const linux = std.os.linux;
@@ -919,7 +978,8 @@ fn shard_count() u32 {
     var count: u32 = 0;
     for (set) |word| count += @popCount(word);
     assert(count >= 1); // we are running on one
-    return @min(count, shards_max);
+    const wanted = std.fmt.parseInt(u32, environment("ROUX_SHARDS") orelse "", 10) catch count;
+    return @max(1, @min(count, wanted, shards_max));
 }
 
 fn run_shard(app: *App, listen: Listen) void {

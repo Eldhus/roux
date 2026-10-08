@@ -12,6 +12,7 @@ test {
     _ = @import("backup.zig");
     _ = @import("database.zig");
     _ = @import("database_test.zig");
+    _ = @import("dev.zig");
     _ = @import("requests.zig");
 }
 
