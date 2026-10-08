@@ -16,24 +16,37 @@ no template interpreter in dev, though the prototype had one.
 
 ## Where it stands (branch `templates`, 2026-10-07)
 
-`roux dev [--port=N] [--static=DIR] APP.roc` is built and measured on a
-copy of examples/templates (save with sed, then curl until the new page;
-an EventSource-like client for the reload):
+`roux dev [--port=N] [--static=DIR] APP.roc` is built and measured,
+first on a copy of examples/templates, then on a copy of the dragrace
+site (12 templates, partials; its `site dev` now runs `roux dev`). Save
+with sed, then curl until the new page; an EventSource-like client for
+the reload:
 
-| edit | save to new page | reload event | today's `dragrace site dev` |
-|---|---|---|---|
-| a template's markup | 461-529 ms | +40-50 ms | 3.0 s |
-| a contract and the app's record (a field) | 1.08 s | | (every edit 3.0 s) |
-| a mistake in a template | refused at once with `Page.rocstache:10:17: ...`; the old build serves | | |
+| edit | save to new page | before (`dragrace site dev`) |
+|---|---|---|
+| the site: a page's markup (AboutPage) | 266-298 ms (one template's object) | 3.0 s |
+| the site: a partial in nine pages (Top) | 927-948 ms (nine objects at once) | 3.0 s |
+| the site: Roc (`main.roc`) | 1.28-1.33 s (roc `--opt=dev`) | 3.0 s |
+| the site: a static file | 78-82 ms (a restart) | 10 ms (the proxy) |
+| the example: markup | 461-529 ms, before one object a template | |
+| the example: a contract and the app's record | 1.08 s | |
+| a mistake in a template | refused at once with `Page.rocstache:10:17: ...`; the old build serves | |
+
+The reload event reaches the page 40-50 ms after the new build serves
+(the browser reconnects 50 ms after a drop).
 
 Each step's cost, on the laptop (nightly-2026-10-04-130536d, Zig 0.17.0):
 
 | step | time | where |
 |---|---|---|
-| the templates generated (contracts, registry) | ~1 ms | roux dev |
+| the templates generated (contracts, registry) | 1-20 ms | roux dev |
 | glue, when a contract changed | ~0.6 s | roux dev |
-| the templates object, Zig Debug (self-hosted backend) | 370-450 ms | roux dev |
-| the same, ReleaseSafe or Fast (production) | 14-17 s | roux build |
+| an object, Zig Debug, std's panic handler, no templates | 327 ms | experiment |
+| the same with our handler (over the host's `roc_crashed`) | 43 ms | experiment |
+| all 12 of the site's templates in one object, ours | 988 ms | experiment |
+| one template's object (Top, AboutPage, RaceClasses, IndexPage) | 111, 159, 272, 392 ms | experiment |
+| a Zig cache hit of one object | ~145 ms: so roux names objects by a hash and skips them itself | experiment |
+| the templates, ReleaseSafe or Fast (production), one object | 14-17 s | roux build |
 | `zig build -fincremental --watch` on it, a markup edit | 1.2 s and more: slower than a fresh build | prototype |
 | the link, `zig ld.lld` of roc's archive and the object | 40-80 ms | roux dev |
 | `roc build --opt=dev`, the example | ~0.1 s | roux dev |
@@ -49,7 +62,7 @@ cost a hash pass and no more.
 
 | edit | what runs |
 |---|---|
-| a template's markup | the templates object (Debug), the link, a restart. No roc, no glue. |
+| a template's markup | its object and those of the templates that include it (Debug), the link, a restart. No roc, no glue. |
 | a template's contract | the template's `Page.roc` rewritten, glue, roc and the object at once, the link, a restart |
 | Roc source | roc, the link, a restart |
 | a query (`*.sql`) | roux-db, then as Roc source |
@@ -92,6 +105,17 @@ cost a hash pass and no more.
 
 ## Next, not built
 
+- **What `dragrace site dev`'s Go version had** and roux dev has not,
+  now that the site uses roux dev: a failed build shown over the page
+  (below), requests held while the app restarts (a manual refresh in the
+  restart's tens of milliseconds is refused), and `roc test` run after
+  each build with a banner when an expect fails.
+- **Partials compiled once.** A partial is inlined into every page that
+  includes it, so editing `Top` recompiles nine objects (~0.9 s). A
+  partial compiled as its own function, called by its includers, would
+  be one object; but its code is generic over the includer's scope types
+  (each includer passes another record type), so it is one function per
+  distinct scope at most. Measure how many distinct scopes the site has.
 - **The error over the page.** A failed build leaves the old app
   serving and prints the error in the terminal; the browser shows
   nothing. The old app cannot learn of the failure without a channel:
@@ -99,11 +123,11 @@ cost a hash pass and no more.
   host reads it on each `/_dev/events` connection (and roux dev pokes
   the stream by restarting nothing)? Or roux dev serves `/_dev/events`
   itself on another port and the script listens there. Undecided.
-- **Faster markup edits.** 30 ms of quiet before a pass and a 50 ms
-  reconnect could be 10 and 20. The object's 370-450 ms is Zig compiling
-  Debug: where it goes is not measured (`--time-report`); the glue file is
-  ~10k lines and std comes in, and a smaller import set may halve it.
-  Then the link and the restart (~0.1 s) could go: a self-contained
+- **Faster markup edits.** A page's edit is ~0.28 s: ~220 ms compiling
+  its object (its own code; the base is ~40 ms since std's panic handler
+  went), the link (40-80 ms), the restart. 30 ms of quiet before a pass
+  and a 50 ms reconnect could be 10 and 20. Then the link and the
+  restart could go: a self-contained
   position-independent templates blob loaded into the running app by
   our own loader (static musl has no `dlopen`: map it, apply its
   `R_X86_64_RELATIVE` relocations, refuse anything else), a pointer
