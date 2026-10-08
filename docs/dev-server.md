@@ -51,12 +51,29 @@ does.
   what lets a markup edit skip roc entirely, and gives each app its own
   templates object without writing into the shared `platform/targets/`.
 - **The renderer is one Zig source**, compiled Debug in development and
-  ReleaseFast for production. The comptime-generated code is the same.
-- **Errors from the generator, not from Zig.** rocstache-gen checks a
+  ReleaseSafe for production (safe, as the host ships; branch
+  `templates`, 2026-10-07). The comptime-generated code is the same.
+- **`roux build --dev` is the dev server's build step** (branch
+  `templates`): it already runs roc and the templates object at once
+  and prints one line with each phase's time. `roux dev` is a loop
+  around it that knows which phases an edit needs: a markup edit must
+  not start roc at all (today `roux build` always runs it; on a small
+  app it answers from its cache in ~0.1 s, on the site it is the 1.8-2.9
+  s lowering).
+- **Errors from the generator, not from Zig.** roux build checks a
   template (parse, fields against the contract) and prints
-  `Page.rocstache:12: ...`; a Zig compile error in the templates object
-  is a bug in rocstache-gen. The dev server shows the generator's message
+  `Page.rocstache:12:5: ...`, file:line:column as compilers do, so an
+  editor or an agent jumps to it; a Zig compile error in the templates
+  object is a bug in roux. The dev server shows the generator's message
   over the page.
+- **A restart can overlap** (thought, 2026-10-07): fourneau's shards
+  bind with SO_REUSEPORT, so a new binary can bind beside the old one
+  and take connections before the old is stopped: no window where the
+  port refuses. The same property is a trap: a stale instance (or
+  another app on the port) silently shares the traffic, as happened
+  with the dragrace site on 8091 (branch DIARY). The dev server must own
+  its instances (PIDs it started), and the host could refuse to start in
+  dev when the port already has a listener it did not hand over.
 - **Reload without a proxy.** roux owns the server, so the host can
   serve `/_dev/events` itself (an `EventSource`), in dev only, sending
   the build's id on connect. A restart drops the stream; the browser
