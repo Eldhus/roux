@@ -868,3 +868,62 @@ Learned:
 - A development interpreter rendered byte for byte as the compiled
   renderer, but it is a second implementation: dropped (owner: "I
   cannot accept two implementations").
+
+## 2026-10-07: templates compiled by Zig replace rocstache-gen; `roux build`
+
+The branch's first step: the old compiler (`tools/rocstache-gen`, 3,500
+lines, templates to Roc code) and the platform's Roc renderer helpers
+(`Rocstache.roc`'s escape and formatters, 188 lines) are gone, replaced
+by `tools/rocstache` (2,500 lines with tests) and `tools/roux` (190):
+
+- **parse.zig**, one parser for comptime and run time, no allocation:
+  values, `{{{ }}}`, `#`, `^`, `?`, partials, `../`, comments, the
+  `{{% %}}` block first in the file. Formatter chains are `len`,
+  `plural`, `len | plural`, or one of `upper`, `lower`, `url`: each
+  writes straight into the page, so no chain builds a string.
+- **contract.zig** infers a contract (partials read their includer's
+  scope) or **declared.zig** reads `Ctx : { … }` (built-in types spelled
+  out; `View.Row` is refused, since glue lays out the contract alone).
+  Then every tag is checked against it, so mistakes are roux build's,
+  as `Page.rocstache:12:5: `title` …`. `{{#flag}}` on a Bool opens a
+  scope, as a list's does, so `../` counts the same in inference,
+  checking and rendering.
+- **render.zig**, the comptime renderer; **out.zig**, its writers, each
+  with an exact measure: a render allocates once, exactly, and asserts
+  it filled the buffer. A test sweeps every byte at every position
+  through escape and its measure.
+- **roc.zig** writes `Page.roc` (fmt-stable, checked with `roc fmt`;
+  long contracts one field per line as fmt lays them), the throwaway
+  glue platform and the registry; **generate.zig** does an app's
+  directory; **object.zig** is the templates object's root.
+- `roux build [--dev] APP.roc`: generate, then roc (`--opt=dev` or
+  `speed`, to `.roux/APP/app.a`) and `zig build-obj` (Debug or
+  ReleaseSafe) at once, then `zig ld.lld -static`. roux runs the Zig it
+  was built with and the roc `.roc-version` names (build options).
+  ReleaseSafe, not Fast, because the host ships safe; what it costs is
+  the next step's measurement.
+- The platform: `Host.template_render! : U64, Box(a) => Str`,
+  `Rocstache.compiled_render!` over it, the target `output: Archive`.
+  The host's glue regenerated: 16 lines added, nothing else.
+- roc's `ZigGlue.roc` vendored (`vendor/roc-glue/`, sha256 ff18757f…,
+  from roc 130536d, the file the prototype fetched, copied in).
+- examples/files built its notes page by hand with `Rocstache.escape`:
+  now a template (`Notes.rocstache`), since a Roc escape beside the Zig
+  one would be two implementations.
+- An app with no templates still gets a templates object (an empty
+  registry): glue on a platform with no hosted functions works (0.6 s,
+  once).
+
+Checked: `zig build test` (tidy over `tools/` now, the new tests);
+`roux build --dev` for all five examples (hello, files, sse, sqlite,
+templates), each served; examples/templates' page byte for byte as
+main's build of it (278 bytes, cmp); roc exits 1 on a Roc error and
+roux stops. `roux build --dev examples/templates/main.roc`: templates
+1 ms, roc and the templates object 450 ms at once, link 45-80 ms.
+`zig fmt` ran over the new files (it rewrites in place).
+
+Lost for now: the language server (`rocstache-gen lsp`, Zed's), TODO.
+On the way, a mistake: a check of the old build ran it on port 8091,
+which the dragrace site in `site dev` was serving, and SO_REUSEPORT let
+both bind; only the example was stopped. Pick a port nothing listens on
+(`ss -ltn`) before starting a server.

@@ -42,11 +42,14 @@
    under contention, and a save-to-screen loop as short as it can be.
    Every dev-server thought goes in [docs/dev-server.md](docs/dev-server.md)
    (on main).
-   - Where it stands (2026-10-07): prototyped in a scratch copy (Menu:
-     29,700 instructions in Roc, 4,280 in Zig; 188k against 112k req/s);
-     roc's `output: Archive` linked by `zig ld.lld` in 40 ms, so a
-     markup edit needs no roc. Next: the branch `templates` (worktree
-     `../roux-templates`), step by step in its DIARY.
+   - Where it stands (2026-10-07, branch `templates`, worktree
+     `../roux-templates`): step 1 done: `tools/rocstache` replaces
+     rocstache-gen, `roux build` builds every example (templates' page
+     byte for byte as before), tidy clean over `tools/`. Next, in order:
+     measure (Menu's instructions, ReleaseSafe against ReleaseFast; HTTP
+     A/B against main); the dragrace's competitor and site on the branch
+     (fourneau-dragrace, its own branch); `roux dev`; the language
+     server.
 
 
 ## Plan
@@ -254,14 +257,16 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] The writer's lock is not FIFO: a waiter woken may lose to one
   arriving. Measure the spread of write waits under contention before
   doing anything (host/database.zig, WriterLock). (2026-10-06)
-- [ ] TigerStyle for `tools/rocstache-gen` (owner: TigerStyle,
-  data-oriented). Measured 2026-10-06 with tidy pointed at it: 212
-  findings, 202 lines over 100 columns, 6 hidden indirections (the
-  partial loader is `*anyopaque` plus a function pointer: make it a
-  comptime parameter), 4 functions over 70 lines; and about 3 assertions
-  in ~3,700 lines, `usize` throughout, recursion in the parser. Bring it
-  to zero, then add the tree to `host/tests.zig` so tidy keeps it there.
-  (2026-10-06)
+- [ ] The templates' language server, for Zed: rocstache-gen had one
+  (`rocstache-gen lsp`: diagnostics, hovers, completions) and went with
+  it. Port it onto tools/rocstache (its diagnostics are roux build's),
+  as `roux lsp`, and point the Zed extension (`../rocstache/zed`) at
+  it. (2026-10-07)
+- [ ] Recursion in tools/rocstache: the contract's walks and the
+  comptime renderer recurse over the template tree (bounded: sections
+  16 deep, partials 8). TigerStyle wants loops with explicit stacks; the
+  comptime renderer cannot have one (each level's scope has another
+  type). (2026-10-07)
 
 ## Tickler
 

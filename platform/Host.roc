@@ -72,4 +72,10 @@ Host := [].{
 	## Copies the database into a directory for the request `body` names,
 	## keeping that many copies; gives the copy's name.
 	sqlite_backup! : U64, Str, U32 => Try(Str, SqliteErr)
+
+	## The template the id names, rendered from its contract, boxed. The
+	## app's templates object implements it (DESIGN.md, Templates), not
+	## the host: one function for every template, the box's type known to
+	## the object by the id.
+	template_render! : U64, Box(a) => Str
 }

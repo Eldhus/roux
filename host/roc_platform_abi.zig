@@ -1815,6 +1815,14 @@ pub const HostSqlite_backupArgs = extern struct {
     arg2: u32,
 };
 
+/// Arguments for Host.template_render!
+/// Roc signature: U64, Box(rigid) => Str
+/// Refcounted fields are owned by the hosted function.
+pub const HostTemplate_renderArgs = extern struct {
+    arg0: u64,
+    arg1: RocBox,
+};
+
 // Platform Type Aliases
 
 pub const HostFile_read_utf8Err = FileNotFoundOrFileTooLargeOrFileUnreadable;
@@ -2298,6 +2306,14 @@ pub extern fn hosted_sqlite_commit(arg0: u64) callconv(.c) HostSqlite_write_begi
 ///     arg1.decref(roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_sqlite_backup(arg0: u64, arg1: RocStr, arg2: u32) callconv(.c) HostSqlite_backupResult;
+
+/// Hosted symbol for Host.template_render!
+/// Roc signature: U64, Box(rigid) => Str
+/// Owned arguments. Release each exactly once before returning, unless it is
+/// moved into storage or into the result:
+///     decrefBox(@ptrCast(arg1), roc_host);
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_template_render(arg0: u64, arg1: RocBox) callconv(.c) RocStr;
 
 
 /// Default memory management functions for Roc platforms.

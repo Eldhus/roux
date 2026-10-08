@@ -2,7 +2,7 @@ app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.File
-import pf.Rocstache
+import Notes
 
 ## Static files and file reads: `public/` is served by the host before
 ## `respond!` (style.css, with gzip and ETags); `/notes` reads notes.txt
@@ -30,8 +30,7 @@ respond! = |request, { first_line }|
 		"/first-line" => Ok(Server.text("${first_line}\n"))
 		"/notes" => {
 			notes = File.read_utf8!("notes.txt", 64 * 1024)?
-			page = "<link rel=\"stylesheet\" href=\"/style.css\"><h1>Notes</h1><p>${Rocstache.escape(notes)}</p>"
-			Ok(Server.html(page))
+			Ok(Server.html(Notes.render!({ notes: notes })))
 		}
 		"/missing" => {
 			_ = File.read_utf8!("no-such-file.txt", 1024)?

@@ -22,14 +22,20 @@ roux builds against fourneau checked out beside it:
 ```sh
 git clone https://github.com/Eldhus/fourneau ../fourneau
 zig build platform                 # the host, as platform/targets/x64musl/libhost.a
-cd examples && roc build hello.roc && ./hello   # http://127.0.0.1:8080
-zig build tools                    # rocstache-gen and roux-db, the compilers
-zig build examples                 # regenerate the examples' templates and db/
+zig build tools                    # roux, which builds apps, and roux-db
+zig-out/bin/roux build examples/hello.roc && examples/hello   # http://127.0.0.1:8080
+zig-out/bin/roux build --dev examples/templates/main.roc      # the fast build, same code
+zig build examples                 # regenerate the examples' db/
 zig build sqlite-floor             # SQLite alone, timed (vendor/sqlite, sqlite/floor.zig)
 zig build db-floor                 # the database workloads without Roc (host/floor.zig)
-cd examples/templates && roc build main.roc && ./main   # a page from Page.rocstache
-cd examples/sqlite && roc build main.roc && ./main      # a database, db/*.sql typed by roux-db
 ```
+
+`roux build APP.roc` builds an app: its templates' contracts (each
+`Page.rocstache` beside it gets a `Page.roc`), then roc and the templates
+compiled by Zig at once, then the link, into `APP` beside `APP.roc`
+(DESIGN.md, Templates). `--dev` builds in about half a second; without
+it, optimized (roc `--opt=speed`, the templates ReleaseSafe, as the
+host). A bare `roc build` makes only an archive now.
 
 Zig 0.17.0 (`.zig-version`) and the Roc nightly in `.roc-version`.
 `platform/targets/x64musl/` also needs `crt1.o` and `libc.a` (musl), copied

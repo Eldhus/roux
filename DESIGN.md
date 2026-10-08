@@ -167,9 +167,9 @@ started it; the choices in TODO.md, WIP 4).
 
 ## Templates
 
-Being built on the `templates` branch (TODO, WIP 3): what follows is the
-design, true of the branch as each step lands (DIARY says which have).
-It replaces the compiler that turned a template into Roc code.
+Built on the `templates` branch (TODO, WIP 3; DIARY, 2026-10-07). It
+replaced the compiler that turned a template into Roc code
+(`tools/rocstache-gen`, gone).
 
 A rocstache template is compiled to machine code by Zig. Not to Zig
 source, not to a bytecode: Zig's compiler runs the template parser
@@ -179,7 +179,8 @@ tree and no interpreter.
 
 ### What a build does
 
-1. **rocstache-gen** (at build time) parses each `Page.rocstache` and
+1. **`roux build`** (`tools/roux`, with the template compiler
+   `tools/rocstache`) parses each `Page.rocstache` beside the app and
    decides its **contract**, the record it reads: the `Ctx` its `{{% %}}`
    block declares, or one inferred from its tags (dotted paths are
    records, a section reading its element is a list, one that does not
@@ -205,10 +206,11 @@ tree and no interpreter.
    it emits each `Ctx` as a Zig `extern struct` in the layout the Roc
    compiler chose. Nothing guesses an offset.
 3. **`zig build-obj`** compiles `templates.o`. The renderer is one
-   hand-written generic, `Template(name, source, Ctx)`: Zig's comptime
-   runs the parser on the embedded source, checks every field read
-   against the glue struct (a wrong name is a compile error naming the
-   template's line), and walks the tree with `inline` loops, each step of
+   hand-written generic, `Compiled(registry, index)` (render.zig): Zig's
+   comptime runs the parser on the embedded source, checks every field
+   read against the glue struct (roux build has checked the same already,
+   so its messages name the template's line; Zig's are a backstop), and
+   walks the tree with `inline` loops, each step of
    which happens in the compiler and leaves behind only the code for its
    node: static text becomes a fixed-size copy, `{{ title }}` a load at
    a fixed offset and an escape (16 bytes at a time), `{{#items}}` a
@@ -226,8 +228,10 @@ tree and no interpreter.
    ```
 
    The object exports `hosted_template_render(id, box)`: a switch on the
-   id, a pass that measures the output, one allocation, the render, the
-   box released, a Roc `Str` returned.
+   id, a pass that measures the output exactly, one allocation of that
+   size, the render (asserted to fill it), the box released, a Roc `Str`
+   returned. Partials (`{{> Top}}`) compile inline, in the includer's
+   scope.
 4. **`roc build`** emits the app as an archive (the platform's target is
    `output: Archive`: crt1.o, the host, the app, Roc's builtins, musl).
 5. **roux links** the archive and `templates.o` (`zig ld.lld`, ~40 ms)
@@ -240,8 +244,8 @@ which runs the code compiled for that template.
 
 The same source and the same generated code; only the optimization
 differs. Development builds `templates.o` Debug (~370 ms, Zig's own
-backend) and the app `--opt=dev`; production ReleaseFast (~15 s) and
-`--opt=speed`. Editing markup is steps 3 and 5 and a restart, no roc,
+backend) and the app `--opt=dev`; production ReleaseSafe (~15 s; safe,
+as the host ships) and `--opt=speed`. Editing markup is steps 3 and 5 and a restart, no roc,
 no glue: ~0.45 s against 3.0 s when templates were Roc. A contract
 change is all five. [docs/dev-server.md](docs/dev-server.md) has the
 rest.
@@ -265,7 +269,7 @@ instructions against 29,700 for the Roc renderer, and 188k against
 ## What the platform provides
 
 The modules apps use, and only those: `Server`, `Stdout`, `Stderr`,
-`Rocstache` (template escaping and formatters), `File` (`read_utf8!`:
+`Rocstache` (what generated templates call), `File` (`read_utf8!`:
 a whole file, bounded, read through the shard's `Io` so the fiber
 yields), `Sse` (server-sent events), `Url` (`query_value`, form
 decoding) and `Sqlite` (the database) today; planned, `MultipartFormData`, `Env`,
@@ -283,19 +287,16 @@ when an app needs it, not before.
 
 ## Tools
 
-- `rocstache-gen` (`tools/rocstache-gen/`, `zig build tools`): the
-  template compiler (`*.rocstache` to typed Roc) and its language server
-  (`rocstache-gen lsp`), which editors (Zed) talk to. It decides a
-  template's shape (records, lists, Bool sections) and leaves the types to
-  roc; every generated line names its template line. The platform's
-  `Rocstache` module escapes and holds the formatters, and the compiler
-  reads their signatures from it, so the two cannot drift.
+- `roux` (`tools/roux/`, `zig build tools`): `roux build [--dev]
+  APP.roc` builds an app (Templates, above), with the pinned toolchain
+  named at its own build. Its template compiler is `tools/rocstache/`.
+  The language server the old compiler had (`rocstache-gen lsp`, for
+  Zed) is not ported yet (TODO).
 - `roux-db` (`tools/roux-db/`, `zig build tools`): `roux-db gen DIR`, an
   app's typed queries (The database, above), written from scratch
   (2026-10-06), not the old fork's. Migrations: not yet.
-- Not planned until asked: the old fork's `roux` command (`new`, `dev`,
-  `build`, `check`, `test`). `dev` and `build` are asked now
-  (2026-10-07): [docs/dev-server.md](docs/dev-server.md).
+- Not planned until asked: the old fork's `new`, `check`, `test`. `roux
+  dev` is asked (2026-10-07): [docs/dev-server.md](docs/dev-server.md).
 
 ## Testing, in one paragraph
 

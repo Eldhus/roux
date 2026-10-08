@@ -11,7 +11,7 @@ TESTING.md) and against Go and axum in fourneau-dragrace.
 
 | command | what | budget |
 |---|---|---|
-| `zig build test` | tidy over `host/`, `sqlite/` and `tools/roux-db/`, with fourneau's rules; SQLite's build checked (its options); the host's database alone (`host/database_test.zig`: opening, the schema check, statements misdescribed, typed cells, bounds, the writer and its lock) and its request handles; roux-db (a golden directory, nullability against real rows, every refusal); all with SQLite's own assertions and C undefined-behaviour traps on | seconds (cached; the first build compiles SQLite, ~15 s) |
+| `zig build test` | tidy over `host/`, `sqlite/` and `tools/`, with fourneau's rules; the template compiler (`tools/rocstache`: the parser, contracts inferred and declared, every refusal naming its line, the writers' measures exact by a sweep, the renderer on hand-laid contracts); SQLite's build checked (its options); the host's database alone (`host/database_test.zig`: opening, the schema check, statements misdescribed, typed cells, bounds, the writer and its lock) and its request handles; roux-db (a golden directory, nullability against real rows, every refusal); all with SQLite's own assertions and C undefined-behaviour traps on | seconds (cached; the first build compiles SQLite, ~15 s) |
 | `zig build platform` | the host as `libhost.a` (`-Dhost-heap=checked` for the checked heap) | seconds |
 | `roc test` in an example | the app's `expect`s | seconds |
 | `zig build sqlite-floor`, `zig build db-floor` | SQLite alone, and the database workloads without Roc: the floors a measurement compares with | seconds |
