@@ -927,3 +927,38 @@ On the way, a mistake: a check of the old build ran it on port 8091,
 which the dragrace site in `site dev` was serving, and SO_REUSEPORT let
 both bind; only the example was stopped. Pick a port nothing listens on
 (`ss -ltn`) before starting a server.
+
+## 2026-10-07: the race's menu, main against the branch
+
+The dragrace's roux competitor ported on fourneau-dragrace's own
+`templates` branch (its Menu.rocstache declares its contract, the prices
+being U32; `Menu.render!(context.menu)`; built by `roux build
+--roc={roc}`). Its `/menu` is the workload's reference page byte for
+byte (742 bytes, cmp). Then three builds of it, all `--opt=speed`: main
+(roux main, the host rebuilt, templates in Roc by rocstache-gen), the
+branch (templates ReleaseSafe), and the branch's archive linked with a
+ReleaseFast templates object.
+
+Interleaved A/B, five rounds of each: the server on CPUs 0-1 (two
+shards), oha on 2-7 at 64 connections, 2 s warmup then 6 s measured;
+`perf stat -e instructions:u` on the server for the window, its CPUs'
+user time from /proc/stat. Load ~1.1 (a browser, an editor open).
+Medians:
+
+| build | req/s | instructions/req | user ns/req | p99 |
+|---|---|---|---|---|
+| main (Roc templates) | 109,004 | 39,030 | 9,030 | 1.03 ms |
+| branch, ReleaseSafe | 164,753 | 14,807 | 3,368 | 0.62 ms |
+| branch, ReleaseFast | 169,307 | 13,881 | 3,020 | 0.58 ms |
+
+The whole request, HTTP included: 1.51 times the throughput, 2.6 times
+fewer instructions, the tail 40% lower under load. Instructions per
+request were steady within 0.1% across rounds; throughput moved ±8%
+with the laptop. ReleaseSafe costs 926 instructions a request (6%) and
+~3% of throughput, inside the noise: production stays safe, as the host.
+(`/tmp/claude-1000/bench/ab.sh`, scratch.)
+
+Also: `roux build --roc=PATH` (the dragrace installs its pinned roc
+elsewhere; same pin), and roux writes stderr streaming: a positional
+writer wrote at offset 0 of a log file it was redirected to, over what
+roc had written.
