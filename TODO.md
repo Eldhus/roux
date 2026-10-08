@@ -71,6 +71,18 @@
      quiet machine; loop rotation in the compiler (a row's closing run
      merged with the next row's opening, measured 1,928 against 2,345 in
      the microbenchmark).
+   - Todo (owner, 2026-10-08): **in dev, reread the bytecode, no link and
+     no restart**, for a markup edit. Today it is linked into the binary
+     as in production (40-80 ms) and the app restarted (tens of ms, its
+     `init!` again, SSE connections dropped). Needs: the dev host
+     rereading `templates.o` (or the raw program) when roux dev rewrites
+     it; `Rocstache.load!` giving the current program on every call and
+     apps loading it per request rather than once in `init!` (a few KB);
+     the text append-only in dev, so a request rendered against the old
+     text (it may yield between `render` and `bytes!`) still reads valid
+     runs; a "changed" event on `/_dev/events`, since no restart drops the
+     stream. Contract and Roc edits keep roc, the link and a restart.
+     Expected ~50 ms save to page (unmeasured); production unchanged.
 
 
 ## Plan
