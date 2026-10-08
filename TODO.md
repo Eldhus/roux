@@ -87,6 +87,16 @@
      stream. Contract and Roc edits keep roc, the link and a restart.
      Expected ~50 ms save to page (unmeasured); production unchanged.
 
+5. **Next, queued (owner, 2026-10-08): no generated Roc at all.** "This
+   Walker shit all seems like a bad idea": one renderer, written once in
+   Roc in the platform (compiled once, imported by apps), that runs every
+   template's bytecode; no per-template walkers. Pure if it can be, else
+   effectful (a hosted call per field read, the host reading the record
+   through the contract's layout); if both are possible and differ in
+   speed, build both and race them (`dragrace adhoc race`). Start after
+   the ad-hoc racer (fourneau-dragrace TODO, item 3) works.
+   - Where it stands: queued; not started.
+
 
 ## Plan
 
