@@ -250,8 +250,8 @@ fn report(
 
 /// The contracts' layouts: the throwaway platform written, and `roc glue`
 /// run on it with layout.zig's spec when a contract changed (or its
-/// output is missing). `--no-cache`: glue's cache has handed back another
-/// spec's compiled script (nightly-2026-10-04).
+/// output is missing). `--no-cache`: glue's cache runs whichever spec it
+/// compiled first (roc-lang/roc#12139).
 fn glue(
     gpa: Allocator,
     io: Io,
