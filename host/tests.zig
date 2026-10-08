@@ -60,8 +60,9 @@ const trees = [_]tidy.Tree{
         .untested = &.{ "tests.zig", "object.zig", "part.zig", "symbols.zig" },
         .generated = &.{},
         // object.zig: the Roc ABI (the hosted function, the glue's
-        // allocation table over the host's exports, the parts' symbols).
-        .interfaces = &.{"object.zig"},
+        // allocation table over the host's exports); symbols.zig: the
+        // objects' own ABI, each template's functions by exported name.
+        .interfaces = &.{ "object.zig", "symbols.zig" },
     },
     .{
         .dir = "tools/roux",

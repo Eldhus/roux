@@ -22,6 +22,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const parse = @import("parse.zig");
 const out_ = @import("out.zig");
+const symbols = @import("symbols.zig");
 pub const Out = out_.Out;
 
 pub fn Compiled(comptime registry: type, comptime index: usize) type {
@@ -70,6 +71,28 @@ fn template(comptime registry: type, comptime name: []const u8) Template {
         };
     }
     @compileError("no template named " ++ name);
+}
+
+/// A partial called with its own context (`{{> Top frame}}`): compiled
+/// once, in its own object (part.zig), and reached by its symbols, so an
+/// edit to it recompiles only it. Its context is the includer's field,
+/// whose glue type is another Zig type with the partial's `Ctx` layout
+/// (the same Roc record; the contract checked they are equal).
+fn Called(comptime t: Template, comptime node: parse.Node) type {
+    const entry = for (t.registry.all) |e| {
+        if (std.mem.eql(u8, e.name, node.text)) break e;
+    } else @compileError("no template named " ++ node.text);
+    return struct {
+        const Ctx = entry.Ctx;
+        const measure = symbols.Extern(Ctx, entry.id).measure;
+        const draw = symbols.Extern(Ctx, entry.id).draw;
+
+        inline fn context(field: anytype) *const Ctx {
+            comptime assert(@sizeOf(@TypeOf(field.*)) == @sizeOf(Ctx));
+            comptime assert(@alignOf(@TypeOf(field.*)) == @alignOf(Ctx));
+            return @ptrCast(field);
+        }
+    };
 }
 
 /// One parse per template, however many include it (Zig memoizes the type).
@@ -160,7 +183,10 @@ fn measure_range(
         switch (node.kind) {
             .text => total += node.text.len,
             .value => total += measure_value(t, node, resolve(t, node, scopes)),
-            .partial => {
+            .partial => if (comptime node.called()) {
+                const C = Called(t, node);
+                total += C.measure(C.context(resolve(t, node, scopes)));
+            } else {
                 const included = comptime template(t.registry, node.text);
                 total += measure_range(included, 0, included.tree.len, scopes);
             },
@@ -197,7 +223,10 @@ fn render_range(
         switch (node.kind) {
             .text => out.write_static(node.text),
             .value => render_value(node, resolve(t, node, scopes), out),
-            .partial => {
+            .partial => if (comptime node.called()) {
+                const C = Called(t, node);
+                C.draw(C.context(resolve(t, node, scopes)), out);
+            } else {
                 const included = comptime template(t.registry, node.text);
                 render_range(included, 0, included.tree.len, scopes, out);
             },
