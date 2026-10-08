@@ -63,6 +63,8 @@ sense.
   doubt at the Roc boundary.
 - [DIARY.md](DIARY.md): what was done and learned, in order.
 - [SECURITY.md](SECURITY.md): how to report a security problem.
+- [docs/dev-server.md](docs/dev-server.md): notes toward `roux dev`, the
+  app rebuilt as it is edited (not built yet).
 
 ## License
 

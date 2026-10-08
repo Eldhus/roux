@@ -31,7 +31,22 @@
      at ~125k requests/s on this laptop. The dragrace's templates
      workload runs it (2026-10-06). Next: tidy over `tools/` (TigerStyle:
      the old code has no assertions and recursion), and the Zed README
-     pointed here.
+     pointed here. Superseded by item 3, which replaces this compiler.
+
+3. **Templates compiled by Zig, the Roc side only a contract.** (owner,
+   2026-10-07) rocstache-gen writes a template's Roc type and a typed
+   `render!` only; Zig compiles the template at comptime, so the `.roc`
+   changes only when the contract does. Replace the current
+   implementation, no side by side, streamlined; one compiled renderer
+   in development and production, no interpreter. Goals: throughput
+   under contention, and a save-to-screen loop as short as it can be.
+   Every dev-server thought goes in [docs/dev-server.md](docs/dev-server.md)
+   (on main).
+   - Where it stands (2026-10-07): prototyped in a scratch copy (Menu:
+     29,700 instructions in Roc, 4,280 in Zig; 188k against 112k req/s);
+     roc's `output: Archive` linked by `zig ld.lld` in 40 ms, so a
+     markup edit needs no roc. Next: the branch `templates` (worktree
+     `../roux-templates`), step by step in its DIARY.
 
 
 ## Plan

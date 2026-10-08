@@ -197,7 +197,8 @@ when an app needs it, not before.
   app's typed queries (The database, above), written from scratch
   (2026-10-06), not the old fork's. Migrations: not yet.
 - Not planned until asked: the old fork's `roux` command (`new`, `dev`,
-  `build`, `check`, `test`).
+  `build`, `check`, `test`). `dev` and `build` are asked now
+  (2026-10-07): [docs/dev-server.md](docs/dev-server.md).
 
 ## Testing, in one paragraph
 
