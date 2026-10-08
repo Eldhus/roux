@@ -1106,3 +1106,64 @@ byte main's; `roux dev`, save to new page:
 
 The dragrace site itself is not changed here: its pages calling Top is
 the owner's call (fourneau-dragrace, branch `templates`).
+
+## 2026-10-08: a pure render in Roc: where the instructions go (branch templates-vm)
+
+The owner challenged my guess that a bytecode VM in pure Roc could not
+beat generated Roc (20,600 instructions for Menu, I said, was Roc's
+floor; a VM 25-30k): "where are all the extra instructions coming
+from? be creative on the vm hot path." This branch (from `templates`)
+is that experiment. First, measured, not guessed.
+
+The profile of P0, the hand-optimized generated Roc (`perf record -e
+instructions:u`, 200,000 renders in `init!`): `roc_builtins_str_concat`
+50.7%, the app's code 33%, allocation 6.6%, refcounts 3.2%, memcpy 2.7%.
+Inside str_concat the hot loop is a byte at a time (movzbl, mov, dec,
+jne: ~5 instructions a byte), every one of the 742 bytes through it,
+plus the call's overhead. So the floor was Str.concat, not Roc.
+
+Microbenchmarks (a scratch app on this branch's platform, `n.txt` the
+variant and count, instructions per render = (N run - 0 run) / N, the
+page's md5 checked):
+
+| variant | instructions/render |
+|---|---|
+| P0 (Str.concat throughout) | 20,719 |
+| a List(U8) builder (List.concat, static byte constants) | 21,133 |
+| the same, not converted to Str | 19,443 |
+| 62 Str.concat of short strings, nothing else | 10,900 |
+| 62 List.append of a small tag union (parts) | 2,531 |
+
+List.concat copies in bulk (memmove) but costs ~90 instructions a call,
+and `Str.to_utf8` of a small (inline) string allocates. Appending a part
+is ~40, inlined. So: a render that builds **parts**, not text. Then a VM
+written by hand as a generator would emit it (one walker per record type
+of the contract, the bytecode a List(U32), ops in the low 3 bits; static
+text a `Text(ref)` the host resolves, values unescaped):
+
+| VM | parts | instructions/render (Roc, freeing the parts included) |
+|---|---|---|
+| one part per op | 62 | 3,375 |
+| fused: a static run and the value after it, one part | 38 | 2,345 |
+| fused and loop-rotated (a row's closing run merged into the next row's opening) | 26 | 1,928 |
+
+What remains: the walker (63%, the appends inlined) and freeing the list
+(27%: each part's Str checked). Refcounts are atomic (`lock` prefixes in
+both `rc_*` variants), so copying a heap string out of the shared
+context costs an atomic increment and decrement on a line every shard
+shares: Menu's names are inline (under 24 bytes), the site's are not.
+
+The host then writes the parts (a Zig benchmark of the same 26 parts,
+ReleaseSafe, the same page checked three ways):
+
+| serializer | instructions/page |
+|---|---|
+| a measure pass, one exact allocation (as the comptime renderer does) | 8,508 |
+| one pass into a reused buffer (a connection's), 16-byte page-safe loads for short strings | 4,869 |
+| the same, static runs and short names overcopied as 32/16-byte blocks, digits straight into place | 3,797 |
+
+So a pure render costs ~1.9k in Roc plus ~3.8k in the host: ~5.7k, near
+the comptime renderer in the host (5,610, ReleaseSafe, prototype); and
+the host's tricks apply to the comptime renderer as well (its measure
+pass and byte-at-a-time tails). My 25-30k was wrong by ~5x: the cost
+was never interpretation, it was concatenating strings.
