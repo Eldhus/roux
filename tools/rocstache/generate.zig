@@ -1,8 +1,10 @@
 //! An app's templates, generated: every `*.rocstache` in the app's
-//! directory gets its module beside it (`Page.roc`: the contract and the
-//! walkers, roc.zig), and the build directory gets the object holding
-//! every template's bytecode and text (elf.zig), which the link takes as
-//! it is: no compiler runs for templates.
+//! directory gets its module beside it (`Page.roc`: the contract and a
+//! one-line `render!`, roc.zig), the contracts are laid out by Roc's
+//! compiler (`roc glue`, only when one changed: layout.zig), and the build
+//! directory gets the object holding every template's bytecode and text
+//! (elf.zig), which the link takes as it is: a markup edit runs no
+//! compiler.
 //!
 //! A file is written only when its content changes (to a temporary name,
 //! then renamed), so a markup edit rewrites nothing the app's Roc sees,
@@ -17,14 +19,18 @@ const contract_ = @import("contract.zig");
 const roc = @import("roc.zig");
 const bytecode = @import("bytecode.zig");
 const elf = @import("elf.zig");
+const layout = @import("layout.zig");
 
 pub const templates_max = 256;
 
 pub const Options = struct {
     /// The app's directory, holding `main.roc` and its `*.rocstache`.
     app: []const u8,
-    /// Where the templates' object goes (`<app>/.roux/main`).
+    /// Where the templates' object goes (`<app>/.roux/main`), and glue's
+    /// files (`glue/`).
     build: []const u8,
+    /// The pinned `roc`, for glue.
+    roc: []const u8,
 };
 
 /// The object's name in the build directory.
@@ -65,25 +71,32 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
         .object_changed = false,
     };
     try compute_contracts(gpa, loaded, templates, errors);
-    for (loaded, templates, 0..) |l, t, index| {
+    const contracts = try gpa.alloc(layout.Contract, loaded.len);
+    for (loaded, templates, contracts, 0..) |l, t, *c, index| {
+        c.* = .{ .index = @intCast(index), .contract = t.contract.? };
         var text: Io.Writer.Allocating = .init(gpa);
         const module: roc.Module = .{
             .name = l.name,
             .contract = t.contract.?,
             .index = @intCast(index),
         };
-        try roc.write_module(gpa, module, &text.writer);
+        try roc.write_module(module, &text.writer);
         const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{l.name});
         if (try write_if_changed(gpa, io, app, path, text.written())) result.modules_changed = true;
     }
 
+    try cwd.createDirPath(io, options.build);
+    var build = try cwd.openDir(io, options.build, .{});
+    defer build.close(io);
+    const layouts = try glue(gpa, io, build, options, contracts, errors);
     const compiled = try gpa.alloc(bytecode.Template, loaded.len);
-    for (templates, compiled) |t, *c| {
-        c.* = .{ .name = t.name, .tree = t.tree, .contract = t.contract.? };
+    for (templates, compiled, 0..) |t, *c, index| {
+        const root = layouts.root(index) orelse bytecode.nothing;
+        c.* = .{ .name = t.name, .tree = t.tree, .root = root };
     }
     var builder: bytecode.Builder = .{ .gpa = gpa };
     var diagnostic: bytecode.Diagnostic = .{};
-    bytecode.program(&builder, compiled, &diagnostic) catch |err| switch (err) {
+    bytecode.program(&builder, &layouts, compiled, &diagnostic) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Invalid => {
             const source = for (templates) |t| {
@@ -100,9 +113,6 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
     };
     var object: Io.Writer.Allocating = .init(gpa);
     try elf.write(builder.code.items, builder.text.items, &object.writer);
-    try cwd.createDirPath(io, options.build);
-    var build = try cwd.openDir(io, options.build, .{});
-    defer build.close(io);
     result.object_changed = try write_if_changed(gpa, io, build, object_name, object.written());
     return result;
 }
@@ -236,6 +246,67 @@ fn report(
     });
     if (problem.subject.len > 0) try errors.print("`{s}` ", .{problem.subject});
     try errors.print("{s}\n", .{problem.message});
+}
+
+/// The contracts' layouts: the throwaway platform written, and `roc glue`
+/// run on it with layout.zig's spec when a contract changed (or its
+/// output is missing). `--no-cache`: glue's cache has handed back another
+/// spec's compiled script (nightly-2026-10-04).
+fn glue(
+    gpa: Allocator,
+    io: Io,
+    build: Io.Dir,
+    options: Options,
+    contracts: []const layout.Contract,
+    errors: *Io.Writer,
+) Error!layout.Layouts {
+    try build.createDirPath(io, "glue");
+    var platform: Io.Writer.Allocating = .init(gpa);
+    try layout.write_platform(contracts, &platform.writer);
+    var declared: Io.Writer.Allocating = .init(gpa);
+    try layout.write_contracts(contracts, &declared.writer);
+    _ = try write_if_changed(gpa, io, build, "glue/Layout.roc", layout.spec);
+    _ = try write_if_changed(gpa, io, build, "glue/main.roc", platform.written());
+    const changed = try write_if_changed(gpa, io, build, "glue/Contracts.roc", declared.written());
+    const zon = "glue/layouts.zon";
+    const present = if (build.access(io, zon, .{})) true else |_| false;
+    if (changed or !present) {
+        const spec = try std.fmt.allocPrint(gpa, "{s}/glue/Layout.roc", .{options.build});
+        const output = try std.fmt.allocPrint(gpa, "{s}/glue/out", .{options.build});
+        const main = try std.fmt.allocPrint(gpa, "{s}/glue/main.roc", .{options.build});
+        const result = std.process.run(gpa, io, .{
+            .argv = &.{ options.roc, "glue", "--no-cache", spec, output, main },
+            .stdout_limit = .limited(1 << 20),
+            .stderr_limit = .limited(1 << 20),
+        }) catch |err| {
+            try errors.print("roc glue ({s}) could not run: {t}\n", .{ options.roc, err });
+            return error.Invalid;
+        };
+        if (!result.term.success()) {
+            try errors.print("roc glue failed on the contracts:\n{s}{s}", .{
+                result.stdout,
+                result.stderr,
+            });
+            // Its Contracts.roc goes, so the next run tries again.
+            build.deleteFile(io, "glue/Contracts.roc") catch {};
+            return error.Invalid;
+        }
+        const out = "glue/out/layouts.zon";
+        const written = try build.readFileAlloc(io, out, gpa, .limited(16 << 20));
+        _ = try write_if_changed(gpa, io, build, zon, written);
+    }
+    const source = try build.readFileAllocOptions(io, zon, gpa, .limited(16 << 20), .of(u8), 0);
+    return layout.parse(gpa, source) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Invalid => {
+            try errors.print("{s}/{s}: not the layouts roux's glue spec writes\n", .{
+                options.build,
+                zon,
+            });
+            build.deleteFile(io, "glue/Contracts.roc") catch {};
+            return error.Invalid;
+        },
+    };
 }
 
 /// Writes `data` unless the file holds exactly that already; says whether

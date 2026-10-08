@@ -10,7 +10,7 @@
 //!
 //! Either way the template is then checked against the contract
 //! (`check`), so a mistake is the generator's message naming the line,
-//! never a Roc type error in the generated walkers.
+//! never a wrong read in the host's renderer.
 
 const std = @import("std");
 const assert = std.debug.assert;

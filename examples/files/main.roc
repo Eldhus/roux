@@ -10,7 +10,7 @@ import Notes
 ## from disk on every request, so a change shows without a restart;
 ## `/first-line` answers notes.txt's first line as `init!` read it once, at
 ## start (as a secret or a setting is read).
-Context : { first_line : Str, code : Rocstache.Templates }
+Context : { first_line : Str }
 
 program = { init!, respond! }
 
@@ -22,16 +22,16 @@ init! = || {
 			Ok({ before, .. }) => before
 			Err(_) => notes
 		}
-	Ok({ config: { port: 8080, static_dir: "public" }, context: { first_line, code: Rocstache.load!() } })
+	Ok({ config: { port: 8080, static_dir: "public" }, context: { first_line } })
 }
 
 respond! : Server.Request, Context => Try(Server.Response, [NotFound, FileErr(File.FileErr)])
-respond! = |request, { first_line, code }|
+respond! = |request, { first_line }|
 	match request.target {
 		"/first-line" => Ok(Server.text("${first_line}\n"))
 		"/notes" => {
 			notes = File.read_utf8!("notes.txt", 64 * 1024)?
-			Ok(Rocstache.html!(Notes.render(code, { notes: notes })))
+			Ok(Rocstache.html(Notes.render!({ notes: notes })))
 		}
 		"/missing" => {
 			_ = File.read_utf8!("no-such-file.txt", 1024)?
