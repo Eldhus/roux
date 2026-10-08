@@ -72,7 +72,10 @@
      merged with the next row's opening, measured 1,928 against 2,345 in
      the microbenchmark).
    - Todo (owner, 2026-10-08): **in dev, reread the bytecode, no link and
-     no restart**, for a markup edit. Today it is linked into the binary
+     no restart**, for a markup edit. The biggest benefit is not losing
+     the server's state to change a page (its memory, open SSE streams,
+     anything `init!` built), not the latency (owner, 2026-10-08). Today
+     it is linked into the binary
      as in production (40-80 ms) and the app restarted (tens of ms, its
      `init!` again, SSE connections dropped). Needs: the dev host
      rereading `templates.o` (or the raw program) when roux dev rewrites
