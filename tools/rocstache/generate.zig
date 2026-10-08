@@ -84,10 +84,10 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
         .contracts_changed = false,
         .objects = &.{},
     };
-    for (loaded, modules, 0..) |l, *module, index| {
-        module.* = try module_of(gpa, templates, index, errors);
+    try compute_contracts(gpa, loaded, templates, modules, errors);
+    for (loaded, modules) |l, module| {
         var text: Io.Writer.Allocating = .init(gpa);
-        try roc.write_module(module.*, &text.writer);
+        try roc.write_module(module, &text.writer);
         const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{l.name});
         if (try write_if_changed(gpa, io, app, path, text.written())) result.modules_changed = true;
     }
@@ -155,7 +155,9 @@ fn reach(loaded: []const Loaded, template: Loaded, hash: *std.hash.Wyhash, depth
     hash.update(template.name);
     hash.update(template.source);
     for (template.tree.slice()) |node| {
-        if (node.kind != .partial) continue;
+        // A called partial is its own object, reached by its symbol: its
+        // markup is not this object's (its contract is, in the glue).
+        if (node.kind != .partial or node.called()) continue;
         for (loaded) |other| {
             if (std.mem.eql(u8, other.name, node.text)) reach(loaded, other, hash, depth + 1);
         }
@@ -204,6 +206,56 @@ fn string_less(_: void, a: []const u8, b: []const u8) bool {
 }
 
 /// Template `index`'s contract, checked, as its module.
+/// Every template's contract, a called partial's before its callers' (they
+/// take its contract as a field's type): passes over the templates, each
+/// computing those whose calls are known, until all are, or a pass
+/// computes none (partials that call each other).
+fn compute_contracts(
+    gpa: Allocator,
+    loaded: []const Loaded,
+    templates: []contract_.Template,
+    modules: []roc.Module,
+    errors: *Io.Writer,
+) Error!void {
+    const done = try gpa.alloc(bool, loaded.len);
+    @memset(done, false);
+    var remaining = loaded.len;
+    for (0..loaded.len + 1) |_| {
+        if (remaining == 0) return;
+        var progressed = false;
+        for (loaded, 0..) |l, index| {
+            if (done[index] or !calls_known(templates, l.tree, 0)) continue;
+            modules[index] = try module_of(gpa, templates, index, errors);
+            templates[index].contract = modules[index].contract;
+            done[index] = true;
+            remaining -= 1;
+            progressed = true;
+        }
+        if (!progressed) break;
+    }
+    try errors.writeAll("partials call each other, so no contract comes first:");
+    for (loaded, done) |l, d| if (!d) try errors.print(" {s}", .{l.name});
+    try errors.writeAll("\n");
+    return error.Invalid;
+}
+
+/// Whether every partial a tree calls (through the partials it inlines,
+/// too) has its contract. One that does not exist counts as known: the
+/// contract's check reports it.
+fn calls_known(templates: []const contract_.Template, tree: *const parse.Tree, depth: u8) bool {
+    if (depth > contract_.partial_depth_max) return true; // the check reports the depth
+    for (tree.slice()) |node| {
+        if (node.kind != .partial) continue;
+        const target = for (templates) |t| {
+            if (std.mem.eql(u8, t.name, node.text)) break t;
+        } else continue;
+        if (node.called()) {
+            if (target.contract == null) return false;
+        } else if (!calls_known(templates, target.tree, depth + 1)) return false;
+    }
+    return true;
+}
+
 fn module_of(
     gpa: Allocator,
     templates: []contract_.Template,

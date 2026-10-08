@@ -1078,3 +1078,31 @@ objects ReleaseSafe beside it): 50 s, all of it roc; the dragrace DIARY
 measured 83-94 s for `roc build --opt=speed` of the site while its
 templates were Roc. Its 15 pages and data files are byte for byte
 main's (on a copy of site.db).
+
+## 2026-10-08: called partials, each compiled once
+
+The owner's ask: partials swapped in O(1), not O(n) (an edit to `Top`
+recompiled the eight pages that inline it). A partial can now be called
+with its own context: `{{> Top frame}}`. Top's contract is its own; the
+includer's field `frame` is of that type (inferred, it takes Top's
+contract; declared, it must equal it; the module writes `frame :
+Top.Ctx` and imports Top). Contracts are computed in order, a called
+partial's before its callers', and partials that call each other are
+refused by name. The renderer calls the partial's two functions by
+their symbols (symbols.zig's `Extern`, the same the dispatcher uses),
+passing the includer's field (another glue type of the same layout,
+checked at comptime); a part's hash no longer covers the partials it
+calls, only those it inlines. `{{> Top}}` still inlines.
+
+Measured on a scratch copy of the dragrace site with its eight pages
+changed to `{{> Top frame}}` (and `main.roc` passing `frame:` instead
+of three flattened fields): the 12 pages and data files are byte for
+byte main's; `roux dev`, save to new page:
+
+| an edit to Top | objects | time |
+|---|---|---|
+| inlined (`{{> Top}}`) | 9 | 927-948 ms |
+| called (`{{> Top frame}}`) | 1 | 427-574 ms |
+
+The dragrace site itself is not changed here: its pages calling Top is
+the owner's call (fourneau-dragrace, branch `templates`).

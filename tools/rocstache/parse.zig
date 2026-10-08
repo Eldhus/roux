@@ -15,7 +15,8 @@
 //! | `{{#a}}…{{/a}}` | a list's elements, a record's fields, or a Bool when true |
 //! | `{{^a}}…{{/a}}` | when the list is empty or the Bool false |
 //! | `{{?a}}…{{/a}}` | when the Bool is true, in the same scope |
-//! | `{{> Name}}` | the template `Name.rocstache`, in the same scope |
+//! | `{{> Name}}` | the template `Name.rocstache`, inlined in the same scope |
+//! | `{{> Name field}}` | `Name.rocstache` called with `field` as its context, its own contract |
 //! | `{{../a}}`, `{{.}}` | a field of the enclosing scope; the element itself |
 //! | `{{! … }}` | a comment |
 //! | `{{% … %}}` | first in the file only: the contract, `Ctx : { … }` |
@@ -77,6 +78,13 @@ pub const Node = struct {
 
     pub fn pipe_slice(node: *const Node) []const Pipe {
         return node.pipes[0..node.pipes_len];
+    }
+
+    /// A partial given its own context (`{{> Top frame}}`): compiled once,
+    /// with its own contract, and called; else it is inlined.
+    pub fn called(node: *const Node) bool {
+        assert(node.kind == .partial);
+        return node.path_len > 0;
     }
 };
 
@@ -245,15 +253,27 @@ fn add_tag(
             try push(tree, node, diagnostic);
         },
         '>' => {
-            if (!is_type_name(rest)) {
-                return fail(diagnostic, start, "a partial is a template's name, like `Top`", rest);
+            // `{{> Top}}` reads the includer's scope; `{{> Top frame}}`
+            // renders Top with its own contract, the includer's `frame`.
+            const name_end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
+            const name = rest[0..name_end];
+            if (!is_type_name(name)) {
+                return fail(diagnostic, start, "a partial is a template's name, like `Top`", name);
             }
-            try push(tree, .{
-                .kind = .partial,
-                .text = rest,
-                .offset = @intCast(start),
-                .end = tree.len + 1,
-            }, diagnostic);
+            const context = std.mem.trim(u8, rest[name_end..], " \t");
+            var node: Node = .{ .kind = .partial, .text = name, .offset = @intCast(start) };
+            if (context.len > 0) {
+                const path = try path_node(context, start, diagnostic);
+                if (path.path_len == 0) {
+                    const message = "a partial's context is a field, not `.`";
+                    return fail(diagnostic, start, message, context);
+                }
+                node.up = path.up;
+                node.path = path.path;
+                node.path_len = path.path_len;
+            }
+            node.end = tree.len + 1;
+            try push(tree, node, diagnostic);
         },
         else => {
             var node = try value_node(inner, start, diagnostic);

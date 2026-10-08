@@ -38,6 +38,9 @@ pub const Type = struct {
     first: u16 = none,
     /// Where it was first used, for messages.
     offset: u32 = 0,
+    /// record: the partial whose contract this is (`Top` for a field a
+    /// `{{> Top frame}}` gives), so the module writes `Top.Ctx`.
+    alias: []const u8 = "",
 };
 
 pub const Field = struct { name: []const u8, type: u16, next: u16 = none };
@@ -47,6 +50,9 @@ pub const Template = struct {
     name: []const u8,
     source: []const u8,
     tree: *const parse.Tree,
+    /// Its own contract, once known: what a `{{> Name field}}` that calls
+    /// it gives `field` (generate.zig computes the called partials first).
+    contract: ?*const Contract = null,
 };
 
 pub const Diagnostic = struct {
@@ -151,14 +157,28 @@ pub fn write_line(
     index: u16,
     writer: *std.Io.Writer,
 ) std.Io.Writer.Error!void {
+    return write_line_as(contract, index, writer, .spelled);
+}
+
+/// `.spelled` writes every type out (what the id hashes and glue reads);
+/// `.named` writes a called partial's contract as `Top.Ctx` (the module).
+pub fn write_line_as(
+    contract: *const Contract,
+    index: u16,
+    writer: *std.Io.Writer,
+    how: enum { spelled, named },
+) std.Io.Writer.Error!void {
     const type_ = contract.get(index);
+    if (how == .named and index != contract.root and type_.alias.len > 0) {
+        return writer.print("{s}.Ctx", .{type_.alias});
+    }
     switch (type_.kind) {
         .unknown, .str => try writer.writeAll("Str"),
         .bool => try writer.writeAll("Bool"),
         .int, .other => try writer.writeAll(type_.name),
         .list => {
             try writer.writeAll("List(");
-            try write_line(contract, type_.element, writer);
+            try write_line_as(contract, type_.element, writer, how);
             try writer.writeAll(")");
         },
         .record => {
@@ -169,11 +189,42 @@ pub fn write_line(
             for (fields, 0..) |f, k| {
                 if (k > 0) try writer.writeAll(", ");
                 try writer.print("{s} : ", .{f.name});
-                try write_line(contract, f.type, writer);
+                try write_line_as(contract, f.type, writer, how);
             }
             try writer.writeAll(" }");
         },
     }
+}
+
+/// Whether two contracts' types are the same Roc type (an unknown leaf is
+/// a `Str`, as it is written).
+pub fn equal(a: *const Contract, ai: u16, b: *const Contract, bi: u16, depth: u8) bool {
+    if (depth == 32) return false;
+    const x = a.get(ai);
+    const y = b.get(bi);
+    const kx: Kind = if (x.kind == .unknown) .str else x.kind;
+    const ky: Kind = if (y.kind == .unknown) .str else y.kind;
+    if (kx != ky) return false;
+    return switch (kx) {
+        .str, .bool => true,
+        .int, .other => std.mem.eql(u8, x.name, y.name),
+        .list => equal(a, x.element, b, y.element, depth + 1),
+        .record => blk: {
+            var count_x: usize = 0;
+            var at = x.first;
+            while (at != none) : (at = a.fields[at].next) {
+                const f = a.fields[at];
+                const other = b.field(bi, f.name) orelse break :blk false;
+                if (!equal(a, f.type, b, other, depth + 1)) break :blk false;
+                count_x += 1;
+            }
+            var count_y: usize = 0;
+            at = y.first;
+            while (at != none) : (at = b.fields[at].next) count_y += 1;
+            break :blk count_x == count_y;
+        },
+        .unknown => unreachable,
+    };
 }
 
 pub fn id(name: []const u8, line: []const u8) u64 {
@@ -236,6 +287,48 @@ const Walker = struct {
         return walker.fail_at(node, "is not a template here (no such .rocstache)");
     }
 
+    /// A called partial's contract becomes the type of the field that holds
+    /// its context, unless the field has a type already (the check then
+    /// compares the two).
+    fn adopt(walker: *Walker, node: *const parse.Node, included: Template, target: u16) Error!void {
+        const theirs = included.contract orelse
+            return walker.fail_at(node, "is a partial that calls back into this one (a cycle)");
+        if (walker.contract.types[target].kind != .unknown) return;
+        try walker.copy(theirs, theirs.root, target, 0);
+        walker.contract.types[target].alias = included.name;
+    }
+
+    /// `theirs`'s type `from` into this contract's `into`, recursively.
+    fn copy(walker: *Walker, theirs: *const Contract, from: u16, into: u16, depth: u8) Error!void {
+        if (depth == 32) return walker.fail(0, "the contract nests too deep", "");
+        const source = theirs.get(from);
+        const offset = walker.contract.types[into].offset;
+        walker.contract.types[into] = .{
+            .kind = source.kind,
+            .name = source.name,
+            .offset = offset,
+            .alias = source.alias,
+        };
+        switch (source.kind) {
+            .list => {
+                const element = try walker.new(.unknown, offset);
+                walker.contract.types[into].element = element;
+                try walker.copy(theirs, source.element, element, depth + 1);
+            },
+            .record => {
+                var at = source.first;
+                while (at != none) : (at = theirs.fields[at].next) {
+                    const field_ = theirs.fields[at];
+                    const child = try walker.new(.unknown, offset);
+                    walker.contract.add_field(into, field_.name, child) catch
+                        return walker.fail(offset, "the contract has too many fields", field_.name);
+                    try walker.copy(theirs, field_.type, child, depth + 1);
+                }
+            },
+            .unknown, .str, .int, .bool, .other => {},
+        }
+    }
+
     // ---- inference: the contract from the tags -----------------------------
 
     fn infer(
@@ -261,8 +354,12 @@ const Walker = struct {
                 .section, .inverted => try walker.infer_section(template, i, scopes, depth),
                 .partial => {
                     const included = try walker.partial(node, depth);
-                    try walker.infer(included, 0, included.tree.len, scopes, depth + 1);
-                    walker.template = template.name;
+                    if (node.called()) {
+                        try walker.adopt(node, included, try walker.reach(node, scopes));
+                    } else {
+                        try walker.infer(included, 0, included.tree.len, scopes, depth + 1);
+                        walker.template = template.name;
+                    }
                 },
             }
         }
@@ -383,8 +480,17 @@ const Walker = struct {
                 .section, .inverted => try walker.check_section(template, i, scopes, depth),
                 .partial => {
                     const included = try walker.partial(node, depth);
-                    try walker.check(included, 0, included.tree.len, scopes, depth + 1);
-                    walker.template = template.name;
+                    if (node.called()) {
+                        const theirs = included.contract orelse unreachable; // adopt checked it
+                        const target = try walker.lookup(node, scopes);
+                        if (!equal(walker.contract, target, theirs, theirs.root, 0)) {
+                            const message = "is not the partial's contract";
+                            return walker.fail_at(node, try walker.is_a(target, message));
+                        }
+                    } else {
+                        try walker.check(included, 0, included.tree.len, scopes, depth + 1);
+                        walker.template = template.name;
+                    }
                 },
             }
         }
@@ -550,6 +656,47 @@ test "contract: inferred, every shape" {
     for (cases) |case| {
         try testing.expectEqualStrings(case[1], try contract_line(case[0], &.{}, &buffer));
     }
+}
+
+test "contract: a called partial has its own contract, its includer's field that type" {
+    const top_source = "<title>{{ title }}</title>{{#nav}}{{ label }}{{/nav}}";
+    var trees: [2]parse.Tree = undefined;
+    var d: parse.Diagnostic = .{};
+    try parse.parse(top_source, &trees[0], &d);
+    const top = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(top);
+    var diagnostic: Diagnostic = .{};
+    try of(top, &.{.{ .name = "Top", .source = top_source, .tree = &trees[0] }}, &diagnostic);
+
+    const page = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(page);
+    const sources = [_][]const u8{
+        "{{> Top frame}}<p>{{ body }}</p>",
+        "{{% Ctx : { frame : { title : Str }, body : Str } %}}{{> Top frame}}",
+    };
+    // Inferred: `frame` takes Top's contract, named for the module.
+    try parse.parse(sources[0], &trees[1], &d);
+    const templates = [_]Template{
+        .{ .name = "Page", .source = sources[0], .tree = &trees[1] },
+        .{ .name = "Top", .source = top_source, .tree = &trees[0], .contract = top },
+    };
+    try of(page, &templates, &diagnostic);
+    var buffer: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try write_line(page, page.root, &writer);
+    try testing.expectEqualStrings(
+        "{ body : Str, frame : { nav : List({ label : Str }), title : Str } }",
+        writer.buffered(),
+    );
+    try testing.expectEqualStrings("Top", page.get(page.field(page.root, "frame").?).alias);
+    // Declared otherwise: refused.
+    try parse.parse(sources[1], &trees[1], &d);
+    const declared = [_]Template{
+        .{ .name = "Page", .source = sources[1], .tree = &trees[1] },
+        .{ .name = "Top", .source = top_source, .tree = &trees[0], .contract = top },
+    };
+    try testing.expectError(error.Invalid, of(page, &declared, &diagnostic));
+    try testing.expectEqualStrings("Top", diagnostic.subject);
 }
 
 test "contract: a partial's fields are its includer's" {

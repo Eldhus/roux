@@ -32,10 +32,8 @@ export fn hosted_template_render(id: u64, box: abi.RocBox) callconv(.c) abi.RocS
 }
 
 fn render_boxed(comptime id: u64, comptime Ctx: type, box: abi.RocBox) abi.RocStr {
-    const Measure = fn (*const Ctx) callconv(.c) usize;
-    const Draw = fn (*const Ctx, *Out) callconv(.c) void;
-    const measure = @extern(*const Measure, .{ .name = symbols.measure_name(id) });
-    const draw = @extern(*const Draw, .{ .name = symbols.render_name(id) });
+    const measure = symbols.Extern(Ctx, id).measure;
+    const draw = symbols.Extern(Ctx, id).draw;
     const ctx: *const Ctx = @ptrCast(@alignCast(box.?));
     const size = measure(ctx);
     const result: abi.RocStr = if (size == 0) .empty() else blk: {

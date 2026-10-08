@@ -235,8 +235,13 @@ tree and no interpreter.
    its id; the dispatcher exports `hosted_template_render(id, box)`: a
    switch on the id, the measure (exact), one allocation of that size,
    the render (asserted to fill it), the box released, a Roc `Str`
-   returned. Partials (`{{> Top}}`) compile inline, in the includer's
-   scope; a line holding only a section, comment or partial tag goes
+   returned. A partial comes two ways. `{{> Top}}` compiles inline, in
+   the includer's scope: its fields are the includer's. `{{> Top frame}}`
+   is called: Top has its own contract, the includer's field `frame` is
+   of that type (`frame : Top.Ctx` in the includer's module), and Top
+   compiles once, in its own object, which the includer calls by symbol,
+   so editing Top recompiles one object, not every page that has it. A
+   line holding only a section, comment or partial tag goes
    with it (Mustache's standalone rule, as before). Both use a panic
    handler that reports through the host's `roc_crashed`, not std's,
    whose stack traces cost ~290 ms of every Debug compile.
@@ -256,7 +261,8 @@ of the dragrace site ~220 ms, an empty registry ~40 ms) and the app
 `--opt=dev`; production ReleaseSafe (safe, as the host ships) and
 `--opt=speed`. Editing a page's markup is one object, the link and a
 restart, no roc, no glue: ~0.3 s on the site against 3.0 s when
-templates were Roc; a partial in nine pages ~0.9 s. A contract change is
+templates were Roc; a partial in eight pages ~0.9 s inlined, ~0.45 s
+called (one object). A contract change is
 all five. [docs/dev-server.md](docs/dev-server.md) has the rest.
 
 A template that reads nothing (`Bottom`) has the contract `{}`, which
