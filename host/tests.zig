@@ -49,6 +49,25 @@ const trees = [_]tidy.Tree{
         .generated = &.{},
         .interfaces = &.{},
     },
+    .{
+        .dir = "tools/rocstache",
+        // root.zig is the `rocstache` module's root; object.zig the root
+        // of each app's templates object, compiled in the app's build
+        // directory (generate.zig writes it there).
+        .roots = &.{ "tests.zig", "root.zig", "object.zig" },
+        .untested = &.{ "tests.zig", "object.zig" },
+        .generated = &.{},
+        // object.zig: the Roc ABI (the hosted function, the glue's
+        // allocation table over the host's exports).
+        .interfaces = &.{"object.zig"},
+    },
+    .{
+        .dir = "tools/roux",
+        .roots = &.{"main.zig"},
+        .untested = &.{"main.zig"},
+        .generated = &.{},
+        .interfaces = &.{},
+    },
 };
 
 test "tidy: the host obeys the rules a machine can check" {

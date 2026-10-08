@@ -3,10 +3,10 @@ app [Context, program] { pf: platform "../../platform/main.roc" }
 import pf.Server
 import Page
 
-## A page rendered from a template per request: `Page.rocstache`, compiled
-## to `Page.roc` by rocstache-gen (`zig build examples` regenerates it).
-## The menu is the app's context, made once by `init!`.
-Context : { title : Str, items : List({ name : Str, price : U32 }) }
+## A page rendered from a template per request: `Page.rocstache`, whose
+## contract `roux build` writes to `Page.roc` and whose markup it compiles
+## into the app. The menu is the app's context, made once by `init!`.
+Context : Page.Ctx
 
 program = { init!, respond! }
 
@@ -26,6 +26,6 @@ init! = || Ok({
 respond! : Server.Request, Context => Try(Server.Response, [NotFound])
 respond! = |request, context|
 	match request.target {
-		"/" => Ok(Server.html(Page.render(context)))
+		"/" => Ok(Server.html(Page.render!(context)))
 		_ => Err(NotFound)
 	}

@@ -4,7 +4,9 @@ zig-out/
 *.db-wal
 *.db-shm
 platform/targets/
-# Apps built by roc build (named after their .roc file, no extension)
+# roux build's working files, beside each app
+.roux/
+# Apps built by roux build (named after their .roc file, no extension)
 examples/*
 !examples/*.roc
 !examples/*/
