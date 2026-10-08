@@ -10,11 +10,7 @@
 //!
 //! Either way the template is then checked against the contract
 //! (`check`), so a mistake is the generator's message naming the line,
-//! never a Zig compile error in the templates object (where render.zig
-//! checks the same again, as a backstop).
-//!
-//! The template's id is a hash of its name and its contract: a templates
-//! object built for another version of the contract refuses the id.
+//! never a Roc type error in the generated walkers.
 
 const std = @import("std");
 const assert = std.debug.assert;

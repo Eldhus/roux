@@ -1,14 +1,13 @@
-//! The template compiler's test root (`zig build test`). object.zig is not
-//! here: it compiles only in an app's build directory, beside the registry
-//! roux build writes, and is tested through the examples.
+//! The template compiler's test root (`zig build test`). What the walkers
+//! do is tested through the examples, whose pages are compared.
 
 test {
     _ = @import("parse.zig");
     _ = @import("contract.zig");
     _ = @import("declared.zig");
+    _ = @import("bytecode.zig");
     _ = @import("roc.zig");
-    _ = @import("out.zig");
-    _ = @import("render.zig");
+    _ = @import("elf.zig");
     _ = @import("generate.zig");
     _ = @import("root.zig");
 }

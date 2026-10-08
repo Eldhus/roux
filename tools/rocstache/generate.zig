@@ -1,8 +1,8 @@
 //! An app's templates, generated: every `*.rocstache` in the app's
-//! directory gets its contract module beside it (`Page.roc`), and the
-//! build directory gets what the templates object compiles from: the
-//! renderer's source, a copy of each template, the registry, and the
-//! contracts' layout from `roc glue`, run only when a contract changed.
+//! directory gets its module beside it (`Page.roc`: the contract and the
+//! walkers, roc.zig), and the build directory gets the object holding
+//! every template's bytecode and text (elf.zig), which the link takes as
+//! it is: no compiler runs for templates.
 //!
 //! A file is written only when its content changes (to a temporary name,
 //! then renamed), so a markup edit rewrites nothing the app's Roc sees,
@@ -15,50 +15,32 @@ const Allocator = std.mem.Allocator;
 const parse = @import("parse.zig");
 const contract_ = @import("contract.zig");
 const roc = @import("roc.zig");
+const bytecode = @import("bytecode.zig");
+const elf = @import("elf.zig");
 
 pub const templates_max = 256;
-
-/// The renderer's source, written into the build directory.
-const renderer = [_]struct { name: []const u8, text: []const u8 }{
-    .{ .name = "object.zig", .text = @embedFile("object.zig") },
-    .{ .name = "part.zig", .text = @embedFile("part.zig") },
-    .{ .name = "symbols.zig", .text = @embedFile("symbols.zig") },
-    .{ .name = "render.zig", .text = @embedFile("render.zig") },
-    .{ .name = "parse.zig", .text = @embedFile("parse.zig") },
-    .{ .name = "out.zig", .text = @embedFile("out.zig") },
-};
-
-/// An object to compile, and the hash of all that goes into it: the build
-/// compiles it only when no object by that hash exists.
-pub const Object = struct {
-    /// The root file in the build directory: `object.zig`, `part_Page.zig`.
-    root: []const u8,
-    hash: u64,
-};
 
 pub const Options = struct {
     /// The app's directory, holding `main.roc` and its `*.rocstache`.
     app: []const u8,
-    /// Where the templates object's sources go (`<app>/.roux/templates`).
+    /// Where the templates' object goes (`<app>/.roux/main`).
     build: []const u8,
-    /// The pinned `roc`, for glue.
-    roc: []const u8,
-    /// roc's `ZigGlue.roc` at the pinned nightly's commit.
-    glue_spec: []const u8,
 };
+
+/// The object's name in the build directory.
+pub const object_name = "templates.o";
 
 pub const Result = struct {
     templates: u32,
     /// Some `Page.roc` changed: the app's Roc must be built again.
     modules_changed: bool,
-    contracts_changed: bool,
-    /// The dispatcher first, then a part per template.
-    objects: []const Object,
+    /// The templates' object changed: the app must be linked again.
+    object_changed: bool,
 };
 
-pub const Error = error{ Invalid, GlueFailed } || Allocator.Error || Io.Dir.ReadFileAllocError ||
+pub const Error = error{Invalid} || Allocator.Error || Io.Dir.ReadFileAllocError ||
     Io.Dir.WriteFileError || Io.Dir.RenameError || Io.Dir.CreateDirPathError ||
-    Io.Dir.OpenError || Io.Dir.Iterator.Error || std.process.RunError || Io.Writer.Error;
+    Io.Dir.OpenError || Io.Dir.Iterator.Error || Io.Writer.Error;
 
 /// A template as read: its name (the file's stem), source and tree.
 const Loaded = struct {
@@ -77,91 +59,52 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
     const templates = try gpa.alloc(contract_.Template, loaded.len);
     for (loaded, templates) |l, *t| t.* = .{ .name = l.name, .source = l.source, .tree = l.tree };
 
-    const modules = try gpa.alloc(roc.Module, loaded.len);
     var result: Result = .{
         .templates = @intCast(loaded.len),
         .modules_changed = false,
-        .contracts_changed = false,
-        .objects = &.{},
+        .object_changed = false,
     };
-    try compute_contracts(gpa, loaded, templates, modules, errors);
-    for (loaded, modules) |l, module| {
+    try compute_contracts(gpa, loaded, templates, errors);
+    for (loaded, templates, 0..) |l, t, index| {
         var text: Io.Writer.Allocating = .init(gpa);
-        try roc.write_module(module, &text.writer);
+        const module: roc.Module = .{
+            .name = l.name,
+            .contract = t.contract.?,
+            .index = @intCast(index),
+        };
+        try roc.write_module(gpa, module, &text.writer);
         const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{l.name});
         if (try write_if_changed(gpa, io, app, path, text.written())) result.modules_changed = true;
     }
 
+    const compiled = try gpa.alloc(bytecode.Template, loaded.len);
+    for (templates, compiled) |t, *c| {
+        c.* = .{ .name = t.name, .tree = t.tree, .contract = t.contract.? };
+    }
+    var builder: bytecode.Builder = .{ .gpa = gpa };
+    var diagnostic: bytecode.Diagnostic = .{};
+    bytecode.program(&builder, compiled, &diagnostic) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Invalid => {
+            const source = for (templates) |t| {
+                if (std.mem.eql(u8, t.name, diagnostic.template)) break t.source;
+            } else unreachable;
+            try report(errors, source, .{
+                .template = diagnostic.template,
+                .offset = diagnostic.offset,
+                .message = diagnostic.message,
+                .subject = diagnostic.subject,
+            });
+            return error.Invalid;
+        },
+    };
+    var object: Io.Writer.Allocating = .init(gpa);
+    try elf.write(builder.code.items, builder.text.items, &object.writer);
     try cwd.createDirPath(io, options.build);
     var build = try cwd.openDir(io, options.build, .{});
     defer build.close(io);
-    try build.createDirPath(io, "glue");
-    for (renderer) |file| _ = try write_if_changed(gpa, io, build, file.name, file.text);
-    for (loaded) |l| {
-        const copy = try std.fmt.allocPrint(gpa, "{s}.rocstache", .{l.name});
-        _ = try write_if_changed(gpa, io, build, copy, l.source);
-    }
-    var registry: Io.Writer.Allocating = .init(gpa);
-    try roc.write_registry(modules, &registry.writer);
-    _ = try write_if_changed(gpa, io, build, "templates.zig", registry.written());
-    result.contracts_changed = try glue(gpa, io, build, options, modules, errors);
-    result.objects = try objects(gpa, io, build, loaded, registry.written());
+    result.object_changed = try write_if_changed(gpa, io, build, object_name, object.written());
     return result;
-}
-
-/// The dispatcher and a part per template, each with the hash of what it
-/// compiles from: the renderer, the registry and the glue (the contracts'
-/// layout), and for a part its template and every partial it reaches.
-fn objects(
-    gpa: Allocator,
-    io: Io,
-    build: Io.Dir,
-    loaded: []const Loaded,
-    registry: []const u8,
-) Error![]const Object {
-    var common = std.hash.Wyhash.init(0);
-    for (renderer) |file| common.update(file.text);
-    common.update(registry);
-    const glue_path = "glue/roc_platform_abi.zig";
-    common.update(try build.readFileAlloc(io, glue_path, gpa, .limited(16 << 20)));
-    const result = try gpa.alloc(Object, loaded.len + 1);
-    result[0] = .{ .root = "object.zig", .hash = common.final() };
-    for (loaded, result[1..], 0..) |l, *object, index| {
-        const root = try std.fmt.allocPrint(gpa, "part_{s}.zig", .{l.name});
-        const text = try std.fmt.allocPrint(gpa,
-            \\//! Generated by roux build. DO NOT EDIT. `{s}`'s part of the app's
-            \\//! templates, compiled alone (part.zig).
-            \\pub const index = {d};
-            \\pub const panic = @import("symbols.zig").panic;
-            \\comptime {{
-            \\    _ = @import("part.zig");
-            \\}}
-            \\
-        , .{ l.name, index });
-        _ = try write_if_changed(gpa, io, build, root, text);
-        var hash = common;
-        hash.update(text);
-        reach(loaded, l, &hash, 0);
-        object.* = .{ .root = root, .hash = hash.final() };
-    }
-    return result;
-}
-
-/// Hashes `template` and the partials it includes, transitively (the
-/// contract has checked their depth). A partial included twice is hashed
-/// twice: the hash is still the content's.
-fn reach(loaded: []const Loaded, template: Loaded, hash: *std.hash.Wyhash, depth: u8) void {
-    assert(depth <= contract_.partial_depth_max);
-    hash.update(template.name);
-    hash.update(template.source);
-    for (template.tree.slice()) |node| {
-        // A called partial is its own object, reached by its symbol: its
-        // markup is not this object's (its contract is, in the glue).
-        if (node.kind != .partial or node.called()) continue;
-        for (loaded) |other| {
-            if (std.mem.eql(u8, other.name, node.text)) reach(loaded, other, hash, depth + 1);
-        }
-    }
 }
 
 /// Every `*.rocstache` in the app's directory, sorted by name, parsed.
@@ -205,7 +148,6 @@ fn string_less(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
-/// Template `index`'s contract, checked, as its module.
 /// Every template's contract, a called partial's before its callers' (they
 /// take its contract as a field's type): passes over the templates, each
 /// computing those whose calls are known, until all are, or a pass
@@ -214,7 +156,6 @@ fn compute_contracts(
     gpa: Allocator,
     loaded: []const Loaded,
     templates: []contract_.Template,
-    modules: []roc.Module,
     errors: *Io.Writer,
 ) Error!void {
     const done = try gpa.alloc(bool, loaded.len);
@@ -225,8 +166,7 @@ fn compute_contracts(
         var progressed = false;
         for (loaded, 0..) |l, index| {
             if (done[index] or !calls_known(templates, l.tree, 0)) continue;
-            modules[index] = try module_of(gpa, templates, index, errors);
-            templates[index].contract = modules[index].contract;
+            templates[index].contract = try contract_of(gpa, templates, index, errors);
             done[index] = true;
             remaining -= 1;
             progressed = true;
@@ -256,12 +196,13 @@ fn calls_known(templates: []const contract_.Template, tree: *const parse.Tree, d
     return true;
 }
 
-fn module_of(
+/// Template `index`'s contract, checked.
+fn contract_of(
     gpa: Allocator,
     templates: []contract_.Template,
     index: usize,
     errors: *Io.Writer,
-) Error!roc.Module {
+) Error!*const contract_.Contract {
     // contract.of takes the template first, the partials it may include after.
     const ordered = try gpa.dupe(contract_.Template, templates);
     std.mem.swap(contract_.Template, &ordered[0], &ordered[index]);
@@ -277,14 +218,7 @@ fn module_of(
         }
         return error.Invalid;
     };
-    var line: Io.Writer.Allocating = .init(gpa);
-    try contract_.write_line(contract, contract.root, &line.writer);
-    return .{
-        .name = ordered[0].name,
-        .contract = contract,
-        .line = line.written(),
-        .id = contract_.id(ordered[0].name, line.written()),
-    };
+    return contract;
 }
 
 /// `Page.rocstache:12:5: `title` message`, as compilers print it, so
@@ -302,48 +236,6 @@ fn report(
     });
     if (problem.subject.len > 0) try errors.print("`{s}` ", .{problem.subject});
     try errors.print("{s}\n", .{problem.message});
-}
-
-/// The throwaway platform, and `roc glue` on it when its contracts changed
-/// (or its output is missing). Returns whether they changed.
-fn glue(
-    gpa: Allocator,
-    io: Io,
-    build: Io.Dir,
-    options: Options,
-    modules: []const roc.Module,
-    errors: *Io.Writer,
-) Error!bool {
-    var contracts: Io.Writer.Allocating = .init(gpa);
-    try roc.write_contracts(modules, &contracts.writer);
-    var platform: Io.Writer.Allocating = .init(gpa);
-    try roc.write_platform(modules, &platform.writer);
-    const changed = try write_if_changed(gpa, io, build, "glue/Contracts.roc", contracts.written());
-    _ = try write_if_changed(gpa, io, build, "glue/main.roc", platform.written());
-    const abi = "glue/roc_platform_abi.zig";
-    const present = if (build.access(io, abi, .{})) true else |_| false;
-    if (!changed and present) return false;
-
-    const output = try std.fmt.allocPrint(gpa, "{s}/glue/out", .{options.build});
-    const platform_path = try std.fmt.allocPrint(gpa, "{s}/glue/main.roc", .{options.build});
-    const result = try std.process.run(gpa, io, .{
-        .argv = &.{ options.roc, "glue", options.glue_spec, output, platform_path },
-        .stdout_limit = .limited(1 << 20),
-        .stderr_limit = .limited(1 << 20),
-    });
-    if (!result.term.success()) {
-        try errors.print("roc glue failed on the contracts:\n{s}{s}", .{
-            result.stdout,
-            result.stderr,
-        });
-        // Its Contracts.roc goes, so the next run tries again.
-        build.deleteFile(io, "glue/Contracts.roc") catch {};
-        return error.GlueFailed;
-    }
-    const generated_path = "glue/out/roc_platform_abi.zig";
-    const generated = try build.readFileAlloc(io, generated_path, gpa, .limited(16 << 20));
-    _ = try write_if_changed(gpa, io, build, abi, generated);
-    return true;
 }
 
 /// Writes `data` unless the file holds exactly that already; says whether

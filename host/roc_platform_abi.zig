@@ -1646,6 +1646,150 @@ comptime {
     }
 }
 
+/// Payload struct for Signed variant.
+pub const SignedOrTextOrUnsignedOrValueSignedPayload = if (@sizeOf(usize) == 4) extern struct {
+    @"_0": u64,
+    @"_1": i64,
+} else extern struct {
+    @"_0": u64,
+    @"_1": i64,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValueSignedPayload) != 16) @compileError("SignedOrTextOrUnsignedOrValueSignedPayload size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValueSignedPayload) != 8) @compileError("SignedOrTextOrUnsignedOrValueSignedPayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValueSignedPayload) != 16) @compileError("SignedOrTextOrUnsignedOrValueSignedPayload size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValueSignedPayload) != 8) @compileError("SignedOrTextOrUnsignedOrValueSignedPayload alignment mismatch");
+    }
+}
+
+/// Payload struct for Unsigned variant.
+pub const SignedOrTextOrUnsignedOrValueUnsignedPayload = if (@sizeOf(usize) == 4) extern struct {
+    @"_0": u64,
+    @"_1": u64,
+} else extern struct {
+    @"_0": u64,
+    @"_1": u64,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValueUnsignedPayload) != 16) @compileError("SignedOrTextOrUnsignedOrValueUnsignedPayload size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValueUnsignedPayload) != 8) @compileError("SignedOrTextOrUnsignedOrValueUnsignedPayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValueUnsignedPayload) != 16) @compileError("SignedOrTextOrUnsignedOrValueUnsignedPayload size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValueUnsignedPayload) != 8) @compileError("SignedOrTextOrUnsignedOrValueUnsignedPayload alignment mismatch");
+    }
+}
+
+/// Payload struct for Value variant.
+pub const SignedOrTextOrUnsignedOrValueValuePayload = if (@sizeOf(usize) == 4) extern struct {
+    @"_0": u64,
+    @"_1": RocStr,
+} else extern struct {
+    @"_0": u64,
+    @"_1": RocStr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValueValuePayload) != 32) @compileError("SignedOrTextOrUnsignedOrValueValuePayload size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValueValuePayload) != 8) @compileError("SignedOrTextOrUnsignedOrValueValuePayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValueValuePayload) != 24) @compileError("SignedOrTextOrUnsignedOrValueValuePayload size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValueValuePayload) != 8) @compileError("SignedOrTextOrUnsignedOrValueValuePayload alignment mismatch");
+    }
+}
+
+/// Tag discriminant for SignedOrTextOrUnsignedOrValue.
+pub const SignedOrTextOrUnsignedOrValueTag = enum(u8) {
+    @"Signed" = 0,
+    @"Text" = 1,
+    @"Unsigned" = 2,
+    @"Value" = 3,
+};
+
+/// Payload union for SignedOrTextOrUnsignedOrValue.
+pub const SignedOrTextOrUnsignedOrValuePayload = extern union {
+        @"signed": SignedOrTextOrUnsignedOrValueSignedPayload,
+        @"text": u64,
+        @"unsigned": SignedOrTextOrUnsignedOrValueUnsignedPayload,
+        @"value": SignedOrTextOrUnsignedOrValueValuePayload,
+};
+
+/// Tag union: SignedOrTextOrUnsignedOrValue
+pub const SignedOrTextOrUnsignedOrValue = if (@sizeOf(usize) == 4) extern struct {
+    payload: [24]u8 align(8),
+    tag: SignedOrTextOrUnsignedOrValueTag,
+    pub fn payload_signed(self: *const @This()) SignedOrTextOrUnsignedOrValueSignedPayload {
+        const ptr: *const SignedOrTextOrUnsignedOrValueSignedPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_text(self: *const @This()) u64 {
+        const ptr: *const u64 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_unsigned(self: *const @This()) SignedOrTextOrUnsignedOrValueUnsignedPayload {
+        const ptr: *const SignedOrTextOrUnsignedOrValueUnsignedPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_value(self: *const @This()) SignedOrTextOrUnsignedOrValueValuePayload {
+        const ptr: *const SignedOrTextOrUnsignedOrValueValuePayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefSignedOrTextOrUnsignedOrValue(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfSignedOrTextOrUnsignedOrValue(self, amount);
+    }
+} else extern struct {
+    payload: SignedOrTextOrUnsignedOrValuePayload,
+    tag: SignedOrTextOrUnsignedOrValueTag,
+    pub fn payload_signed(self: *const @This()) SignedOrTextOrUnsignedOrValueSignedPayload {
+        return self.payload.@"signed";
+    }
+    pub fn payload_text(self: *const @This()) u64 {
+        return self.payload.@"text";
+    }
+    pub fn payload_unsigned(self: *const @This()) SignedOrTextOrUnsignedOrValueUnsignedPayload {
+        return self.payload.@"unsigned";
+    }
+    pub fn payload_value(self: *const @This()) SignedOrTextOrUnsignedOrValueValuePayload {
+        return self.payload.@"value";
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefSignedOrTextOrUnsignedOrValue(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfSignedOrTextOrUnsignedOrValue(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValue) != 40) @compileError("SignedOrTextOrUnsignedOrValue size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValue) != 8) @compileError("SignedOrTextOrUnsignedOrValue alignment mismatch");
+        if (@offsetOf(SignedOrTextOrUnsignedOrValue, "tag") != 32) @compileError("SignedOrTextOrUnsignedOrValue tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(SignedOrTextOrUnsignedOrValue) != 32) @compileError("SignedOrTextOrUnsignedOrValue size mismatch");
+        if (@alignOf(SignedOrTextOrUnsignedOrValue) != 8) @compileError("SignedOrTextOrUnsignedOrValue alignment mismatch");
+        if (@offsetOf(SignedOrTextOrUnsignedOrValue, "tag") != 24) @compileError("SignedOrTextOrUnsignedOrValue tag offset mismatch");
+    }
+}
+
 /// Tag discriminant for Try.
 pub const Init_for_hostResultTag = enum(u8) {
     @"Err" = 0,
@@ -1815,12 +1959,11 @@ pub const HostSqlite_backupArgs = extern struct {
     arg2: u32,
 };
 
-/// Arguments for Host.template_render!
-/// Roc signature: U64, Box(rigid) => Str
+/// Arguments for Host.templates_bytes!
+/// Roc signature: List([Signed(U64, I64), Text(U64), Unsigned(U64, U64), Value(U64, Str)]) => List(U8)
 /// Refcounted fields are owned by the hosted function.
-pub const HostTemplate_renderArgs = extern struct {
-    arg0: u64,
-    arg1: RocBox,
+pub const HostTemplates_bytesArgs = extern struct {
+    arg0: RocList(SignedOrTextOrUnsignedOrValue),
 };
 
 // Platform Type Aliases
@@ -1855,6 +1998,9 @@ pub const HostSqlite_commitResultPayload = HostSqlite_write_beginResultPayload;
 pub const HostSqlite_commitResultTag = HostSqlite_write_beginResultTag;
 pub const HostSqlite_commitErr = __AnonStruct_4c605145331877e7;
 pub const HostSqlite_backupErr = __AnonStruct_4c605145331877e7;
+pub const HostTemplates_bytesArg0 = SignedOrTextOrUnsignedOrValue;
+pub const HostTemplates_bytesArg0Payload = SignedOrTextOrUnsignedOrValuePayload;
+pub const HostTemplates_bytesArg0Tag = SignedOrTextOrUnsignedOrValueTag;
 pub const Init_for_hostOk = __AnonStruct_2a70a3dd551fa8a1;
 pub const Respond_for_hostArg0 = __AnonStruct_28781edfe447a702;
 pub const Respond_for_hostArg0Headers = __AnonStruct_82a96c5d55d63488;
@@ -2099,6 +2245,36 @@ pub const HostSqlite_backupResultRelease = struct {
     }
 };
 
+fn decrefSignedOrTextOrUnsignedOrValue(value: SignedOrTextOrUnsignedOrValue, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .@"Signed" => {},
+        .@"Text" => {},
+        .@"Unsigned" => {},
+        .@"Value" => {
+        const payload = value.payload_value();
+        payload._1.decref(roc_host);
+        },
+    }
+}
+
+fn increfSignedOrTextOrUnsignedOrValue(value: SignedOrTextOrUnsignedOrValue, amount: isize) void {
+    switch (value.tag) {
+        .@"Signed" => {},
+        .@"Text" => {},
+        .@"Unsigned" => {},
+        .@"Value" => {
+        const payload = value.payload_value();
+        payload._1.incref(amount);
+        },
+    }
+}
+
+pub const SignedOrTextOrUnsignedOrValueRelease = struct {
+    pub fn release(value: SignedOrTextOrUnsignedOrValue, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
 fn decrefInit_for_hostResult(value: Init_for_hostResult, roc_host: *RocHost) void {
     switch (value.tag) {
         .@"Err" => {},
@@ -2173,6 +2349,14 @@ pub fn decrefListOfBlobOrIntegerOrNullOrRealOrText(value: RocList(BlobOrIntegerO
     value.deinitWith(BlobOrIntegerOrNullOrRealOrTextRelease, roc_host);
 }
 
+/// Release one owned reference to a `RocList(SignedOrTextOrUnsignedOrValue)`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+pub fn decrefListOfSignedOrTextOrUnsignedOrValue(value: RocList(SignedOrTextOrUnsignedOrValue), roc_host: *RocHost) void {
+    value.deinitWith(SignedOrTextOrUnsignedOrValueRelease, roc_host);
+}
+
 
 fn rocReleasePolicy(comptime T: type) type {
     if (T == RocStr) return RocStrRelease;
@@ -2191,6 +2375,9 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == BlobOrIntegerOrNullOrRealOrText) return BlobOrIntegerOrNullOrRealOrTextRelease;
     if (T == HostSqlite_write_beginResult) return HostSqlite_write_beginResultRelease;
     if (T == HostSqlite_backupResult) return HostSqlite_backupResultRelease;
+    if (T == RocListWith(u64, false)) return RocListSpineRelease(RocListWith(u64, false));
+    if (T == RocList(SignedOrTextOrUnsignedOrValue)) return RocListRelease(RocList(SignedOrTextOrUnsignedOrValue), SignedOrTextOrUnsignedOrValueRelease);
+    if (T == SignedOrTextOrUnsignedOrValue) return SignedOrTextOrUnsignedOrValueRelease;
     if (T == Init_for_hostResult) return Init_for_hostResultRelease;
     if (T == __AnonStruct_2a70a3dd551fa8a1) return __AnonStruct_2a70a3dd551fa8a1Release;
     if (T == __AnonStruct_a14cd3b7d5755441) return __AnonStruct_a14cd3b7d5755441Release;
@@ -2307,13 +2494,18 @@ pub extern fn hosted_sqlite_commit(arg0: u64) callconv(.c) HostSqlite_write_begi
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_sqlite_backup(arg0: u64, arg1: RocStr, arg2: u32) callconv(.c) HostSqlite_backupResult;
 
-/// Hosted symbol for Host.template_render!
-/// Roc signature: U64, Box(rigid) => Str
+/// Hosted symbol for Host.templates_load!
+/// Roc signature: {} => List(U64)
+/// The result is owned by Roc: return exactly one owned reference.
+pub extern fn hosted_templates_load() callconv(.c) RocListWith(u64, false);
+
+/// Hosted symbol for Host.templates_bytes!
+/// Roc signature: List([Signed(U64, I64), Text(U64), Unsigned(U64, U64), Value(U64, Str)]) => List(U8)
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
-///     decrefBox(@ptrCast(arg1), roc_host);
+///     decrefListOfSignedOrTextOrUnsignedOrValue(arg0, roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
-pub extern fn hosted_template_render(arg0: u64, arg1: RocBox) callconv(.c) RocStr;
+pub extern fn hosted_templates_bytes(arg0: RocList(SignedOrTextOrUnsignedOrValue)) callconv(.c) RocListWith(u8, false);
 
 
 /// Default memory management functions for Roc platforms.
