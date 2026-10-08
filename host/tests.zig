@@ -52,14 +52,15 @@ const trees = [_]tidy.Tree{
     },
     .{
         .dir = "tools/rocstache",
-        // root.zig is the `rocstache` module's root; object.zig the root
-        // of each app's templates object, compiled in the app's build
-        // directory (generate.zig writes it there).
-        .roots = &.{ "tests.zig", "root.zig", "object.zig" },
-        .untested = &.{ "tests.zig", "object.zig" },
+        // root.zig is the `rocstache` module's root; object.zig (the
+        // dispatcher) and part.zig (one template) the objects compiled in
+        // an app's build directory beside its registry (generate.zig
+        // writes them there), with symbols.zig, which they share.
+        .roots = &.{ "tests.zig", "root.zig", "object.zig", "part.zig" },
+        .untested = &.{ "tests.zig", "object.zig", "part.zig", "symbols.zig" },
         .generated = &.{},
         // object.zig: the Roc ABI (the hosted function, the glue's
-        // allocation table over the host's exports).
+        // allocation table over the host's exports, the parts' symbols).
         .interfaces = &.{"object.zig"},
     },
     .{
