@@ -1,8 +1,11 @@
-//! The host's side of rocstache templates (DESIGN.md, Templates). A page
-//! is rendered in Roc, purely, as a list of parts (`Rocstache.Html`); the
-//! host writes the parts out: static runs from the text the build linked
-//! in, values HTML-escaped (or as their part says). The bytecode Roc walks
-//! is linked in too, and handed to Roc once (`Rocstache.load!`).
+//! The host's renderer for rocstache templates (DESIGN.md, Templates): one
+//! VM for every template of every app. roux build compiles the app's
+//! templates to bytecode (tools/rocstache/bytecode.zig), each read a byte
+//! offset where Roc's compiler laid the contract's record out (`roc glue`
+//! told it), and links the bytecode and the static text in. A page's
+//! `render!` boxes its record and calls `hosted_template_render`; the VM
+//! walks the bytecode reading the record in place: no copy of it, no Roc
+//! value made per part.
 //!
 //! The writing is the hot path: one pass into a buffer of the shard's (no
 //! measuring pass), static runs and short strings copied as whole 16- or
@@ -14,10 +17,28 @@ const std = @import("std");
 const assert = std.debug.assert;
 const abi = @import("roc_platform_abi.zig");
 
-pub const Part = abi.SignedOrTextOrUnsignedOrValue;
-pub const Parts = abi.RocList(Part);
-pub const Code = abi.RocListWith(u64, false);
 pub const Bytes = abi.RocListWith(u8, false);
+/// A list as Roc lays it out, whatever its elements (only their address
+/// and count are read).
+const List = abi.RocListWith(u8, false);
+
+/// The bytecode's ops and integer types (tools/rocstache/bytecode.zig).
+const Op = enum(u4) {
+    text,
+    str,
+    int,
+    len,
+    plural,
+    list,
+    record,
+    when,
+    cond,
+    unless,
+    empty,
+    call,
+    _,
+};
+const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
 
 /// What the app's build linked in: roux build writes the object itself
 /// (tools/rocstache/elf.zig), so a markup edit compiles nothing. Words:
@@ -41,36 +62,173 @@ pub const slack = 32;
 
 /// How a `Str` part's value is written: the top byte of its run
 /// (tools/rocstache/bytecode.zig's Mode).
-const Mode = enum(u8) { escaped, raw, upper, lower, url, upper_raw, lower_raw };
+const Mode = enum(u8) { escaped, raw, upper, lower, url, upper_raw, lower_raw, _ };
 const mode_shift = 56;
 
 /// A shard's buffer: a page larger than this is written to the heap.
 const scratch_bytes = 256 * 1024;
 threadlocal var scratch: ?[]u8 = null;
 
-pub fn load(roc_host: *abi.RocHost) Code {
-    const data = data_linked();
-    const list: Code = .allocate(data.code.len, roc_host);
-    if (data.code.len > 0) @memcpy(@constCast(list.allocationItems()), data.code);
-    return list;
-}
+/// Scopes open at once in one template: sections nested in the template
+/// and in the partials it includes (the compiler's bound).
+const scopes_max = 16 * 9 + 1;
 
-/// The page `parts` describe, in one Roc list; the parts are released.
-pub fn bytes(parts: Parts, roc_host: *abi.RocHost) Bytes {
-    defer abi.decrefListOfSignedOrTextOrUnsignedOrValue(parts, roc_host);
-    const text = data_linked().text;
+/// Template `index` rendered from the record at `context`, in one Roc
+/// list. The record is only read.
+pub fn render(index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+    const data = data_linked();
     const buffer = scratch orelse blk: {
         const fresh = std.heap.page_allocator.alloc(u8, scratch_bytes) catch
             @panic("out of memory");
         scratch = fresh;
         break :blk fresh;
     };
-    var sink: Sink = .{ .buffer = buffer, .text = text };
-    defer sink.deinit();
-    for (parts.items()) |*part| sink.part(part);
+    var vm: Vm = .{ .sink = .{ .buffer = buffer, .text = data.text }, .code = data.code };
+    defer vm.sink.deinit();
+    vm.template(index, @intFromPtr(context));
+    const sink = &vm.sink;
     const result: Bytes = .allocate(sink.len, roc_host);
     if (sink.len > 0) @memcpy(@constCast(result.allocationItems()), sink.buffer[0..sink.len]);
     return result;
+}
+
+const Vm = struct {
+    sink: Sink,
+    code: []const u64,
+
+    /// A template over the record at `base`: from its own scope, as a
+    /// call starts a called partial.
+    fn template(vm: *Vm, index: u64, base: usize) void {
+        assert(index < vm.code[0]);
+        const i: usize = @intCast(index);
+        var scopes: [scopes_max]usize = undefined;
+        scopes[0] = base;
+        vm.run(@intCast(vm.code[1 + 2 * i]), @intCast(vm.code[2 + 2 * i]), &scopes, 1);
+    }
+
+    /// The code in `[from, to)`, its scopes `scopes[0..len]`.
+    fn run(vm: *Vm, from: usize, to: usize, scopes: *[scopes_max]usize, len: usize) void {
+        assert(to <= vm.code.len and len <= scopes_max);
+        const code = vm.code;
+        const sink = &vm.sink;
+        var pc = from;
+        while (pc < to) {
+            const w = code[pc];
+            const op: Op = @fromBackingInt(@intCast(@as(u4, @truncate(w))));
+            if (op == .text) {
+                sink.run(w >> 8);
+                pc += 1;
+                continue;
+            }
+            const up: usize = @intCast((w >> 4) & 15);
+            assert(up < len);
+            const at = scopes[len - 1 - up] + @as(usize, @intCast((w >> 8) & 0xffffff));
+            const rest: usize = @intCast(w >> 32);
+            switch (op) {
+                .str => {
+                    const ref = code[pc + 1];
+                    sink.run(ref);
+                    const string: *const abi.RocStr = @ptrFromInt(at);
+                    sink.string(string.asSlice(), @fromBackingInt(@intCast(ref >> mode_shift)));
+                    pc += 2;
+                },
+                .int, .len => {
+                    const int: Int = if (op == .len) .list else @fromBackingInt(@intCast(rest));
+                    sink.run(code[pc + 1]);
+                    sink.number(read_int(at, int));
+                    pc += 2;
+                },
+                .plural => {
+                    const n = read_int(at, @fromBackingInt(@intCast(rest)));
+                    sink.run(code[pc + 1]);
+                    sink.number(n);
+                    const one = !n.negative and n.magnitude == 1;
+                    sink.run(if (one) code[pc + 2] else code[pc + 3]);
+                    pc += 4;
+                },
+                // A body in the same scope: run inline, or skipped.
+                .cond, .unless, .empty => {
+                    const enter = switch (op) {
+                        .cond => read_bool(at),
+                        .unless => !read_bool(at),
+                        .empty => @as(*const List, @ptrFromInt(at)).length == 0,
+                        else => unreachable,
+                    };
+                    pc += if (enter) 1 else 1 + rest;
+                },
+                .list, .record, .when => pc = vm.section(op, at, rest, pc, scopes, len),
+                .call => {
+                    vm.template(rest, at);
+                    pc += 1;
+                },
+                .text, _ => unreachable,
+            }
+        }
+    }
+
+    /// A section opening a scope: each of a list's elements, a record, a
+    /// Bool when true. Returns the code after it.
+    fn section(
+        vm: *Vm,
+        op: Op,
+        at: usize,
+        body_len: usize,
+        pc: usize,
+        scopes: *[scopes_max]usize,
+        len: usize,
+    ) usize {
+        assert(len < scopes_max);
+        if (op == .list) {
+            const list: *const List = @ptrFromInt(at);
+            const stride: usize = @intCast(vm.code[pc + 1]);
+            const body = pc + 2;
+            if (list.length > 0) {
+                var element = @intFromPtr(list.elements_ptr.?);
+                for (0..list.length) |_| {
+                    scopes[len] = element;
+                    vm.run(body, body + body_len, scopes, len + 1);
+                    element += stride;
+                }
+            }
+            return body + body_len;
+        }
+        const body = pc + 1;
+        if (op == .record or read_bool(at)) {
+            scopes[len] = at;
+            vm.run(body, body + body_len, scopes, len + 1);
+        }
+        return body + body_len;
+    }
+};
+
+fn read_bool(at: usize) bool {
+    return @as(*const u8, @ptrFromInt(at)).* != 0;
+}
+
+const Number = struct { negative: bool, magnitude: u64 };
+
+/// The integer at `at`, or a list's length.
+inline fn read_int(at: usize, int: Int) Number {
+    return switch (int) {
+        .u8 => unsigned(@as(*const u8, @ptrFromInt(at)).*),
+        .u16 => unsigned(@as(*const u16, @ptrFromInt(at)).*),
+        .u32 => unsigned(@as(*const u32, @ptrFromInt(at)).*),
+        .u64 => unsigned(@as(*const u64, @ptrFromInt(at)).*),
+        .i8 => signed(@as(*const i8, @ptrFromInt(at)).*),
+        .i16 => signed(@as(*const i16, @ptrFromInt(at)).*),
+        .i32 => signed(@as(*const i32, @ptrFromInt(at)).*),
+        .i64 => signed(@as(*const i64, @ptrFromInt(at)).*),
+        .list => unsigned(@as(*const List, @ptrFromInt(at)).length),
+        _ => unreachable,
+    };
+}
+
+fn unsigned(value: u64) Number {
+    return .{ .negative = false, .magnitude = value };
+}
+
+fn signed(value: i64) Number {
+    return .{ .negative = value < 0, .magnitude = @abs(value) };
 }
 
 const Sink = struct {
@@ -101,42 +259,27 @@ const Sink = struct {
         sink.grown = true;
     }
 
-    fn part(sink: *Sink, p: *const Part) void {
-        switch (p.tag) {
-            .Text => sink.run(p.payload_text()),
-            .Value => {
-                const payload = &p.payload.value;
-                const ref = payload._0;
-                sink.run(ref);
-                const value = payload._1.asSlice();
-                const mode: Mode = @fromBackingInt(@intCast(ref >> mode_shift));
-                switch (mode) {
-                    .escaped => sink.escape(value),
-                    .raw => sink.raw(value),
-                    .upper => sink.cased(value, .upper, true),
-                    .lower => sink.cased(value, .lower, true),
-                    .upper_raw => sink.cased(value, .upper, false),
-                    .lower_raw => sink.cased(value, .lower, false),
-                    .url => sink.percent(value),
-                }
-            },
-            .Signed => {
-                const payload = &p.payload.signed;
-                sink.run(payload._0);
-                sink.reserve(20);
-                if (payload._1 < 0) {
-                    sink.buffer[sink.len] = '-';
-                    sink.len += 1;
-                }
-                sink.digits(@abs(payload._1));
-            },
-            .Unsigned => {
-                const payload = &p.payload.unsigned;
-                sink.run(payload._0);
-                sink.reserve(20);
-                sink.digits(payload._1);
-            },
+    /// A Str, written as its mode says.
+    fn string(sink: *Sink, bytes: []const u8, mode: Mode) void {
+        switch (mode) {
+            .escaped => sink.escape(bytes),
+            .raw => sink.raw(bytes),
+            .upper => sink.cased(bytes, .upper, true),
+            .lower => sink.cased(bytes, .lower, true),
+            .upper_raw => sink.cased(bytes, .upper, false),
+            .lower_raw => sink.cased(bytes, .lower, false),
+            .url => sink.percent(bytes),
+            _ => unreachable,
         }
+    }
+
+    inline fn number(sink: *Sink, n: Number) void {
+        sink.reserve(21);
+        if (n.negative) {
+            sink.buffer[sink.len] = '-';
+            sink.len += 1;
+        }
+        sink.digits(n.magnitude);
     }
 
     /// A static run: copied as 32-byte blocks (the text has slack after it).

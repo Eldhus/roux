@@ -117,6 +117,7 @@ pub fn generate(
     return rocstache.generate.generate(arena, io, .{
         .app = app.dir,
         .build = paths.out_path,
+        .roc = app.roc,
     }, stderr);
 }
 

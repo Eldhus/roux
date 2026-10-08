@@ -170,14 +170,13 @@ export fn hosted_stderr_line(line: abi.RocStr) callconv(.c) void {
     line.decref(host());
 }
 
-/// The templates' bytecode the build linked in (templates.zig).
-export fn hosted_templates_load() callconv(.c) templates.Code {
-    return templates.load(host());
-}
-
-/// A page's parts written out (templates.zig); the parts are released.
-export fn hosted_templates_bytes(parts: templates.Parts) callconv(.c) templates.Bytes {
-    return templates.bytes(parts, host());
+/// Template `index` rendered from its boxed contract (templates.zig). The
+/// box goes back to Roc as it came, which releases it.
+export fn hosted_template_render(
+    index: u64,
+    context: abi.RocBox,
+) callconv(.c) abi.HostTemplate_renderRetRecord {
+    return .{ .bytes = templates.render(index, context, host()), .context = context };
 }
 
 /// A whole line to a standard stream. Rare (logs), so a plain blocking

@@ -1,66 +1,79 @@
-//! A template compiled to the bytecode its generated Roc walkers run
-//! (DESIGN.md, Templates). The bytecode is data: an edit to a template's
-//! markup changes it and no Roc; the walkers depend only on the contract.
+//! A template compiled to the bytecode the host's renderer runs
+//! (DESIGN.md, Templates; host/templates.zig). The bytecode is data: an
+//! edit to a template's markup changes it and no Roc. Every read is a byte
+//! offset into a record, as Roc's compiler laid it out (layout.zig), so
+//! the renderer reads the app's record where it is, with no Roc between.
 //!
-//! A word is a `u64`: the op in the low 4 bits, a selector (16 bits: how
-//! many scopes up, 4 bits; the field's index in its record's fields sorted
-//! by name, 12 bits; 4095 is the scope itself), then the rest: a TEXT's
-//! run, a section's body length in words. A value's op is followed by the
-//! static run before it, one word, so text and value are one part
-//! (fused). A run is `offset * 65536 + length` into the app's text, which
-//! all templates share; a Str value's run has its mode in the top byte
-//! (escaped, raw, upper, lower, url), for the host: the walker hands the
-//! word on unread.
+//! A word is a `u64`: the op in the low 4 bits, then how many scopes up the
+//! read starts (4 bits), the byte offset from that scope (24 bits: a dotted
+//! path's records are inline, so `a.b.c` is one sum), and the rest (32
+//! bits). A value's op is followed by the static run before it, one word,
+//! so text and value are written together (fused). A run is `offset *
+//! 65536 + length` into the app's text, which all templates share; a Str
+//! value's run has its mode in the top byte (escaped, raw, upper, lower,
+//! url).
 //!
-//! | op | words | what |
-//! |---|---|---|
-//! | TEXT | 1 (the run in the rest) | a static run |
-//! | STR | 2 | a Str field |
-//! | NUM | 2 | an integer field |
-//! | SECTION len | 1 | a list's elements, a record, a Bool when true: the body in that scope |
-//! | INVERTED len | 1 | the body when the list is empty or the Bool false |
-//! | COND len | 1 | the body when the Bool is true, in the same scope |
-//! | LEN | 2 | a list's length |
-//! | PLURAL | 4 | a count, then the singular or plural noun's run |
-//! | CALL | 1 | a called partial, the field its context |
+//! | op | words | rest | what |
+//! |---|---|---|---|
+//! | TEXT | 1 | | a static run, in the bits above the op |
+//! | STR | 2 | | a Str |
+//! | INT | 2 | its type | an integer |
+//! | LEN | 2 | | a list's length |
+//! | PLURAL | 4 | the count's type | a count, then the singular or plural noun's run |
+//! | LIST | 2, body | body words | each element, the body in its scope; the element's size next |
+//! | RECORD | 1, body | body words | the body in the record's scope |
+//! | WHEN | 1, body | body words | a Bool's section: the body, when true, in a scope of its own |
+//! | COND | 1, body | body words | the body when the Bool is true, in the same scope |
+//! | UNLESS | 1, body | body words | the body when the Bool is false |
+//! | EMPTY | 1, body | body words | the body when the list is empty |
+//! | CALL | 1 | the template | a called partial, the record its context |
 //!
-//! The code starts with a header: the number of templates, then each
-//! one's `[start, end)` (by its index among the app's templates, sorted by
-//! name), so a template's Roc names only its index.
-//!
-//! The walkers are one per scope of the contract (a record, a list's
-//! element, a Bool a section opens), each given the scopes enclosing it in
-//! the contract: so `../` is counted in the contract, not in the template
-//! (the two differ when a section opens a sibling's field: `{{#a}}{{#../b}}`
-//! puts b's element under a in the template, under the root in the
-//! contract). A template reading a scope the contract does not enclose
-//! the current one in is refused.
+//! The scopes are the template's: each section opens one (a list's
+//! element, a record, a Bool), and `../` counts them, as the template
+//! does. The code starts with a header: the number of templates, then
+//! each one's `[start, end)` (by its index among the app's templates,
+//! sorted by name), so a template's Roc names only its index.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const parse = @import("parse.zig");
-const contract_ = @import("contract.zig");
-const Contract = contract_.Contract;
+const layout = @import("layout.zig");
+const Layouts = layout.Layouts;
 
-pub const Op = enum(u4) { text, str, num, section, inverted, cond, len, plural, call };
+pub const Op = enum(u4) {
+    text,
+    str,
+    int,
+    len,
+    plural,
+    list,
+    record,
+    when,
+    cond,
+    unless,
+    empty,
+    call,
+};
 pub const Mode = enum(u8) { escaped, raw, upper, lower, url, upper_raw, lower_raw };
+/// An integer's type, in an INT's or PLURAL's rest; `list` counts a list.
+pub const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list };
 
-pub const field_self = 4095;
 pub const run_bytes_max = 65535;
-pub const none = std.math.maxInt(u16);
-/// What the walkers divide by: the selector's place, the rest's.
-pub const selector_unit = 16;
-pub const rest_unit = 1048576;
 pub const mode_shift = 56;
+pub const offset_max = (1 << 24) - 1;
+pub const up_max = 15;
+/// A scope's type when it holds nothing (a contract of `{}`).
+pub const nothing = std.math.maxInt(u32);
 
-pub fn word(op: Op, selector_: u16, rest: u64) u64 {
-    assert(rest < (1 << 44));
-    return @as(u64, @backingInt(op)) + selector_unit * @as(u64, selector_) + rest_unit * rest;
+pub fn word(op: Op, up: u8, offset: u32, rest: u64) u64 {
+    assert(op != .text);
+    assert(up <= up_max and offset <= offset_max and rest < (1 << 32));
+    return @as(u64, @backingInt(op)) | @as(u64, up) << 4 | @as(u64, offset) << 8 | rest << 32;
 }
 
-pub fn selector(up: u8, field: u16) u16 {
-    assert(up < 16 and field <= field_self);
-    return @as(u16, up) * 4096 + field;
+fn text_word(run: u64) u64 {
+    assert(run < (1 << 56));
+    return @as(u64, @backingInt(Op.text)) | run << 8;
 }
 
 /// What compiles append to: the app's code and text.
@@ -89,7 +102,7 @@ pub const Builder = struct {
     fn take(builder: *Builder) error{OutOfMemory}!u64 {
         var bytes = builder.pending.items;
         while (bytes.len > run_bytes_max) {
-            try builder.emit(word(.text, 0, try builder.run(bytes[0..run_bytes_max])));
+            try builder.emit(text_word(try builder.run(bytes[0..run_bytes_max])));
             bytes = bytes[run_bytes_max..];
         }
         const ref = try builder.run(bytes);
@@ -101,14 +114,15 @@ pub const Builder = struct {
     fn flush(builder: *Builder) error{OutOfMemory}!void {
         if (builder.pending.items.len == 0) return;
         const ref = try builder.take();
-        try builder.emit(word(.text, 0, ref));
+        try builder.emit(text_word(ref));
     }
 };
 
 pub const Template = struct {
     name: []const u8,
     tree: *const parse.Tree,
-    contract: *const Contract,
+    /// Its contract's type in `layouts`, or `nothing`.
+    root: u32,
 };
 
 pub const Diagnostic = struct {
@@ -120,70 +134,11 @@ pub const Diagnostic = struct {
 
 pub const Error = error{ OutOfMemory, Invalid };
 
-/// Each type's enclosing scope in the contract: the record a field is in;
-/// a list's element's is the record the list is a field of. `none` for
-/// the root and for a type that is no scope's field.
-pub fn scope_parents(contract: *const Contract, parents: []u16) void {
-    assert(parents.len >= contract.types_len);
-    @memset(parents[0..contract.types_len], none);
-    for (contract.types[0..contract.types_len], 0..) |type_, index| {
-        if (type_.kind != .record) continue;
-        var at = type_.first;
-        while (at != none) : (at = contract.fields[at].next) {
-            const field = contract.fields[at];
-            parents[field.type] = @intCast(index);
-            const child = contract.get(field.type);
-            if (child.kind == .list) parents[child.element] = @intCast(index);
-        }
-    }
-}
-
-/// Whether a type is a scope a walker runs in: the root, a record field, a
-/// list's element, a Bool field (a section on it opens a scope).
-pub fn is_scope(contract: *const Contract, parents: []const u16, type_: u16) bool {
-    if (type_ == contract.root) return true;
-    if (parents[type_] == none) return false;
-    return switch (contract.get(type_).kind) {
-        .record, .bool => true,
-        .list => false,
-        .str, .unknown, .int, .other => is_element(contract, type_),
-    };
-}
-
-pub fn is_element(contract: *const Contract, type_: u16) bool {
-    for (contract.types[0..contract.types_len]) |t| {
-        if (t.kind == .list and t.element == type_) return true;
-    }
-    return false;
-}
-
-/// How many scopes up `target` is from `from` in the contract, or null
-/// when it does not enclose it.
-pub fn distance(parents: []const u16, from: u16, target: u16) ?u8 {
-    var at = from;
-    var up: u8 = 0;
-    while (up < 16) : (up += 1) {
-        if (at == target) return up;
-        if (parents[at] == none) return null;
-        at = parents[at];
-    }
-    return null;
-}
-
-/// A field's index among its record's fields sorted by name: what the
-/// walkers match on.
-pub fn field_index(contract: *const Contract, record: u16, name: []const u8) u16 {
-    var buffer: [contract_.fields_max]contract_.Field = undefined;
-    for (contract.sorted_fields(record, &buffer), 0..) |f, k| {
-        if (std.mem.eql(u8, f.name, name)) return @intCast(k);
-    }
-    unreachable; // the contract has it: it was checked
-}
-
 /// Compiles `templates[index]` (its inlined partials into it) and returns
 /// its code's `[start, end)` in the builder.
 pub fn compile(
     builder: *Builder,
+    layouts: *const Layouts,
     templates: []const Template,
     index: usize,
     diagnostic: *Diagnostic,
@@ -192,55 +147,57 @@ pub fn compile(
     const start = builder.code.items.len;
     var compiler: Compiler = .{
         .builder = builder,
+        .layouts = layouts,
         .templates = templates,
-        .contract = template.contract,
         .diagnostic = diagnostic,
         .template = template.name,
     };
-    scope_parents(template.contract, &compiler.parents);
     var scopes: Scopes = .{};
-    scopes = scopes.push(template.contract.root);
+    scopes = scopes.push(template.root);
     try compiler.range(template.tree, 0, template.tree.len, scopes, 0);
     try builder.flush();
     return .{ start, builder.code.items.len };
 }
 
 /// Every template's code after the header (which it fills in).
-pub fn program(builder: *Builder, templates: []const Template, diagnostic: *Diagnostic) Error!void {
+pub fn program(
+    builder: *Builder,
+    layouts: *const Layouts,
+    templates: []const Template,
+    diagnostic: *Diagnostic,
+) Error!void {
     assert(builder.code.items.len == 0);
     try builder.emit(templates.len);
     try builder.code.appendNTimes(builder.gpa, 0, 2 * templates.len);
     for (0..templates.len) |index| {
-        const start, const end = try compile(builder, templates, index, diagnostic);
+        const start, const end = try compile(builder, layouts, templates, index, diagnostic);
         builder.code.items[1 + 2 * index] = start;
         builder.code.items[2 + 2 * index] = end;
     }
 }
 
-/// The template's open scopes, innermost last: their types in the contract.
+/// The template's open scopes, innermost last: their types in the layouts.
 const Scopes = struct {
-    types: [parse.depth_max + parse.path_max + 1]u16 = undefined,
+    types: [parse.depth_max * (layout_partials + 1) + 1]u32 = undefined,
     len: u8 = 0,
 
-    fn push(scopes: Scopes, type_: u16) Scopes {
+    const layout_partials = @import("contract.zig").partial_depth_max;
+
+    fn push(scopes: Scopes, type_: u32) Scopes {
+        assert(scopes.len < scopes.types.len);
         var result = scopes;
         result.types[result.len] = type_;
         result.len += 1;
         return result;
     }
-
-    fn innermost(scopes: Scopes) u16 {
-        return scopes.types[scopes.len - 1];
-    }
 };
 
 const Compiler = struct {
     builder: *Builder,
+    layouts: *const Layouts,
     templates: []const Template,
-    contract: *const Contract,
     diagnostic: *Diagnostic,
     template: []const u8,
-    parents: [contract_.types_max]u16 = undefined,
 
     fn fail(compiler: *Compiler, node: *const parse.Node, message: []const u8) Error {
         compiler.diagnostic.* = .{
@@ -272,78 +229,61 @@ const Compiler = struct {
         }
     }
 
-    /// Where a node's path leads: the scope it reads from (as a selector's
-    /// `up`, counted in the contract), and its last field. A dotted path's
-    /// records are opened as sections (the walker's scope moves) but are
-    /// no scopes of the template's (`../` does not count them).
-    const Target = struct {
-        selector: u16,
-        type_: u16,
-        /// The SECTION words opened for the records, to close.
-        opened: [parse.path_max]usize = undefined,
-        opened_len: u8 = 0,
-    };
+    /// Where a node's path leads: how many scopes up it starts, the byte
+    /// offset from there (a dotted path's records are inline: the sum of
+    /// its fields' offsets), and the type it reaches.
+    const Target = struct { up: u8, offset: u32, type_: u32 };
 
     fn target(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!Target {
         assert(node.up < scopes.len);
-        const reads = scopes.types[scopes.len - 1 - node.up];
-        const up = distance(&compiler.parents, scopes.innermost(), reads) orelse
-            return compiler.fail(node, "reads a scope the contract does not hold this one " ++
-                "in (the walkers follow the contract)");
-        const path = node.path_slice();
-        if (path.len == 0) return .{ .selector = selector(up, field_self), .type_ = reads };
-        var result: Target = .{ .selector = 0, .type_ = reads };
-        var owner = reads;
-        var owner_up = up;
-        // `a.b.c`: a and b opened as record sections, c read in b.
-        for (path[0 .. path.len - 1]) |name| {
-            const b = compiler.builder;
-            try b.flush();
-            result.opened[result.opened_len] = b.code.items.len;
-            result.opened_len += 1;
-            const record = compiler.contract.field(owner, name).?;
-            const index = field_index(compiler.contract, owner, name);
-            try b.emit(word(.section, selector(owner_up, index), 0));
-            owner = record;
-            owner_up = 0;
+        if (node.up > up_max) return compiler.fail(node, "reads more than 15 scopes up");
+        var result: Target = .{
+            .up = node.up,
+            .offset = 0,
+            .type_ = scopes.types[scopes.len - 1 - node.up],
+        };
+        const empty = "reads a scope that holds nothing";
+        for (node.path_slice()) |name| {
+            if (result.type_ == nothing) return compiler.fail(node, empty);
+            const field = compiler.layouts.field(result.type_, name) orelse
+                return compiler.fail(node, "is not in the contract's layout (roc glue's)");
+            result.offset += field.offset;
+            result.type_ = field.type;
         }
-        const last = path[path.len - 1];
-        result.selector = selector(owner_up, field_index(compiler.contract, owner, last));
-        result.type_ = compiler.contract.field(owner, last).?;
+        if (result.offset > offset_max) return compiler.fail(node, "is 16 MiB into its record");
+        if (result.type_ == nothing) return compiler.fail(node, empty);
         return result;
     }
 
-    /// The record sections a dotted path opened, closed (their lengths).
-    fn close(compiler: *Compiler, t: Target) Error!void {
-        const b = compiler.builder;
-        try b.flush();
-        var k = t.opened_len;
-        while (k > 0) {
-            k -= 1;
-            const at = t.opened[k];
-            b.code.items[at] += rest_unit * (b.code.items.len - at - 1);
-        }
+    fn kind(compiler: *Compiler, t: Target) layout.Kind {
+        return compiler.layouts.get(t.type_).kind;
     }
 
     fn value(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!void {
         const b = compiler.builder;
         const t = try compiler.target(node, scopes);
-        const kind = compiler.contract.get(t.type_).kind;
         const pipes = node.pipe_slice();
         const text = try b.take();
         if (pipes.len > 0 and pipes[pipes.len - 1].formatter == .plural) {
+            const count = int_of(compiler.kind(t)) orelse
+                return compiler.fail(node, "counts neither an integer nor a list");
             const nouns = pipes[pipes.len - 1].args;
-            try b.emit(word(.plural, t.selector, 0));
+            try b.emit(word(.plural, t.up, t.offset, @backingInt(count)));
             try b.emit(text);
             try b.emit(try b.run(try noun(b.gpa, nouns[0], node.escape)));
             try b.emit(try b.run(try noun(b.gpa, nouns[1], node.escape)));
         } else if (pipes.len > 0 and pipes[0].formatter == .len) {
-            try b.emit(word(.len, t.selector, 0));
+            if (compiler.kind(t) != .list) return compiler.fail(node, "is not a list");
+            try b.emit(word(.len, t.up, t.offset, 0));
             try b.emit(text);
-        } else if (kind == .int) {
-            try b.emit(word(.num, t.selector, 0));
+        } else if (int_of(compiler.kind(t))) |int| {
+            if (int == .list) return compiler.fail(node, "is a list: write it with a section");
+            try b.emit(word(.int, t.up, t.offset, @backingInt(int)));
             try b.emit(text);
         } else {
+            if (compiler.kind(t) != .str) {
+                return compiler.fail(node, "is neither a Str nor an integer");
+            }
             const mode: Mode = if (pipes.len == 0)
                 (if (node.escape) .escaped else .raw)
             else switch (pipes[0].formatter) {
@@ -352,10 +292,9 @@ const Compiler = struct {
                 .url => .url,
                 .len, .plural => unreachable,
             };
-            try b.emit(word(.str, t.selector, 0));
+            try b.emit(word(.str, t.up, t.offset, 0));
             try b.emit(text + (@as(u64, @backingInt(mode)) << mode_shift));
         }
-        try compiler.close(t);
     }
 
     fn section(
@@ -369,23 +308,39 @@ const Compiler = struct {
         const node = &tree.nodes[index];
         try b.flush();
         const t = try compiler.target(node, scopes);
-        const type_ = compiler.contract.get(t.type_);
+        const type_ = compiler.layouts.get(t.type_);
         const op: Op = switch (node.kind) {
-            .section => .section,
-            .inverted => .inverted,
-            .conditional => .cond,
+            .section => switch (type_.kind) {
+                .list => .list,
+                .record => .record,
+                .bool => .when,
+                else => return compiler.fail(node, "opens neither a list, a record nor a Bool"),
+            },
+            .inverted => switch (type_.kind) {
+                .list => .empty,
+                .bool => .unless,
+                else => return compiler.fail(node, "is neither a list nor a Bool"),
+            },
+            .conditional => switch (type_.kind) {
+                .bool => .cond,
+                else => return compiler.fail(node, "is not a Bool"),
+            },
             else => unreachable,
         };
         const at = b.code.items.len;
         try b.emit(0); // the op, once the body's length is known
+        if (op == .list) try b.emit(compiler.layouts.get(type_.element).size);
+        const head = b.code.items.len - at;
         const inner = switch (op) {
-            .section => scopes.push(if (type_.kind == .list) type_.element else t.type_),
+            .list => scopes.push(type_.element),
+            .record, .when => scopes.push(t.type_),
             else => scopes,
         };
         try compiler.range(tree, index + 1, node.end, inner, depth);
         try b.flush();
-        b.code.items[at] = word(op, t.selector, b.code.items.len - at - 1);
-        try compiler.close(t);
+        const body = b.code.items.len - at - head;
+        if (body >= (1 << 32)) return compiler.fail(node, "has a body past 2^32 words");
+        b.code.items[at] = word(op, t.up, t.offset, body);
     }
 
     fn partial(
@@ -401,16 +356,31 @@ const Compiler = struct {
         } else unreachable; // the contract found it
         if (node.called()) {
             const t = try compiler.target(node, scopes);
+            if (compiler.kind(t) != .record) return compiler.fail(node, "is not a record");
             try compiler.builder.flush();
-            try compiler.builder.emit(word(.call, t.selector, 0));
-            try compiler.close(t);
+            try compiler.builder.emit(word(.call, t.up, t.offset, called));
             return;
         }
-        assert(depth < contract_.partial_depth_max);
+        assert(depth < Scopes.layout_partials);
         const included = compiler.templates[called];
         try compiler.range(included.tree, 0, included.tree.len, scopes, depth + 1);
     }
 };
+
+fn int_of(kind: layout.Kind) ?Int {
+    return switch (kind) {
+        .u8 => .u8,
+        .u16 => .u16,
+        .u32 => .u32,
+        .u64 => .u64,
+        .i8 => .i8,
+        .i16 => .i16,
+        .i32 => .i32,
+        .i64 => .i64,
+        .list => .list,
+        .other, .record, .str, .bool => null,
+    };
+}
 
 /// A plural's noun: a space, then the noun, HTML-escaped when the tag
 /// escapes (it is static, so it is escaped here).
