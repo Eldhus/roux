@@ -54,6 +54,27 @@ Each step's cost, on the laptop (nightly-2026-10-04-130536d, Zig 0.17.0):
 | `roc build --opt=speed`, the site | 83-94 s, changed or not | same |
 | the app restarted (two shards) | tens of ms | roux dev |
 
+## Markup as data (branch `templates-vm`, 2026-10-08)
+
+The second experiment compiles templates to bytecode that generated Roc
+walkers run (roux's DESIGN.md on that branch). For the loop its lesson is
+that **markup need not be compiled at all**: roux regenerates the whole
+program of every template (~10 ms on the site) and writes it as an ELF
+object itself, so a markup edit is generation, the link and a restart.
+
+| edit, on a copy of the site | save to new page | roux dev's pass |
+|---|---|---|
+| a page's markup (AboutPage) | 110-140 ms | 51-92 ms |
+| a called partial in eight pages (Top) | 110-154 ms | same |
+| Roc (`main.roc`) | 1.95-2.06 s | ~1.9-2.0 s |
+
+What is left of a markup edit: the 30 ms quiet period, the link (40-80
+ms) and the restart. Next for the loop on that design: no link and no
+restart at all, the dev host re-reading the bytecode object when it
+changes (the program is data; `Rocstache.load!` would read it per
+request in dev); and Roc edits cost more (the walkers are Roc: 15,000
+lines on the site), so a contract change's roc is the slow path now.
+
 ## Kinds of edit
 
 Each takes its own path; content hashes decide (never mtimes or event
