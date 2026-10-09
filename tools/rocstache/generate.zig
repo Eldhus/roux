@@ -265,9 +265,14 @@ fn glue(
     try layout.write_platform(contracts, &platform.writer);
     var declared: Io.Writer.Allocating = .init(gpa);
     try layout.write_contracts(contracts, &declared.writer);
-    _ = try write_if_changed(gpa, io, build, "glue/Layout.roc", layout.spec);
+    // The layouts are the compiler's: a new spec or another roc (a nightly
+    // bump; its path names it) lays them out again, as a contract does.
+    const spec_changed = try write_if_changed(gpa, io, build, "glue/Layout.roc", layout.spec);
+    const roc_changed = try write_if_changed(gpa, io, build, "glue/roc", options.roc);
     _ = try write_if_changed(gpa, io, build, "glue/main.roc", platform.written());
-    const changed = try write_if_changed(gpa, io, build, "glue/Contracts.roc", declared.written());
+    const contracts_changed =
+        try write_if_changed(gpa, io, build, "glue/Contracts.roc", declared.written());
+    const changed = spec_changed or roc_changed or contracts_changed;
     const zon = "glue/layouts.zon";
     const present = if (build.access(io, zon, .{})) true else |_| false;
     if (changed or !present) {

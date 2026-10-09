@@ -1278,3 +1278,22 @@ The site copy: generated Roc 410 lines (was ~15,000); release build
 39 s (78; comptime 50). `roux dev`: cold start 1.3-2.2 s (5.4-5.6),
 warm 1.0 s (1.9-2.1); a page's markup 88-111 ms save to page, Top's
 91-110 ms (110-154); main.roc 1.16-1.20 s (2.0; comptime 1.3).
+
+## 2026-10-08: the glue cache bug filed; nightly-2026-10-06 on this branch
+
+The glue cache: reduced to two seven-line specs from an empty cache,
+the second run writing the first's file; the same on the newest nightly
+and on upstream main 5e44ba38 (built here). Every spec that had crashed
+ran under `--no-cache` at both opt levels: one bug, not two. Filed
+roc-lang/roc#12139 (repro in ~/devel/rocbugs/glue-cache-ignores-spec).
+
+The nightly chore, on this branch only (the owner: tonight's race runs
+`main` untouched): `.roc-version` c34079d (installed copy checked
+against the release's sha256); ZigGlue.roc and the musl files
+unchanged at c34079d; the host's glue regenerated, which only quotes
+identifiers now (`.@"Ok"`). Found and fixed while at it: roux build
+kept the old compiler's `layouts.zon`, since no contract changed; the
+roc path (and the spec) now count as glue's inputs, so a bump lays the
+contracts out again (once, ~0.25 s). Checked: `zig build test`; both
+examples, the race's Menu, and the site copy's 12 pages and patches
+byte for byte as before; the site's release build 38 s.

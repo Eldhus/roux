@@ -228,7 +228,7 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
 }
 
 /// The pinned Roc nightly's `roc`: `.roc-version` names it
-/// (`nightly-2026-10-04-130536d`), installed under
+/// (`nightly-2026-10-06-c34079d`), installed under
 /// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 fn roc_path(b: *std.Build) []const u8 {
     const pin_path = b.root.joinString(b.allocator, ".roc-version") catch @panic("OOM");

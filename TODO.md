@@ -196,12 +196,19 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   (it moves `.roc-version` and fourneau-dragrace's pin together, refreshes
   the vendored Roc docs, re-checks the gotchas); regenerate the glue (next
   chore), build the platform and the examples, note it in the diary.
-  - Last done: 2026-10-04 (nightly-2026-10-04-130536d).
+  - Last done: 2026-10-08 on this branch only (nightly-2026-10-06-c34079d,
+    with fourneau-dragrace's `templates-vm` pin). `main`, fourneau-dragrace
+    `main` and the skill's vendored Roc docs (which follow `main`'s pin)
+    stay on 130536d until the branch merges: the nightly races `main`
+    (owner, 2026-10-08: tonight's race runs untouched). The gotchas' and
+    the known issues' re-check goes with that.
 - **Roc glue**, with each nightly: regenerate `host/roc_platform_abi.zig`
-  with `roc glue` and the matching `ZigGlue.roc` from the roc repository at
-  the nightly's commit; build and run the examples.
-  - Last done: 2026-10-06 (new hosted function and config field; the
-    spec from roc-lang/roc 130536d, src/glue/src/ZigGlue.roc).
+  with `roc glue --no-cache` (roc-lang/roc#12139) and the matching
+  `ZigGlue.roc` from the roc repository at the nightly's commit; build and
+  run the examples. roux build lays the contracts out again by itself
+  when `roc` changes.
+  - Last done: 2026-10-08 (c34079d: the spec unchanged, the glue only
+    quotes its identifiers now).
 - **Vendored sources**, monthly and when a security release appears:
   `vendor/sqlite/` (sqlite.org/changes.html) once vendored.
   - Last done: never (not vendored yet).
