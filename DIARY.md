@@ -1599,3 +1599,16 @@ variants do. Tried on scratch copies (the probe app, a scratch platform):
   whatever the app sends. The cost: every page module imports Pages,
   which changes with any template's contract, so a contract change
   touches every page module (the hub, moved from main to the pages).
+- The bare tag still compiles there (`Server.page(Menu(ctx))`), and the
+  owner asked whether anyone would write it by accident: yes (the LSP's
+  hover shows the union's tags, completion offers `Menu`, tests reach for
+  `Ok(Menu({ … }))`). Caught at compile time by having `Server.page`
+  take `{ layouts : U64, page : p }`, which only the generated `X.page`
+  builds (`{ layouts: Pages.layouts, page: Menu(ctx) }`): the bare tag is
+  "This argument has the type: [Menu(Menu.Ctx)] But the function needs
+  the first argument to be: { layouts: U64, page: p }" on its line; the
+  `Menu.page` app checks clean (type level only, the scratch platform).
+  The `layouts` field would also let the host refuse a page made for
+  other layouts (a stale build) with a 500, at a comparison a page: not
+  built. Building the record by hand with a subset union stays possible,
+  on purpose only.
