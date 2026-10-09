@@ -7,6 +7,7 @@ test {
     _ = @import("contract.zig");
     _ = @import("declared.zig");
     _ = @import("layout.zig");
+    _ = @import("cache.zig");
     _ = @import("bytecode.zig");
     _ = @import("roc.zig");
     _ = @import("elf.zig");

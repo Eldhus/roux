@@ -76,15 +76,30 @@ fn text_word(run: u64) u64 {
     return @as(u64, @backingInt(Op.text)) | run << 8;
 }
 
-/// What compiles append to: the app's code and text.
+/// A word holding a run, which moves when its template's text is placed
+/// after others' (`assemble`): where it is, and how far up the run sits
+/// in it (8 in a TEXT word, 0 in a run word).
+pub const Run = struct { at: u32, shift: u6 };
+
+/// One template compiled alone: its code, its own text (runs count from
+/// its start), and the words holding runs. Templates compile apart, so a
+/// caller can keep each and recompile only the edited ones.
+pub const Chunk = struct {
+    code: []const u64,
+    text: []const u8,
+    runs: []const Run,
+};
+
+/// What a compile appends to: a template's code and text.
 pub const Builder = struct {
     gpa: std.mem.Allocator,
     code: std.ArrayList(u64) = .empty,
     text: std.ArrayList(u8) = .empty,
+    runs: std.ArrayList(Run) = .empty,
     /// The static text not yet given to a part.
     pending: std.ArrayList(u8) = .empty,
 
-    /// A run of the app's text holding `bytes` (appended).
+    /// A run of the text holding `bytes` (appended).
     fn run(builder: *Builder, bytes: []const u8) error{OutOfMemory}!u64 {
         assert(bytes.len <= run_bytes_max);
         if (bytes.len == 0) return 0;
@@ -97,12 +112,19 @@ pub const Builder = struct {
         try builder.code.append(builder.gpa, value);
     }
 
+    /// A word holding a run (`shift` bits up), noted so it can move.
+    fn emit_run(builder: *Builder, value: u64, shift: u6) error{OutOfMemory}!void {
+        const at: u32 = @intCast(builder.code.items.len);
+        try builder.runs.append(builder.gpa, .{ .at = at, .shift = shift });
+        try builder.emit(value);
+    }
+
     /// The pending text, as one run for the next part (long text: TEXT ops
     /// for all but its last 64 KiB).
     fn take(builder: *Builder) error{OutOfMemory}!u64 {
         var bytes = builder.pending.items;
         while (bytes.len > run_bytes_max) {
-            try builder.emit(text_word(try builder.run(bytes[0..run_bytes_max])));
+            try builder.emit_run(text_word(try builder.run(bytes[0..run_bytes_max])), 8);
             bytes = bytes[run_bytes_max..];
         }
         const ref = try builder.run(bytes);
@@ -114,7 +136,7 @@ pub const Builder = struct {
     fn flush(builder: *Builder) error{OutOfMemory}!void {
         if (builder.pending.items.len == 0) return;
         const ref = try builder.take();
-        try builder.emit(text_word(ref));
+        try builder.emit_run(text_word(ref), 8);
     }
 };
 
@@ -134,19 +156,26 @@ pub const Diagnostic = struct {
 
 pub const Error = error{ OutOfMemory, Invalid };
 
-/// Compiles `templates[index]` (its inlined partials into it) and returns
-/// its code's `[start, end)` in the builder.
+/// Compiles `templates[index]` (its inlined partials into it) alone, in
+/// `gpa`'s memory.
 pub fn compile(
-    builder: *Builder,
+    gpa: std.mem.Allocator,
     layouts: *const Layouts,
     templates: []const Template,
     index: usize,
     diagnostic: *Diagnostic,
-) Error![2]usize {
+) Error!Chunk {
     const template = templates[index];
-    const start = builder.code.items.len;
+    var builder: Builder = .{ .gpa = gpa };
+    errdefer {
+        builder.code.deinit(gpa);
+        builder.text.deinit(gpa);
+        builder.runs.deinit(gpa);
+        builder.pending.deinit(gpa);
+    }
+
     var compiler: Compiler = .{
-        .builder = builder,
+        .builder = &builder,
         .layouts = layouts,
         .templates = templates,
         .diagnostic = diagnostic,
@@ -156,24 +185,44 @@ pub fn compile(
     scopes = scopes.push(template.root);
     try compiler.range(template.tree, 0, template.tree.len, scopes, 0);
     try builder.flush();
-    return .{ start, builder.code.items.len };
+    builder.pending.deinit(gpa);
+    return .{
+        .code = try builder.code.toOwnedSlice(gpa),
+        .text = try builder.text.toOwnedSlice(gpa),
+        .runs = try builder.runs.toOwnedSlice(gpa),
+    };
 }
 
-/// Every template's code after the header (which it fills in).
-pub fn program(
-    builder: *Builder,
-    layouts: *const Layouts,
-    templates: []const Template,
-    diagnostic: *Diagnostic,
-) Error!void {
-    assert(builder.code.items.len == 0);
-    try builder.emit(templates.len);
-    try builder.code.appendNTimes(builder.gpa, 0, 2 * templates.len);
-    for (0..templates.len) |index| {
-        const start, const end = try compile(builder, layouts, templates, index, diagnostic);
-        builder.code.items[1 + 2 * index] = start;
-        builder.code.items[2 + 2 * index] = end;
+pub const Program = struct { code: []const u64, text: []const u8 };
+
+/// The app's program from its templates' chunks: the header (each
+/// template's `[start, end)`), then each chunk's code, its runs moved past
+/// the text placed before it.
+pub fn assemble(gpa: std.mem.Allocator, chunks: []const Chunk) error{OutOfMemory}!Program {
+    var code_len: usize = 1 + 2 * chunks.len;
+    var text_len: usize = 0;
+    for (chunks) |chunk| {
+        code_len += chunk.code.len;
+        text_len += chunk.text.len;
     }
+    const code = try gpa.alloc(u64, code_len);
+    const text = try gpa.alloc(u8, text_len);
+    code[0] = chunks.len;
+    var code_at: usize = 1 + 2 * chunks.len;
+    var text_at: usize = 0;
+    for (chunks, 0..) |chunk, index| {
+        code[1 + 2 * index] = code_at;
+        code[2 + 2 * index] = code_at + chunk.code.len;
+        const placed = code[code_at..][0..chunk.code.len];
+        @memcpy(placed, chunk.code);
+        @memcpy(text[text_at..][0..chunk.text.len], chunk.text);
+        const moved = @as(u64, text_at) * 65536;
+        for (chunk.runs) |r| placed[r.at] += moved << r.shift;
+        code_at += chunk.code.len;
+        text_at += chunk.text.len;
+    }
+    assert(code_at == code_len and text_at == text_len);
+    return .{ .code = code, .text = text };
 }
 
 /// The template's open scopes, innermost last: their types in the layouts.
@@ -269,17 +318,20 @@ const Compiler = struct {
                 return compiler.fail(node, "counts neither an integer nor a list");
             const nouns = pipes[pipes.len - 1].args;
             try b.emit(word(.plural, t.up, t.offset, @backingInt(count)));
-            try b.emit(text);
-            try b.emit(try b.run(try noun(b.gpa, nouns[0], node.escape)));
-            try b.emit(try b.run(try noun(b.gpa, nouns[1], node.escape)));
+            try b.emit_run(text, 0);
+            for (nouns[0..2]) |bytes| {
+                const written = try noun(b.gpa, bytes, node.escape);
+                defer b.gpa.free(written);
+                try b.emit_run(try b.run(written), 0);
+            }
         } else if (pipes.len > 0 and pipes[0].formatter == .len) {
             if (compiler.kind(t) != .list) return compiler.fail(node, "is not a list");
             try b.emit(word(.len, t.up, t.offset, 0));
-            try b.emit(text);
+            try b.emit_run(text, 0);
         } else if (int_of(compiler.kind(t))) |int| {
             if (int == .list) return compiler.fail(node, "is a list: write it with a section");
             try b.emit(word(.int, t.up, t.offset, @backingInt(int)));
-            try b.emit(text);
+            try b.emit_run(text, 0);
         } else {
             if (compiler.kind(t) != .str) {
                 return compiler.fail(node, "is neither a Str nor an integer");
@@ -293,7 +345,7 @@ const Compiler = struct {
                 .len, .plural => unreachable,
             };
             try b.emit(word(.str, t.up, t.offset, 0));
-            try b.emit(text + (@as(u64, @backingInt(mode)) << mode_shift));
+            try b.emit_run(text + (@as(u64, @backingInt(mode)) << mode_shift), 0);
         }
     }
 
@@ -383,13 +435,14 @@ fn int_of(kind: layout.Kind) ?Int {
 }
 
 /// A plural's noun: a space, then the noun, HTML-escaped when the tag
-/// escapes (it is static, so it is escaped here).
+/// escapes (it is static, so it is escaped here). The caller frees it.
 fn noun(gpa: std.mem.Allocator, bytes: []const u8, escape: bool) error{OutOfMemory}![]const u8 {
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
     try out.append(gpa, ' ');
     if (!escape) {
         try out.appendSlice(gpa, bytes);
-        return out.items;
+        return out.toOwnedSlice(gpa);
     }
     for (bytes) |c| switch (c) {
         '&' => try out.appendSlice(gpa, "&amp;"),
@@ -399,5 +452,29 @@ fn noun(gpa: std.mem.Allocator, bytes: []const u8, escape: bool) error{OutOfMemo
         '\'' => try out.appendSlice(gpa, "&#39;"),
         else => try out.append(gpa, c),
     };
-    return out.items;
+    return out.toOwnedSlice(gpa);
+}
+
+test "bytecode: assembled chunks, their runs moved past the text before them" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const run_a = 0 * 65536 + 3; // "abc"
+    const run_b = 0 * 65536 + 2; // "de", in its own text
+    const str_word = word(.str, 0, 8, 0);
+    const chunks = [_]Chunk{
+        .{ .code = &.{text_word(run_a)}, .text = "abc", .runs = &.{.{ .at = 0, .shift = 8 }} },
+        .{
+            .code = &.{ str_word, run_b + (@as(u64, 2) << mode_shift) },
+            .text = "de",
+            .runs = &.{.{ .at = 1, .shift = 0 }},
+        },
+    };
+    const program = try assemble(arena.allocator(), &chunks);
+    try std.testing.expectEqualStrings("abcde", program.text);
+    // The header: two templates, [5, 6) and [6, 8).
+    try std.testing.expectEqualSlices(u64, &.{ 2, 5, 6, 6, 8 }, program.code[0..5]);
+    try std.testing.expectEqual(text_word(run_a), program.code[5]);
+    try std.testing.expectEqual(str_word, program.code[6]);
+    // "de" now starts at 3; its mode, in the top byte, untouched.
+    try std.testing.expectEqual(3 * 65536 + 2 + (@as(u64, 2) << mode_shift), program.code[7]);
 }
