@@ -1483,3 +1483,27 @@ watched with all it holds (`add_tree`, the one walk startup uses too;
 hashes again. Checked on examples/templates: `mkdir newdir`, then
 `newdir/X.roc`: build 2 (roc); `mkdir -p deep/er`, then
 `deep/er/Y.roc`: build 3. The old binary, the same steps: build 1 only.
+
+## 2026-10-09: the compiler and the VM, tested together
+
+Nothing ran the VM over bytecode the compiler made but the examples'
+pages. host/templates_test.zig (its own test root, with the `rocstache`
+module, which now exports the parser, the bytecode compiler and the
+layouts) makes 3,000 templates from seeds over a contract laid out by
+hand from Zig `extern struct`s whose fields are the ABI's own `RocStr`
+and `RocList`: Str, U32 and I64 leaves, a list of records holding a
+list, a nested record (dotted paths), Bool sections (`#`, `^`, `?`),
+`../` up to the root, every formatter (`len`, `plural`, `upper`,
+`lower`, `url`), escaped and raw, and a partial both inlined and called
+(`Badge`). Each is compiled and assembled as roux build does, run by the
+VM's `render_from` over four random records (strings inline and on the
+heap, with every special byte), and compared with an oracle written
+there: a walk of the parse tree over the Zig values, sharing no code
+with the compiler or the VM. 12,000 renders pass. It fails at once on a
+bug planted in each: the VM dropping a number's sign (the first seed),
+the compiler swapping the plural's nouns (seed 1). On the way, the
+generator's own bug (a called partial's field without its `../`) was
+found by the compiler's refusal, which names the field.
+
+The seeds come from fourneau's `prng` (tidy refuses the standard
+library's), which the `fourneau` module now exports (fourneau, same day).

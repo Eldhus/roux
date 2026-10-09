@@ -20,9 +20,17 @@ test {
 const trees = [_]tidy.Tree{
     .{
         .dir = "host",
-        .roots = &.{ "tests.zig", "host.zig", "pad_archive.zig", "floor.zig" },
+        // templates_test.zig: its own test root, with the compiler imported.
+        .roots = &.{
+            "tests.zig",
+            "templates_test.zig",
+            "host.zig",
+            "pad_archive.zig",
+            "floor.zig",
+        },
         .untested = &.{
             "tests.zig",
+            "templates_test.zig",
             "host.zig",
             "pad_archive.zig",
             "roc_platform_abi.zig",
@@ -30,8 +38,9 @@ const trees = [_]tidy.Tree{
         },
         .generated = &.{"roc_platform_abi.zig"},
         // host.zig: the Roc ABI, extern symbols and opaque boxes;
-        // database.zig: SQLite's progress handler, a C callback.
-        .interfaces = &.{ "host.zig", "database.zig" },
+        // database.zig: SQLite's progress handler, a C callback;
+        // templates_test.zig: a RocHost's allocator, the Roc ABI's.
+        .interfaces = &.{ "host.zig", "database.zig", "templates_test.zig" },
     },
     .{
         .dir = "sqlite",
