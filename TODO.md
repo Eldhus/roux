@@ -87,9 +87,9 @@
      runs `main` as it is, to see the runner work; the merge tomorrow,
      2026-10-09, with the nightly and the skill's vendored docs, and the
      site on fourneau-dragrace's branch).
-   - Todo: a markup edit reloads the whole page (`location.reload()`):
-     scroll and focus are lost, as with any reload. Swapping the body in
-     place (a morph) would keep them. (2026-10-08)
+   - Decided (owner, 2026-10-08): a markup edit reloads the whole page
+     (`location.reload()`); no morphing the page in place ("i dont wannt
+     messs with morhphdin"). Scroll and focus are lost, as with any reload.
 
 
 ## Plan
