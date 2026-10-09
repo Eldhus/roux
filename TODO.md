@@ -282,8 +282,8 @@ worth it first:
 - Not worth doing, measured: the render is not where a request goes. The
   host VM is 510 instructions a request behind comptime (15,595 against
   15,085) on a page whose request is all HTTP and Roc around it; the
-  page's copy from the shard's buffer into Roc's list is a few hundred
-  bytes. Release builds are roc's `--opt=speed` (glue 0 ms when warm);
+  page's copy from the shard's buffer into Roc's list is one memcpy of
+  the page (its share not measured). Release builds are roc's `--opt=speed` (glue 0 ms when warm);
   a markup edit is 1.39 ms. Superinstructions or writing straight into
   Roc's list would win under 1% for real complexity.
 
