@@ -214,6 +214,79 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+From the adversarial pass over the templates' dev and prod flow
+(2026-10-09, owner: "take a serious adversarial pass ... be crazy cracked
+and check everything"). Checked and holding: a 300 KB page (runs split
+past 64 KiB, the heap growth past the shard's 256 KiB) byte for byte the
+same over three requests and between `--dev` and release builds; cycles,
+missing partials, nesting past 16, unclosed sections, bad names all
+refused naming the template's line; the hazard-pointer swap. Found, most
+worth it first:
+
+- [ ] Bug: a field named a Roc keyword (`{{ if }}`, inferred) passes
+  roux's checks and fails in glue as a Roc syntax error in the
+  throwaway `Contracts.roc`, against DESIGN's "never a Roc type error".
+  parse.zig's `is_field_name` refuses Roc's keywords (the list from the
+  roc skill's vendored langref), naming the line. Same for a declared
+  `Ctx`'s fields (declared.zig).
+- [ ] Bug, a small window: `roux dev` sends SIGUSR1 to an app that may not
+  have reached `start_dev` yet, whose default action kills it. roux dev
+  ignores SIGUSR1 itself (SIG_IGN survives exec, a handler does not), so
+  the child is born ignoring it until the host's handler goes in; an edit
+  in that window is not lost (`reload_from` reads the file at start).
+- [ ] Elegance: `Page.roc` names its template by its index in the
+  alphabet, so adding `About.rocstache` rewrites every later template's
+  module (a roc build of all, and git churn in modules whose type did not
+  change: against DESIGN's "its history in git is the history of the
+  template's type"). Name a template by a hash of its name instead; the
+  program's header maps it to the code (built at assembly, a sorted table
+  or a perfect hash; one lookup a render, to measure). The
+  `TemplatesChanged` refusal then follows from an unknown id.
+- [ ] Faster contract edits: glue (~0.3-0.6 s) and roc both start from
+  the written modules and contracts, and neither needs the other, yet
+  they run in turn. Run them together, then compile the bytecode and
+  link: a contract edit in `roux dev`, and a cold `roux build`, shorter by
+  glue's time. Measure before and after.
+- [ ] Simpler: generate.zig keeps two keys for the layouts, `laid_key`
+  (from the contracts' source-based keys, so it moves on every markup
+  edit) and the identity `id` (from `Contracts.roc`'s text, the spec,
+  the roc, the names). Writing `Contracts.roc` is microseconds: key on
+  `id` alone, drop `laid_key` and `laid_id`.
+- [ ] Test: nothing runs the VM over bytecode the compiler made, except
+  the examples' pages. A deterministic test in `zig build test`: random
+  templates (a seed, bounded) over a hand-laid `Layouts` matching a Zig
+  `extern struct`, rendered by the VM and by a plain walk of the parse
+  tree in the test, the bytes compared. (The layouts are hand-laid only
+  in the test; the app's are always glue's.)
+- [ ] Minor: `swap_in` can set `loaded` backwards (a thread waiting with
+  an older `want` rereads after a newer swap), costing one more read of
+  the file. Compare as wrapping counters: skip when `loaded` is at or
+  past `want`.
+- [ ] Minor: in development every `text/html` answer gets the reload
+  script, an HTML fragment too (a Datastar fragment sent as `text/html`
+  would open one more EventSource per patch). The site sends patches as
+  SSE today, so nothing breaks yet.
+- [ ] Minor: `roux dev` watches the directories that existed at its
+  start; a directory made later is not watched, and a `.rocstache` in a
+  subdirectory starts a pass that generation (the app's directory only)
+  ignores. Say so on the line, or refuse it.
+- [ ] Docs gone stale with the comptime branch: tools/roux/main.zig's
+  header (Zig compiles the templates object, ReleaseSafe), tools/roux
+  dev.zig's header (the object and "the link and a restart" for markup),
+  TESTING.md's template-compiler line (the writers' measures, the
+  renderer on hand-laid contracts). And contract.zig's message "cannot be
+  used so here".
+- [ ] Question for the owner: the release binary keeps its debug info
+  (examples/templates: 17 MB, 3.1 MB of it code and data). Strip it in
+  `roux build` (release), or keep it for stack traces?
+- Not worth doing, measured: the render is not where a request goes. The
+  host VM is 510 instructions a request behind comptime (15,595 against
+  15,085) on a page whose request is all HTTP and Roc around it; the
+  page's copy from the shard's buffer into Roc's list is a few hundred
+  bytes. Release builds are roc's `--opt=speed` (glue 0 ms when warm);
+  a markup edit is 1.39 ms. Superinstructions or writing straight into
+  Roc's list would win under 1% for real complexity.
+
 - [ ] The examples' spec (M4): requests and expected responses for each
   example, run over a real listener by a Zig build step. (2026-10-06)
 - [ ] Build crt1.o and libc.a for the platform from Zig's own musl in
