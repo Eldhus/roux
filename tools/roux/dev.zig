@@ -115,6 +115,18 @@ fn stop_on_signals() void {
     };
     _ = linux.sigaction(.INT, &action, null);
     _ = linux.sigaction(.TERM, &action, null);
+    // The app is told to reread its templates by SIGUSR1, which kills a
+    // process with no handler for it: one just started, before the host's
+    // `start_dev`. An ignored signal stays ignored across exec (a handled
+    // one does not), so the app is born ignoring it until its handler goes
+    // in; an edit in that window is not lost, as the host reads the
+    // program file when it starts.
+    const ignore: linux.Sigaction = .{
+        .handler = .{ .handler = linux.SIG.IGN },
+        .mask = linux.sigemptyset(),
+        .flags = 0,
+    };
+    _ = linux.sigaction(.USR1, &ignore, null);
 }
 
 /// What inotify said since the last pass.

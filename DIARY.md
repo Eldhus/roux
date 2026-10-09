@@ -1394,3 +1394,14 @@ pinned compiler's tokenizer (src/parse/tokenize.zig at c34079d) fails
 now refuses all 34 in a path, and declared.zig in a declared `Ctx`:
 "`if` is a Roc keyword, which cannot name a field", on its line (tests
 in both). `when` is no keyword at this nightly, and builds.
+
+## 2026-10-09: the app born ignoring SIGUSR1
+
+From the same pass: roux dev tells the app to reread by SIGUSR1, whose
+default action kills; between the spawn and the host's `start_dev` the
+app had no handler. roux dev now ignores SIGUSR1 itself, and an ignored
+disposition survives exec where a handler does not, so the app starts
+ignoring it until the host's handler replaces that. Checked on a scratch
+copy of examples/templates: `/proc` shows roux dev with SIGUSR1 in
+`SigIgn` (0x200), the app with it in `SigCgt`, and a markup edit reread
+(`templates reread, 1`, 0.1 ms) served at once.
