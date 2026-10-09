@@ -72,6 +72,21 @@ pub fn build(b: *std.Build) void {
         .optimize = .debug,
     }) });
     test_step.dependOn(&b.addRunArtifact(rocstache_tests).step);
+    // The compiler and the host's VM together, against an oracle.
+    const vm_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("host/templates_test.zig"),
+        .target = target,
+        .optimize = .debug,
+        .imports = &.{
+            .{ .name = "rocstache", .module = b.createModule(.{
+                .root_source_file = b.path("tools/rocstache/root.zig"),
+                .target = target,
+                .optimize = .debug,
+            }) },
+            .{ .name = "fourneau", .module = fourneau.module("fourneau") },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(vm_tests).step);
 
     platform_step(b, fourneau);
     tools_step(b, target);

@@ -46,7 +46,9 @@ const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
 /// text, with `slack` bytes after it.
 extern const rocstache_data: u64;
 
-const Data = struct {
+/// A program: the linked one, one reread, or one a test assembled
+/// (templates_test.zig).
+pub const Data = struct {
     code: []const u64,
     text: []const u8,
     /// The identity of the layouts the code reads records by (elf.zig).
@@ -95,7 +97,7 @@ pub fn render(index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
     return render_from(program.data, index, context, roc_host);
 }
 
-fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+pub fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
     const buffer = scratch orelse blk: {
         const fresh = std.heap.page_allocator.alloc(u8, scratch_bytes) catch
             @panic("out of memory");
