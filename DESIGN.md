@@ -223,7 +223,10 @@ so a generic function cannot read field N of a record it does not know.)
    compiler runs: a markup edit costs the generation (~10 ms for the
    site) and the link.
 5. **`roc build`** emits the app as an archive, when any Roc changed (a
-   contract change rewrote a module).
+   contract change rewrote a module). It starts as soon as the modules
+   are written, while glue runs (neither needs the other: generate.zig's
+   `begin` and `finish`): a contract change costs the longer of the two,
+   not their sum (the dragrace site, `--dev`: 1.04 s against 1.31 s).
 6. **roux links** the archive and the object (`zig ld.lld`, 40-80 ms).
 
 At run time `Page.render!(ctx)` boxes the record and calls the host

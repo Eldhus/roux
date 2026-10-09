@@ -1423,3 +1423,26 @@ files say `U64`, the page the same.
 
 Also seen: a `roux dev` whose roux-db is not beside it fails every pass
 with "build 1 failed" and no reason (the spawn's error is not printed).
+
+## 2026-10-09: roc builds while glue lays out
+
+Glue (~0.3 s) needs the contracts, roc needs the modules; neither needs
+the other, yet they ran in turn. Measured first by hand on the site
+copy: glue 279-329 ms, roc `--opt=dev` 902-919 ms, both at once 985-1006
+ms (`--opt=speed`: 35 s either way). So generation has two halves now
+(generate.zig): `begin` parses, decides contracts, writes the modules
+and glue's inputs, and spawns glue when it must run, its output to
+`glue/log` (a file: a long message cannot block it on a pipe); `finish`
+waits, parses the layouts, compiles and writes the program; `abandon`
+kills glue when the caller fails between. `roux build` and `roux dev`
+start roc between the halves (dev.zig's pass grew past 70 lines, so the
+generation and roc are its own function).
+
+Measured, old and new binaries alternating: a `roux build --dev` of the
+site with glue's output deleted, 1289-1327 ms before, 1026-1041 after
+(-21%); `roux dev` on examples/templates, Menu's `price` flipped
+U32/U64 six times, 396-446 ms a pass before, 364-408 after (roc there is
+only ~100 ms). Checked: every site page (8, 67 KB) byte for byte from a
+release build before and after; glue failing (a fake roc whose `glue`
+exits 3: "roc glue failed on the contracts: glue says no", no roc left
+running); roc failing (a broken main.roc: roc's message, glue finished).

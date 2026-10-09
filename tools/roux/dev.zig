@@ -168,18 +168,12 @@ const State = struct {
             pipeline.query_types(arena, io, app) catch |err| return state.failed(stderr, err);
         }
         const paths: pipeline.Paths = try .of(arena, app);
-        const generated = pipeline.generate(arena, io, paths, app, .{
-            .cache = &state.cache,
-            .changed = p.written,
-        }, stderr) catch |err| return state.failed(stderr, err);
-        // A contract that changed rewrote its Page.roc: hash the Roc again.
-        const now = if (generated.modules_changed)
-            try digests(arena, io, state.options)
-        else
-            before;
+        const built = state.generate_and_roc(arena, io, paths, before, p, stderr) catch |err|
+            return state.failed(stderr, err);
+        const now = built.now;
         const roc = now.roc != state.built.roc;
         const static = now.static != state.built.static;
-        const templates = generated.program_changed;
+        const templates = built.program_changed;
         // Only markup changed, and the app runs: it rereads the program
         // (`templates.bin`), no link and no restart, its state kept.
         if (!roc and !static and state.child != null) {
@@ -193,9 +187,6 @@ const State = struct {
             }
             state.failing = false;
             return;
-        }
-        if (roc) {
-            pipeline.compile(io, paths, app, .dev) catch |err| return state.failed(stderr, err);
         }
         // The app reads its program from `templates.bin` in development, so
         // only Roc (or no binary yet) needs the link.
@@ -212,6 +203,44 @@ const State = struct {
             built_what(roc, templates),
             pipeline.milliseconds(start, Io.Timestamp.now(io, .awake)),
         });
+    }
+
+    /// The templates generated and, when Roc changed (an edit, or a
+    /// contract that rewrote its Page.roc), roc built while glue lays the
+    /// contracts out: what the sources are now, and whether the program
+    /// changed.
+    fn generate_and_roc(
+        state: *State,
+        arena: Allocator,
+        io: Io,
+        paths: pipeline.Paths,
+        before: Digests,
+        p: Pass,
+        stderr: *Io.Writer,
+    ) !struct { now: Digests, program_changed: bool } {
+        const app = state.options.app;
+        var generation =
+            try pipeline.begin(arena, io, paths, app, &state.cache, p.written, true, stderr);
+        const now = if (generation.modules_changed)
+            digests(arena, io, state.options) catch |err| {
+                rocstache.generate.abandon(io, &generation);
+                return err;
+            }
+        else
+            before;
+        var roc: ?std.process.Child = if (now.roc != state.built.roc)
+            pipeline.start_roc(io, paths, app, .dev) catch |err| {
+                rocstache.generate.abandon(io, &generation);
+                return err;
+            }
+        else
+            null;
+        const generated = rocstache.generate.finish(arena, io, &generation, stderr) catch |err| {
+            if (roc) |*child| child.kill(io);
+            return err;
+        };
+        if (roc) |*child| try pipeline.wait_roc(io, child);
+        return .{ .now = now, .program_changed = generated.program_changed };
     }
 
     /// The running app told to reread the templates' program (SIGUSR1;
