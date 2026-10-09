@@ -1,9 +1,12 @@
 # Templates compiled by Zig (the `templates` branch)
 
 The first of roux's two template experiments, built 2026-10-07 and
-2026-10-08, kept on the branch `templates` (head `9dd205a`, worktree
-`../roux-templates`; the dragrace's port on fourneau-dragrace's branch
-`templates`). The owner chose the second, bytecode run by one VM in the
+2026-10-08, on the branch `templates` (head `9dd205a`; the dragrace's
+port on fourneau-dragrace's branch `templates`, head `2f87bec`). Both
+branches and their worktrees were deleted 2026-10-08 (owner: "i want
+that crazy mad strategy recorded but deleted"); the heads are kept as
+the local tag `archive/templates-comptime` in each repository, and
+`templates-vm` is built on them. The owner chose the second, bytecode run by one VM in the
 host (`templates-vm`, DESIGN.md, Templates), on 2026-10-08. This page
 keeps everything the first one was and measured, so it can be judged
 again or brought back without reading its diff.
