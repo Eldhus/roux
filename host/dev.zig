@@ -99,7 +99,7 @@ const script_tail = "\";const e=new EventSource(\"" ++ events_path ++ "\");" ++
     "z-index:2147483647;box-shadow:0 12px 40px #0008\";" ++
     "o.onclick=()=>o.remove();" ++
     "addEventListener(\"keydown\",(k)=>{if(k.key===\"Escape\")o.remove()});}" ++
-    "o.textContent=\"roux dev: the build failed; the last good one serves.\\n\\n\"+m.data;" ++
+    "o.textContent=m.data;" ++
     "document.body.append(o)});" ++
     "e.addEventListener(\"build-ok\",()=>{if(o)o.remove()})})()</script>\n";
 
