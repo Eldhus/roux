@@ -47,10 +47,10 @@ zig build db-floor                 # the database workloads without Roc (host/fl
 ```
 
 `roux build APP.roc` builds an app: its templates (each
-`Page.rocstache` beside it gets a `Page.roc`, its contract and a
-one-line `Page.template` making the template's value, and the app gets
-`Templates.roc`, the union of them, which the host renders as a response
-is sent; `roc glue` lays the
+`templates/Page.rocstache` beside it gets a `templates/Page.roc`, its
+contract and a one-line `Page.template` making the template's value,
+imported as `templates/Page`, and `templates/Templates.roc`, the union
+of them, which the host renders as a response is sent; `roc glue` lays the
 contracts out when one changed; all the templates' bytecode goes into one
 file), then roc, which links the executable, then roux attaches the
 bytecode after it, into `APP` beside `APP.roc` (DESIGN.md, Templates).

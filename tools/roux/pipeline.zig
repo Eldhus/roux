@@ -129,7 +129,7 @@ pub fn begin(
     stderr: *Io.Writer,
 ) !rocstache.generate.Generation {
     return rocstache.generate.begin(arena, io, .{
-        .app = app.dir,
+        .app = try std.fs.path.join(arena, &.{ app.dir, rocstache.generate.templates_dir }),
         .build = paths.out_path,
         .roc = app.roc,
         .cache = cache,

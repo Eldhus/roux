@@ -189,8 +189,13 @@ so a generic function cannot read field N of a record it does not know.)
 ### What a build does
 
 1. **`roux build`** (`tools/roux`, with `tools/rocstache`) parses each
-   `Page.rocstache` and decides its **contract** (below: declared or
-   inferred). It writes `Page.roc`, and the app's `Templates.roc`:
+   `templates/Page.rocstache` beside the app's `.roc` and decides its
+   **contract** (below: declared or inferred). It writes
+   `templates/Page.roc`, and `templates/Templates.roc`; the app imports
+   `templates/Page`, as it imports roux-db's `db/…` (since 2026-10-09:
+   beside the app's `.roc`, a tutor's dozen templates and their modules
+   buried `main.roc`). Generated modules import each other by bare name
+   (Roc resolves an import from the importing module's directory):
 
    ```roc
    Page :: [].{

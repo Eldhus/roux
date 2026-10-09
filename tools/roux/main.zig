@@ -3,8 +3,8 @@
 //!   roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
 //!   roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
 //!
-//! `build` generates the app's templates (each `Page.rocstache` beside
-//! `APP.roc` gets its `Page.roc` contract; their bytecode goes in
+//! `build` generates the app's templates (each `templates/Page.rocstache`
+//! beside `APP.roc` gets its `templates/Page.roc` contract; their bytecode goes in
 //! `.roux/APP/templates.bin`), roc linking the app's executable while glue
 //! lays the contracts out; then attaches the bytecode after it, into `APP`
 //! beside `APP.roc`, as `roc build` names it, or into `--output`.

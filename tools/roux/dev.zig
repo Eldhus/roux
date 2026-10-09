@@ -578,6 +578,13 @@ const Watch = struct {
 
     /// A directory made (or moved in) under a watched one: it and what it
     /// holds are watched now, and what it holds may be sources.
+    /// Whether `wd` watches the app's `templates/`, where an edit names
+    /// its template (elsewhere a `.rocstache` is no template of the app's).
+    fn is_templates(watch: *const Watch, wd: i32) bool {
+        const path = watch.paths.get(wd) orelse return false;
+        return std.mem.eql(u8, path, rocstache.generate.templates_dir);
+    }
+
     fn appeared(watch: *Watch, wd: i32, name: []const u8) void {
         const parent = watch.paths.get(wd) orelse return;
         const relative = std.fs.path.join(watch.gpa, &.{ parent, name }) catch return;
@@ -640,7 +647,7 @@ const Watch = struct {
                 .templates => {
                     watch.changed.templates = true;
                     const listed = event.mask & (linux.IN.CREATE | linux.IN.DELETE) != 0;
-                    if (listed or event.wd != watch.root) {
+                    if (listed or !watch.is_templates(event.wd)) {
                         watch.changed.listing = true;
                     } else {
                         watch.changed.note(name[0 .. name.len - ".rocstache".len]);
