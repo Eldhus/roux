@@ -31,8 +31,15 @@ const Kept = cache_.Kept;
 
 pub const templates_max = 256;
 
+/// Where an app's templates are, beside its `.roc`: `templates/Menu.rocstache`
+/// gets `templates/Menu.roc`, which the app imports as `templates/Menu`
+/// (as roux-db's modules are `db/…`). An app without it has no templates.
+pub const templates_dir = "templates";
+
 pub const Options = struct {
-    /// The app's directory, holding `main.roc` and its `*.rocstache`.
+    /// The app's templates' directory (`<app>/templates`), holding its
+    /// `*.rocstache` and the modules written for them; missing for an app
+    /// without templates.
     app: []const u8,
     /// Where the templates' object goes (`<app>/.roux/main`), and glue's
     /// files (`glue/`).
@@ -140,9 +147,18 @@ fn begin_with(
     errors: *Io.Writer,
 ) Error!Generation {
     const cwd = Io.Dir.cwd();
-    var app = try cwd.openDir(io, options.app, .{ .iterate = true });
-    defer app.close(io);
-    const names = try names_of(gpa, io, app, options, cache, errors);
+    // No `templates/`: an app without templates (nothing is written there).
+    const opened: ?Io.Dir = cwd.openDir(io, options.app, .{ .iterate = true }) catch |err|
+        switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+    defer if (opened) |dir| dir.close(io);
+    const app = opened orelse cwd;
+    const names: []const []const u8 = if (opened == null)
+        &.{}
+    else
+        try names_of(gpa, io, app, options, cache, errors);
     // Every name kept first: the map may move as it grows, then never.
     for (names) |name| _ = try cache.kept(name);
     const kept = try gpa.alloc(*Kept, names.len);
@@ -168,20 +184,8 @@ fn begin_with(
     var build = try cwd.openDir(io, options.build, .{});
     errdefer build.close(io);
     const glue = try glue_start(gpa, io, build, options, cache, kept, contracts, errors);
-    // The union and its layouts' identity, known before glue runs (the
-    // identity hashes what glue reads), so roc can start at once.
-    if (names.len > 0) {
-        const roots = try gpa.alloc(*const contract_.Contract, names.len);
-        for (kept, roots) |k, *root| root.* = k.contract.?;
-        var text: Io.Writer.Allocating = .init(gpa);
-        try roc.write_templates(.{
-            .names = names,
-            .contracts = roots,
-            .layouts = glue.id(),
-        }, &text.writer);
-        if (try write_output(cache, gpa, io, app, "app", "Templates.roc", text.written())) {
-            modules_changed = true;
-        }
+    if (names.len > 0 and try write_union(gpa, io, app, cache, names, kept, glue.id())) {
+        modules_changed = true;
     }
     return .{
         .options = options,
@@ -193,6 +197,26 @@ fn begin_with(
         .templates_count = @intCast(names.len),
         .modules_changed = modules_changed,
     };
+}
+
+/// `Templates.roc`: the union and its layouts' identity, known before glue
+/// runs (the identity hashes what glue reads), so roc can start at once.
+/// Says whether the file changed.
+fn write_union(
+    gpa: Allocator,
+    io: Io,
+    app: Io.Dir,
+    cache: *Cache,
+    names: []const []const u8,
+    kept: []const *Kept,
+    layouts: u64,
+) Error!bool {
+    const roots = try gpa.alloc(*const contract_.Contract, names.len);
+    for (kept, roots) |k, *root| root.* = k.contract.?;
+    var text: Io.Writer.Allocating = .init(gpa);
+    const union_: roc.Union = .{ .names = names, .contracts = roots, .layouts = layouts };
+    try roc.write_templates(union_, &text.writer);
+    return write_output(cache, gpa, io, app, "app", "Templates.roc", text.written());
 }
 
 fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error!Result {
@@ -313,15 +337,13 @@ fn template_names(
         }
         const name = entry.name[0 .. entry.name.len - ".rocstache".len];
         if (!parse.is_type_name(name)) {
-            try errors.print("{s}: a template's name is a Roc type name, like `Page`\n", .{
-                entry.name,
-            });
+            try errors.print(templates_dir ++ "/{s}: a template's name is a Roc type name, " ++
+                "like `Page`\n", .{entry.name});
             return error.Invalid;
         }
         if (std.mem.eql(u8, name, "Templates")) {
-            try errors.print("{s}: `Templates` is the module roux writes for the union\n", .{
-                entry.name,
-            });
+            try errors.print(templates_dir ++ "/{s}: `Templates` is the module roux writes " ++
+                "for the union\n", .{entry.name});
             return error.Invalid;
         }
         try names.append(gpa, try gpa.dupe(u8, name));
@@ -499,7 +521,9 @@ fn contract_of(
         } else ordered[0].source;
         try report(errors, source, diagnostic);
         if (!std.mem.eql(u8, diagnostic.template, ordered[0].name)) {
-            try errors.print("  (included from {s}.rocstache)\n", .{ordered[0].name});
+            try errors.print("  (included from " ++ templates_dir ++ "/{s}.rocstache)\n", .{
+                ordered[0].name,
+            });
         }
         return error.Invalid;
     };
@@ -584,7 +608,7 @@ fn report(
     problem: contract_.Diagnostic,
 ) Io.Writer.Error!void {
     const d: parse.Diagnostic = .{ .offset = problem.offset };
-    try errors.print("{s}.rocstache:{d}:{d}: ", .{
+    try errors.print(templates_dir ++ "/{s}.rocstache:{d}:{d}: ", .{
         problem.template,
         d.line(source),
         d.column(source),

@@ -2,11 +2,12 @@ app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.Rocstache
-import Page
+import templates/Page
 
-## A page from a template: `Page.rocstache`, whose contract `roux build`
-## writes to `Page.roc` (with `Page.template`, which makes the template's
-## value) and whose markup it compiles to bytecode linked into the app.
+## A page from a template: `templates/Page.rocstache`, whose contract `roux
+## build` writes to `templates/Page.roc` (with `Page.template`, which makes
+## the template's value) and whose markup it compiles to bytecode attached
+## to the app.
 ## The value is data: the host renders it as the response is sent, so the
 ## whole response is a pure function, and `roc test` checks it. The menu
 ## is the app's context, made once by `init!`.

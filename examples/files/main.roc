@@ -3,7 +3,7 @@ app [Context, program] { pf: platform "../../platform/main.roc" }
 import pf.Server
 import pf.File
 import pf.Rocstache
-import Notes
+import templates/Notes
 
 ## Static files and file reads: `public/` is served by the host before
 ## `respond!` (style.css, with gzip and ETags); `/notes` reads notes.txt

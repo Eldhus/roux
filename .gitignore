@@ -15,6 +15,7 @@ examples/*
 examples/*/*
 !examples/*/*.roc
 !examples/*/*.rocstache
+!examples/*/templates/
 !examples/*/*.txt
 !examples/*/public/
 !examples/*/db/
