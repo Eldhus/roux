@@ -1290,8 +1290,9 @@ roc-lang/roc#12139 (repro in ~/devel/rocbugs/glue-cache-ignores-spec).
 The nightly chore, on this branch only (the owner: tonight's race runs
 `main` untouched): `.roc-version` c34079d (installed copy checked
 against the release's sha256); ZigGlue.roc and the musl files
-unchanged at c34079d; the host's glue regenerated, which only quotes
-identifiers now (`.@"Ok"`). Found and fixed while at it: roux build
+unchanged at c34079d; the host's glue regenerated, identical once `zig
+fmt` has run (glue quotes identifiers, `.@"Ok"`, and fmt unquotes them;
+the ecb657f commit carried the unformatted file, put right after). Found and fixed while at it: roux build
 kept the old compiler's `layouts.zon`, since no contract changed; the
 roc path (and the spec) now count as glue's inputs, so a bump lays the
 contracts out again (once, ~0.25 s). Checked: `zig build test`; both

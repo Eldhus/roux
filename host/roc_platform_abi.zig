@@ -705,36 +705,36 @@ pub const RocEnv = struct {
 
 /// Element type for __AnonStruct_82a96c5d55d63488
 pub const __AnonStruct_82a96c5d55d63488 = if (@sizeOf(usize) == 4) extern struct {
-    @"name": RocStr,
-    @"value": RocStr,
+    name: RocStr,
+    value: RocStr,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"name".decref(roc_host);
-        value.@"value".decref(roc_host);
+        value.name.decref(roc_host);
+        value.value.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"name".incref(amount);
-        value.@"value".incref(amount);
+        value.name.incref(amount);
+        value.value.incref(amount);
     }
 } else extern struct {
-    @"name": RocStr,
-    @"value": RocStr,
+    name: RocStr,
+    value: RocStr,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"name".decref(roc_host);
-        value.@"value".decref(roc_host);
+        value.name.decref(roc_host);
+        value.value.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"name".incref(amount);
-        value.@"value".incref(amount);
+        value.name.incref(amount);
+        value.value.incref(amount);
     }
 };
 
@@ -751,52 +751,52 @@ comptime {
 
 /// Element type for __AnonStruct_2d568438e96cd20c
 pub const __AnonStruct_2d568438e96cd20c = if (@sizeOf(usize) == 4) extern struct {
-    @"columns": RocListWith(u8, false),
-    @"name": RocStr,
-    @"params": RocListWith(u8, false),
-    @"sql": RocStr,
-    @"rows_max": u32,
-    @"writes": bool,
+    columns: RocListWith(u8, false),
+    name: RocStr,
+    params: RocListWith(u8, false),
+    sql: RocStr,
+    rows_max: u32,
+    writes: bool,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"columns".decref(roc_host);
-        value.@"name".decref(roc_host);
-        value.@"params".decref(roc_host);
-        value.@"sql".decref(roc_host);
+        value.columns.decref(roc_host);
+        value.name.decref(roc_host);
+        value.params.decref(roc_host);
+        value.sql.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"columns".incref(amount);
-        value.@"name".incref(amount);
-        value.@"params".incref(amount);
-        value.@"sql".incref(amount);
+        value.columns.incref(amount);
+        value.name.incref(amount);
+        value.params.incref(amount);
+        value.sql.incref(amount);
     }
 } else extern struct {
-    @"columns": RocListWith(u8, false),
-    @"name": RocStr,
-    @"params": RocListWith(u8, false),
-    @"sql": RocStr,
-    @"rows_max": u32,
-    @"writes": bool,
+    columns: RocListWith(u8, false),
+    name: RocStr,
+    params: RocListWith(u8, false),
+    sql: RocStr,
+    rows_max: u32,
+    writes: bool,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"columns".decref(roc_host);
-        value.@"name".decref(roc_host);
-        value.@"params".decref(roc_host);
-        value.@"sql".decref(roc_host);
+        value.columns.decref(roc_host);
+        value.name.decref(roc_host);
+        value.params.decref(roc_host);
+        value.sql.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"columns".incref(amount);
-        value.@"name".incref(amount);
-        value.@"params".incref(amount);
-        value.@"sql".incref(amount);
+        value.columns.incref(amount);
+        value.name.incref(amount);
+        value.params.incref(amount);
+        value.sql.incref(amount);
     }
 };
 
@@ -813,32 +813,32 @@ comptime {
 
 /// Element type for __AnonStruct_4c605145331877e7
 pub const __AnonStruct_4c605145331877e7 = if (@sizeOf(usize) == 4) extern struct {
-    @"message": RocStr,
-    @"code": u8,
+    message: RocStr,
+    code: u8,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"message".decref(roc_host);
+        value.message.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"message".incref(amount);
+        value.message.incref(amount);
     }
 } else extern struct {
-    @"message": RocStr,
-    @"code": u8,
+    message: RocStr,
+    code: u8,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"message".decref(roc_host);
+        value.message.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"message".incref(amount);
+        value.message.incref(amount);
     }
 };
 
@@ -855,36 +855,36 @@ comptime {
 
 /// Element type for __AnonStruct_f5f250fc11b4cdee
 pub const __AnonStruct_f5f250fc11b4cdee = if (@sizeOf(usize) == 4) extern struct {
-    @"bytes": RocListWith(u8, false),
-    @"context": RocBox,
+    bytes: RocListWith(u8, false),
+    context: RocBox,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"bytes".decref(roc_host);
-        decrefBox(@ptrCast(value.@"context"), roc_host);
+        value.bytes.decref(roc_host);
+        decrefBox(@ptrCast(value.context), roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"bytes".incref(amount);
-        increfBox(@ptrCast(value.@"context"), amount);
+        value.bytes.incref(amount);
+        increfBox(@ptrCast(value.context), amount);
     }
 } else extern struct {
-    @"bytes": RocListWith(u8, false),
-    @"context": RocBox,
+    bytes: RocListWith(u8, false),
+    context: RocBox,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"bytes".decref(roc_host);
-        decrefBox(@ptrCast(value.@"context"), roc_host);
+        value.bytes.decref(roc_host);
+        decrefBox(@ptrCast(value.context), roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"bytes".incref(amount);
-        increfBox(@ptrCast(value.@"context"), amount);
+        value.bytes.incref(amount);
+        increfBox(@ptrCast(value.context), amount);
     }
 };
 
@@ -901,38 +901,38 @@ comptime {
 
 /// Element type for __AnonStruct_2a70a3dd551fa8a1
 pub const __AnonStruct_2a70a3dd551fa8a1 = if (@sizeOf(usize) == 4) extern struct {
-    @"context": RocBox,
-    @"static_dir": RocStr,
-    @"port": u16,
+    context: RocBox,
+    static_dir: RocStr,
+    port: u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBox(@ptrCast(value.@"context"), roc_host);
-        value.@"static_dir".decref(roc_host);
+        decrefBox(@ptrCast(value.context), roc_host);
+        value.static_dir.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        increfBox(@ptrCast(value.@"context"), amount);
-        value.@"static_dir".incref(amount);
+        increfBox(@ptrCast(value.context), amount);
+        value.static_dir.incref(amount);
     }
 } else extern struct {
-    @"context": RocBox,
-    @"static_dir": RocStr,
-    @"port": u16,
+    context: RocBox,
+    static_dir: RocStr,
+    port: u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefBox(@ptrCast(value.@"context"), roc_host);
-        value.@"static_dir".decref(roc_host);
+        decrefBox(@ptrCast(value.context), roc_host);
+        value.static_dir.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        increfBox(@ptrCast(value.@"context"), amount);
-        value.@"static_dir".incref(amount);
+        increfBox(@ptrCast(value.context), amount);
+        value.static_dir.incref(amount);
     }
 };
 
@@ -949,38 +949,38 @@ comptime {
 
 /// Element type for __AnonStruct_a14cd3b7d5755441
 pub const __AnonStruct_a14cd3b7d5755441 = if (@sizeOf(usize) == 4) extern struct {
-    @"body": RocListWith(u8, false),
-    @"headers": RocList(__AnonStruct_82a96c5d55d63488),
-    @"status": u16,
+    body: RocListWith(u8, false),
+    headers: RocList(__AnonStruct_82a96c5d55d63488),
+    status: u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"body".decref(roc_host);
-        decrefListOf__AnonStruct_82a96c5d55d63488(value.@"headers", roc_host);
+        value.body.decref(roc_host);
+        decrefListOf__AnonStruct_82a96c5d55d63488(value.headers, roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"body".incref(amount);
-        value.@"headers".incref(amount);
+        value.body.incref(amount);
+        value.headers.incref(amount);
     }
 } else extern struct {
-    @"body": RocListWith(u8, false),
-    @"headers": RocList(__AnonStruct_82a96c5d55d63488),
-    @"status": u16,
+    body: RocListWith(u8, false),
+    headers: RocList(__AnonStruct_82a96c5d55d63488),
+    status: u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        value.@"body".decref(roc_host);
-        decrefListOf__AnonStruct_82a96c5d55d63488(value.@"headers", roc_host);
+        value.body.decref(roc_host);
+        decrefListOf__AnonStruct_82a96c5d55d63488(value.headers, roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"body".incref(amount);
-        value.@"headers".incref(amount);
+        value.body.incref(amount);
+        value.headers.incref(amount);
     }
 };
 
@@ -997,44 +997,44 @@ comptime {
 
 /// Element type for __AnonStruct_28781edfe447a702
 pub const __AnonStruct_28781edfe447a702 = if (@sizeOf(usize) == 4) extern struct {
-    @"body": u64,
-    @"headers": RocList(__AnonStruct_82a96c5d55d63488),
-    @"method": RocStr,
-    @"target": RocStr,
+    body: u64,
+    headers: RocList(__AnonStruct_82a96c5d55d63488),
+    method: RocStr,
+    target: RocStr,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefListOf__AnonStruct_82a96c5d55d63488(value.@"headers", roc_host);
-        value.@"method".decref(roc_host);
-        value.@"target".decref(roc_host);
+        decrefListOf__AnonStruct_82a96c5d55d63488(value.headers, roc_host);
+        value.method.decref(roc_host);
+        value.target.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"headers".incref(amount);
-        value.@"method".incref(amount);
-        value.@"target".incref(amount);
+        value.headers.incref(amount);
+        value.method.incref(amount);
+        value.target.incref(amount);
     }
 } else extern struct {
-    @"body": u64,
-    @"headers": RocList(__AnonStruct_82a96c5d55d63488),
-    @"method": RocStr,
-    @"target": RocStr,
+    body: u64,
+    headers: RocList(__AnonStruct_82a96c5d55d63488),
+    method: RocStr,
+    target: RocStr,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
-        decrefListOf__AnonStruct_82a96c5d55d63488(value.@"headers", roc_host);
-        value.@"method".decref(roc_host);
-        value.@"target".decref(roc_host);
+        decrefListOf__AnonStruct_82a96c5d55d63488(value.headers, roc_host);
+        value.method.decref(roc_host);
+        value.target.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
-        value.@"headers".incref(amount);
-        value.@"method".incref(amount);
-        value.@"target".incref(amount);
+        value.headers.incref(amount);
+        value.method.incref(amount);
+        value.target.incref(amount);
     }
 };
 
@@ -1051,14 +1051,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostFile_read_utf8ResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostFile_read_utf8ResultPayload = extern union {
-        @"err": FileNotFoundOrFileTooLargeOrFileUnreadable,
-        @"ok": RocStr,
+    err: FileNotFoundOrFileTooLargeOrFileUnreadable,
+    ok: RocStr,
 };
 
 /// Tag union: Try
@@ -1086,10 +1086,10 @@ pub const HostFile_read_utf8Result = if (@sizeOf(usize) == 4) extern struct {
     payload: HostFile_read_utf8ResultPayload,
     tag: HostFile_read_utf8ResultTag,
     pub fn payload_err(self: *const @This()) FileNotFoundOrFileTooLargeOrFileUnreadable {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     pub fn payload_ok(self: *const @This()) RocStr {
-        return self.payload.@"ok";
+        return self.payload.ok;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1117,9 +1117,9 @@ comptime {
 
 /// Tag union: FileNotFoundOrFileTooLargeOrFileUnreadable
 pub const FileNotFoundOrFileTooLargeOrFileUnreadable = enum(u8) {
-    @"file_not_found" = 0,
-    @"file_too_large" = 1,
-    @"file_unreadable" = 2,
+    file_not_found = 0,
+    file_too_large = 1,
+    file_unreadable = 2,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -1146,14 +1146,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostRequest_body_read_allResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostRequest_body_read_allResultPayload = extern union {
-        @"err": BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge,
-        @"ok": RocListWith(u8, false),
+    err: BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge,
+    ok: RocListWith(u8, false),
 };
 
 /// Tag union: Try
@@ -1181,10 +1181,10 @@ pub const HostRequest_body_read_allResult = if (@sizeOf(usize) == 4) extern stru
     payload: HostRequest_body_read_allResultPayload,
     tag: HostRequest_body_read_allResultTag,
     pub fn payload_err(self: *const @This()) BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
-        return self.payload.@"ok";
+        return self.payload.ok;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1212,11 +1212,11 @@ comptime {
 
 /// Tag union: BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge
 pub const BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge = enum(u8) {
-    @"body_after_stream" = 0,
-    @"body_disconnected" = 1,
-    @"body_during_write" = 2,
-    @"body_invalid" = 3,
-    @"body_too_large" = 4,
+    body_after_stream = 0,
+    body_disconnected = 1,
+    body_during_write = 2,
+    body_invalid = 3,
+    body_too_large = 4,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -1243,14 +1243,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostResponse_stream_startResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostResponse_stream_startResultPayload = extern union {
-        @"err": StreamDisconnectedOrStreamRefused,
-        @"ok": [0]u8,
+    err: StreamDisconnectedOrStreamRefused,
+    ok: [0]u8,
 };
 
 /// Tag union: Try
@@ -1274,7 +1274,7 @@ pub const HostResponse_stream_startResult = if (@sizeOf(usize) == 4) extern stru
     payload: HostResponse_stream_startResultPayload,
     tag: HostResponse_stream_startResultTag,
     pub fn payload_err(self: *const @This()) StreamDisconnectedOrStreamRefused {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1302,8 +1302,8 @@ comptime {
 
 /// Tag union: StreamDisconnectedOrStreamRefused
 pub const StreamDisconnectedOrStreamRefused = enum(u8) {
-    @"stream_disconnected" = 0,
-    @"stream_refused" = 1,
+    stream_disconnected = 0,
+    stream_refused = 1,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -1330,14 +1330,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostSqlite_openResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostSqlite_openResultPayload = extern union {
-        @"err": RocStr,
-        @"ok": [0]u8,
+    err: RocStr,
+    ok: [0]u8,
 };
 
 /// Tag union: Try
@@ -1361,7 +1361,7 @@ pub const HostSqlite_openResult = if (@sizeOf(usize) == 4) extern struct {
     payload: HostSqlite_openResultPayload,
     tag: HostSqlite_openResultTag,
     pub fn payload_err(self: *const @This()) RocStr {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1389,8 +1389,8 @@ comptime {
 
 /// Tag union: FullOrNormal
 pub const FullOrNormal = enum(u8) {
-    @"full" = 0,
-    @"normal" = 1,
+    full = 0,
+    normal = 1,
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         _ = self;
@@ -1417,14 +1417,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostSqlite_runResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostSqlite_runResultPayload = extern union {
-        @"err": __AnonStruct_4c605145331877e7,
-        @"ok": RocList(RocList(BlobOrIntegerOrNullOrRealOrText)),
+    err: __AnonStruct_4c605145331877e7,
+    ok: RocList(RocList(BlobOrIntegerOrNullOrRealOrText)),
 };
 
 /// Tag union: Try
@@ -1452,10 +1452,10 @@ pub const HostSqlite_runResult = if (@sizeOf(usize) == 4) extern struct {
     payload: HostSqlite_runResultPayload,
     tag: HostSqlite_runResultTag,
     pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     pub fn payload_ok(self: *const @This()) RocList(RocList(BlobOrIntegerOrNullOrRealOrText)) {
-        return self.payload.@"ok";
+        return self.payload.ok;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1483,20 +1483,20 @@ comptime {
 
 /// Tag discriminant for BlobOrIntegerOrNullOrRealOrText.
 pub const BlobOrIntegerOrNullOrRealOrTextTag = enum(u8) {
-    @"Blob" = 0,
-    @"Integer" = 1,
-    @"Null" = 2,
-    @"Real" = 3,
-    @"Text" = 4,
+    Blob = 0,
+    Integer = 1,
+    Null = 2,
+    Real = 3,
+    Text = 4,
 };
 
 /// Payload union for BlobOrIntegerOrNullOrRealOrText.
 pub const BlobOrIntegerOrNullOrRealOrTextPayload = extern union {
-        @"blob": RocListWith(u8, false),
-        @"integer": i64,
-        @"null": [0]u8,
-        @"real": f64,
-        @"text": RocStr,
+    blob: RocListWith(u8, false),
+    integer: i64,
+    null: [0]u8,
+    real: f64,
+    text: RocStr,
 };
 
 /// Tag union: BlobOrIntegerOrNullOrRealOrText
@@ -1532,16 +1532,16 @@ pub const BlobOrIntegerOrNullOrRealOrText = if (@sizeOf(usize) == 4) extern stru
     payload: BlobOrIntegerOrNullOrRealOrTextPayload,
     tag: BlobOrIntegerOrNullOrRealOrTextTag,
     pub fn payload_blob(self: *const @This()) RocListWith(u8, false) {
-        return self.payload.@"blob";
+        return self.payload.blob;
     }
     pub fn payload_integer(self: *const @This()) i64 {
-        return self.payload.@"integer";
+        return self.payload.integer;
     }
     pub fn payload_real(self: *const @This()) f64 {
-        return self.payload.@"real";
+        return self.payload.real;
     }
     pub fn payload_text(self: *const @This()) RocStr {
-        return self.payload.@"text";
+        return self.payload.text;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1569,14 +1569,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostSqlite_write_beginResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostSqlite_write_beginResultPayload = extern union {
-        @"err": __AnonStruct_4c605145331877e7,
-        @"ok": [0]u8,
+    err: __AnonStruct_4c605145331877e7,
+    ok: [0]u8,
 };
 
 /// Tag union: Try
@@ -1600,7 +1600,7 @@ pub const HostSqlite_write_beginResult = if (@sizeOf(usize) == 4) extern struct 
     payload: HostSqlite_write_beginResultPayload,
     tag: HostSqlite_write_beginResultTag,
     pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1628,14 +1628,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const HostSqlite_backupResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const HostSqlite_backupResultPayload = extern union {
-        @"err": __AnonStruct_4c605145331877e7,
-        @"ok": RocStr,
+    err: __AnonStruct_4c605145331877e7,
+    ok: RocStr,
 };
 
 /// Tag union: Try
@@ -1663,10 +1663,10 @@ pub const HostSqlite_backupResult = if (@sizeOf(usize) == 4) extern struct {
     payload: HostSqlite_backupResultPayload,
     tag: HostSqlite_backupResultTag,
     pub fn payload_err(self: *const @This()) __AnonStruct_4c605145331877e7 {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     pub fn payload_ok(self: *const @This()) RocStr {
-        return self.payload.@"ok";
+        return self.payload.ok;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1694,14 +1694,14 @@ comptime {
 
 /// Tag discriminant for Try.
 pub const Init_for_hostResultTag = enum(u8) {
-    @"Err" = 0,
-    @"Ok" = 1,
+    Err = 0,
+    Ok = 1,
 };
 
 /// Payload union for Try.
 pub const Init_for_hostResultPayload = extern union {
-        @"err": i64,
-        @"ok": __AnonStruct_2a70a3dd551fa8a1,
+    err: i64,
+    ok: __AnonStruct_2a70a3dd551fa8a1,
 };
 
 /// Tag union: Try
@@ -1729,10 +1729,10 @@ pub const Init_for_hostResult = if (@sizeOf(usize) == 4) extern struct {
     payload: Init_for_hostResultPayload,
     tag: Init_for_hostResultTag,
     pub fn payload_err(self: *const @This()) i64 {
-        return self.payload.@"err";
+        return self.payload.err;
     }
     pub fn payload_ok(self: *const @This()) __AnonStruct_2a70a3dd551fa8a1 {
-        return self.payload.@"ok";
+        return self.payload.ok;
     }
     /// Recursively decrement Roc-owned payloads.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1761,11 +1761,11 @@ comptime {
 /// Return type record for Host.template_render!
 /// Fields ordered by compiler-emitted ABI offsets.
 pub const HostTemplate_renderRetRecord = if (@sizeOf(usize) == 4) extern struct {
-    @"bytes": RocListWith(u8, false),
-    @"context": RocBox,
+    bytes: RocListWith(u8, false),
+    context: RocBox,
 } else extern struct {
-    @"bytes": RocListWith(u8, false),
-    @"context": RocBox,
+    bytes: RocListWith(u8, false),
+    context: RocBox,
 };
 
 comptime {
@@ -1933,22 +1933,22 @@ pub const Respond_for_hostHeaders = __AnonStruct_82a96c5d55d63488;
 
 fn decrefHostFile_read_utf8Result(value: HostFile_read_utf8Result, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {
-        value.payload_ok().decref(roc_host);
+        .Ok => {
+            value.payload_ok().decref(roc_host);
         },
     }
 }
 
 fn increfHostFile_read_utf8Result(value: HostFile_read_utf8Result, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {
-        value.payload_ok().incref(amount);
+        .Ok => {
+            value.payload_ok().incref(amount);
         },
     }
 }
@@ -1961,22 +1961,22 @@ pub const HostFile_read_utf8ResultRelease = struct {
 
 fn decrefHostRequest_body_read_allResult(value: HostRequest_body_read_allResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {
-        value.payload_ok().decref(roc_host);
+        .Ok => {
+            value.payload_ok().decref(roc_host);
         },
     }
 }
 
 fn increfHostRequest_body_read_allResult(value: HostRequest_body_read_allResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {
-        value.payload_ok().incref(amount);
+        .Ok => {
+            value.payload_ok().incref(amount);
         },
     }
 }
@@ -1989,19 +1989,19 @@ pub const HostRequest_body_read_allResultRelease = struct {
 
 fn decrefHostResponse_stream_startResult(value: HostResponse_stream_startResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {},
+        .Ok => {},
     }
 }
 
 fn increfHostResponse_stream_startResult(value: HostResponse_stream_startResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {},
+        .Ok => {},
     }
 }
 
@@ -2019,19 +2019,19 @@ pub const __AnonStruct_82a96c5d55d63488Release = struct {
 
 fn decrefHostSqlite_openResult(value: HostSqlite_openResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {},
+        .Ok => {},
     }
 }
 
 fn increfHostSqlite_openResult(value: HostSqlite_openResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {},
+        .Ok => {},
     }
 }
 
@@ -2049,22 +2049,22 @@ pub const __AnonStruct_2d568438e96cd20cRelease = struct {
 
 fn decrefHostSqlite_runResult(value: HostSqlite_runResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {
-        decrefListOfListOfBlobOrIntegerOrNullOrRealOrText(value.payload_ok(), roc_host);
+        .Ok => {
+            decrefListOfListOfBlobOrIntegerOrNullOrRealOrText(value.payload_ok(), roc_host);
         },
     }
 }
 
 fn increfHostSqlite_runResult(value: HostSqlite_runResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {
-        value.payload_ok().incref(amount);
+        .Ok => {
+            value.payload_ok().incref(amount);
         },
     }
 }
@@ -2083,28 +2083,28 @@ pub const __AnonStruct_4c605145331877e7Release = struct {
 
 fn decrefBlobOrIntegerOrNullOrRealOrText(value: BlobOrIntegerOrNullOrRealOrText, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Blob" => {
-        value.payload_blob().decref(roc_host);
+        .Blob => {
+            value.payload_blob().decref(roc_host);
         },
-        .@"Integer" => {},
-        .@"Null" => {},
-        .@"Real" => {},
-        .@"Text" => {
-        value.payload_text().decref(roc_host);
+        .Integer => {},
+        .Null => {},
+        .Real => {},
+        .Text => {
+            value.payload_text().decref(roc_host);
         },
     }
 }
 
 fn increfBlobOrIntegerOrNullOrRealOrText(value: BlobOrIntegerOrNullOrRealOrText, amount: isize) void {
     switch (value.tag) {
-        .@"Blob" => {
-        value.payload_blob().incref(amount);
+        .Blob => {
+            value.payload_blob().incref(amount);
         },
-        .@"Integer" => {},
-        .@"Null" => {},
-        .@"Real" => {},
-        .@"Text" => {
-        value.payload_text().incref(amount);
+        .Integer => {},
+        .Null => {},
+        .Real => {},
+        .Text => {
+            value.payload_text().incref(amount);
         },
     }
 }
@@ -2117,19 +2117,19 @@ pub const BlobOrIntegerOrNullOrRealOrTextRelease = struct {
 
 fn decrefHostSqlite_write_beginResult(value: HostSqlite_write_beginResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {},
+        .Ok => {},
     }
 }
 
 fn increfHostSqlite_write_beginResult(value: HostSqlite_write_beginResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {},
+        .Ok => {},
     }
 }
 
@@ -2141,22 +2141,22 @@ pub const HostSqlite_write_beginResultRelease = struct {
 
 fn decrefHostSqlite_backupResult(value: HostSqlite_backupResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().decref(roc_host);
+        .Err => {
+            value.payload_err().decref(roc_host);
         },
-        .@"Ok" => {
-        value.payload_ok().decref(roc_host);
+        .Ok => {
+            value.payload_ok().decref(roc_host);
         },
     }
 }
 
 fn increfHostSqlite_backupResult(value: HostSqlite_backupResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {
-        value.payload_err().incref(amount);
+        .Err => {
+            value.payload_err().incref(amount);
         },
-        .@"Ok" => {
-        value.payload_ok().incref(amount);
+        .Ok => {
+            value.payload_ok().incref(amount);
         },
     }
 }
@@ -2175,18 +2175,18 @@ pub const __AnonStruct_f5f250fc11b4cdeeRelease = struct {
 
 fn decrefInit_for_hostResult(value: Init_for_hostResult, roc_host: *RocHost) void {
     switch (value.tag) {
-        .@"Err" => {},
-        .@"Ok" => {
-        value.payload_ok().decref(roc_host);
+        .Err => {},
+        .Ok => {
+            value.payload_ok().decref(roc_host);
         },
     }
 }
 
 fn increfInit_for_hostResult(value: Init_for_hostResult, amount: isize) void {
     switch (value.tag) {
-        .@"Err" => {},
-        .@"Ok" => {
-        value.payload_ok().incref(amount);
+        .Err => {},
+        .Ok => {
+            value.payload_ok().incref(amount);
         },
     }
 }
@@ -2247,7 +2247,6 @@ pub fn decrefListOfBlobOrIntegerOrNullOrRealOrText(value: RocList(BlobOrIntegerO
     value.deinitWith(BlobOrIntegerOrNullOrRealOrTextRelease, roc_host);
 }
 
-
 fn rocReleasePolicy(comptime T: type) type {
     if (T == RocStr) return RocStrRelease;
     if (T == HostFile_read_utf8Result) return HostFile_read_utf8ResultRelease;
@@ -2272,7 +2271,6 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == __AnonStruct_28781edfe447a702) return __AnonStruct_28781edfe447a702Release;
     @compileError("generated glue has no recursive release policy for " ++ @typeName(T));
 }
-
 
 // Runtime Symbols
 //
@@ -2389,7 +2387,6 @@ pub extern fn hosted_sqlite_backup(arg0: u64, arg1: RocStr, arg2: u32) callconv(
 ///     decrefBox(@ptrCast(arg1), roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_template_render(arg0: u64, arg1: RocBox) callconv(.c) __AnonStruct_f5f250fc11b4cdee;
-
 
 /// Default memory management functions for Roc platforms.
 ///
@@ -2535,4 +2532,3 @@ pub extern fn roc_init_for_host() callconv(.c) Init_for_hostResult;
 
 /// Entrypoint: respond_for_host!
 pub extern fn roc_respond_for_host(arg0: __AnonStruct_28781edfe447a702, arg1: RocBox) callconv(.c) __AnonStruct_a14cd3b7d5755441;
-

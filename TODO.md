@@ -210,8 +210,8 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   `ZigGlue.roc` from the roc repository at the nightly's commit; build and
   run the examples. roux build lays the contracts out again by itself
   when `roc` changes.
-  - Last done: 2026-10-08 (c34079d: the spec unchanged, the glue only
-    quotes its identifiers now).
+  - Last done: 2026-10-08 (c34079d: the spec unchanged, the glue
+    identical once `zig fmt` has run over it, as tidy wants).
 - **Vendored sources**, monthly and when a security release appears:
   `vendor/sqlite/` (sqlite.org/changes.html) once vendored.
   - Last done: never (not vendored yet).
