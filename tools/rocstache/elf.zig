@@ -3,15 +3,24 @@
 //! `rocstache_data`, which the host reads (host/templates.zig). No
 //! compiler runs, so a markup edit costs only the link.
 //!
-//! The section: the code's length in words, the text's in bytes, the code,
-//! the text, then `slack` zero bytes (the host copies runs in 32-byte
-//! blocks that may run past the text's end).
+//! The section: the code's length in words, the text's in bytes, the
+//! layouts' identity (a hash of what glue laid the contracts out from: the
+//! host rereads in development only a program made for the layouts it was
+//! built with), the code, the text, then `slack` zero bytes (the host
+//! copies runs in 32-byte blocks that may run past the text's end).
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Writer = std.Io.Writer;
 
 pub const slack = 32;
+
+pub const Program = struct {
+    code: []const u64,
+    text: []const u8,
+    /// The layouts' identity (generate.zig).
+    layouts: u64,
+};
 
 const header_bytes = 64;
 const section_header_bytes = 64;
@@ -20,8 +29,19 @@ const strtab = "\x00rocstache_data\x00";
 const shstrtab = "\x00.rodata\x00.symtab\x00.strtab\x00.shstrtab\x00.note.GNU-stack\x00";
 const sections = 6; // null, .rodata, .symtab, .strtab, .shstrtab, .note.GNU-stack
 
-pub fn write(code: []const u64, text: []const u8, writer: *Writer) Writer.Error!void {
-    const data_bytes = 16 + code.len * 8 + text.len + slack;
+/// The section's bytes alone: what `roux dev` hands a running app to
+/// reread (`templates.bin`; host/templates.zig).
+pub fn write_program(program: Program, writer: *Writer) Writer.Error!void {
+    try int(writer, u64, program.code.len);
+    try int(writer, u64, program.text.len);
+    try int(writer, u64, program.layouts);
+    for (program.code) |w| try int(writer, u64, w);
+    try writer.writeAll(program.text);
+    try writer.splatByteAll(0, slack);
+}
+
+pub fn write(program: Program, writer: *Writer) Writer.Error!void {
+    const data_bytes = 24 + program.code.len * 8 + program.text.len + slack;
     const data_at = header_bytes;
     const symtab_at = std.mem.alignForward(usize, data_at + data_bytes, 8);
     const strtab_at = symtab_at + 2 * symbol_bytes;
@@ -46,11 +66,7 @@ pub fn write(code: []const u64, text: []const u8, writer: *Writer) Writer.Error!
     try int(writer, u16, 4); // .shstrtab
 
     // .rodata.
-    try int(writer, u64, code.len);
-    try int(writer, u64, text.len);
-    for (code) |w| try int(writer, u64, w);
-    try writer.writeAll(text);
-    try writer.splatByteAll(0, slack);
+    try write_program(program, writer);
     try writer.splatByteAll(0, symtab_at - (data_at + data_bytes));
 
     // .symtab: the null symbol, then rocstache_data (global, an object).

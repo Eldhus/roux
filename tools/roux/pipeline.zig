@@ -70,7 +70,7 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     const paths: Paths = try .of(arena, app);
     const start = Io.Timestamp.now(io, .awake);
     if (has_queries(io, app)) try query_types(arena, io, app);
-    const generated = try generate(arena, io, paths, app, stderr);
+    const generated = try generate(arena, io, paths, app, null, stderr);
     const generated_at = Io.Timestamp.now(io, .awake);
     try compile(io, paths, app, mode);
     const compiled_at = Io.Timestamp.now(io, .awake);
@@ -106,18 +106,21 @@ pub fn query_types(arena: Allocator, io: Io, app: App) !void {
     if (!(try child.wait(io)).success()) return error.ChildFailed;
 }
 
-/// The templates' modules, and their bytecode's object.
+/// The templates' modules, and their bytecode's object. `cache`: what
+/// `roux dev` keeps between passes (null for one build).
 pub fn generate(
     arena: Allocator,
     io: Io,
     paths: Paths,
     app: App,
+    cache: ?*rocstache.generate.Cache,
     stderr: *Io.Writer,
 ) !rocstache.generate.Result {
     return rocstache.generate.generate(arena, io, .{
         .app = app.dir,
         .build = paths.out_path,
         .roc = app.roc,
+        .cache = cache,
     }, stderr);
 }
 

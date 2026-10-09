@@ -46,14 +46,27 @@ const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
 /// text, with `slack` bytes after it.
 extern const rocstache_data: u64;
 
-const Data = struct { code: []const u64, text: []const u8 };
+const Data = struct {
+    code: []const u64,
+    text: []const u8,
+    /// The identity of the layouts the code reads records by (elf.zig).
+    layouts: u64,
+};
 
 fn data_linked() Data {
-    const words: [*]const u64 = @ptrCast(&rocstache_data);
+    return data_at(@ptrCast(&rocstache_data));
+}
+
+/// The program in `words`, laid out as elf.zig writes it.
+fn data_at(words: [*]const u64) Data {
     const code_len: usize = @intCast(words[0]);
     const text_len: usize = @intCast(words[1]);
-    const text: [*]const u8 = @ptrCast(words + 2 + code_len);
-    return .{ .code = words[2..][0..code_len], .text = text[0..text_len] };
+    const text: [*]const u8 = @ptrCast(words + 3 + code_len);
+    return .{
+        .code = words[3..][0..code_len],
+        .text = text[0..text_len],
+        .layouts = words[2],
+    };
 }
 
 /// Bytes after the text, and after the written page, that block copies
@@ -76,7 +89,13 @@ const scopes_max = 16 * 9 + 1;
 /// Template `index` rendered from the record at `context`, in one Roc
 /// list. The record is only read.
 pub fn render(index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
-    const data = data_linked();
+    if (reload_path == null) return render_from(data_linked(), index, context, roc_host);
+    const program = acquire();
+    defer release();
+    return render_from(program.data, index, context, roc_host);
+}
+
+fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
     const buffer = scratch orelse blk: {
         const fresh = std.heap.page_allocator.alloc(u8, scratch_bytes) catch
             @panic("out of memory");
@@ -90,6 +109,171 @@ pub fn render(index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
     const result: Bytes = .allocate(sink.len, roc_host);
     if (sink.len > 0) @memcpy(@constCast(result.allocationItems()), sink.buffer[0..sink.len]);
     return result;
+}
+
+// ---- development: the program reread, no restart --------------------------------
+
+// In development `roux dev` writes the program to a file (`templates.bin`)
+// beside the object it links, and on a markup edit only rewrites it and
+// sends the app SIGUSR1: no link, no restart, the app's state kept. The
+// signal bumps `requested`; the next render rereads the file and swaps
+// the program in. A render on another shard may still run the old one:
+// each thread publishes the program it renders from (a hazard), and the
+// swap frees the old program only once no hazard holds it. Renders never
+// yield, so that wait is a render's length. In production `reload_path`
+// is null and a render pays one comparison.
+
+/// The file roux dev rewrites (`ROUX_DEV_TEMPLATES`); null in production.
+var reload_path: ?[:0]const u8 = null;
+/// Bumped by SIGUSR1: a new program is in the file. The events streams
+/// wait on it too (host.zig), to tell the browser.
+pub var requested: std.atomic.Value(u32) = .init(0);
+/// The `requested` count the current program answers.
+pub var loaded: std.atomic.Value(u32) = .init(0);
+var current: std.atomic.Value(?*const Program) = .init(null);
+/// Held while a program is read and swapped in (microseconds, development
+/// only): a spin.
+var swapping: std.atomic.Value(bool) = .init(false);
+/// The number of templates the app's Roc was built for: a program with
+/// another count needs the restart roux dev gives it.
+var templates_count: u64 = 0;
+
+const Program = struct {
+    /// Its words, read from the file (empty for the linked program).
+    words: []u64,
+    data: Data,
+};
+
+var linked_program: Program = undefined;
+
+const threads_max = 256;
+var hazards: [threads_max]std.atomic.Value(?*const Program) = @splat(.init(null));
+var hazards_used: std.atomic.Value(u32) = .init(0);
+threadlocal var hazard: ?*std.atomic.Value(?*const Program) = null;
+
+/// Development: renders take their program from `path`, read now. Called
+/// once, before the shards start.
+pub fn reload_from(path: [:0]const u8) void {
+    assert(reload_path == null);
+    const linked = data_linked();
+    assert(linked.code.len > 0);
+    templates_count = linked.code[0];
+    linked_program = .{ .words = &.{}, .data = linked };
+    current.store(&linked_program, .seq_cst);
+    reload_path = path;
+    swap_in(0);
+}
+
+/// The SIGUSR1 handler's work: async-signal-safe (an atomic and a futex
+/// wake: the events streams' fibers wait on `requested`).
+pub fn request_reload() void {
+    _ = requested.fetchAdd(1, .release);
+    _ = std.os.linux.futex_3arg(
+        &requested.raw,
+        .{ .cmd = .WAKE, .private = true },
+        std.math.maxInt(i32),
+    );
+}
+
+/// The program this thread renders from, held until `release`.
+fn acquire() *const Program {
+    const want = requested.load(.acquire);
+    if (want != loaded.load(.acquire)) swap_in(want);
+    const slot = hazard orelse register();
+    while (true) {
+        const program = current.load(.seq_cst).?;
+        slot.store(program, .seq_cst);
+        // Swapped meanwhile: the swap may not have seen this hazard.
+        if (current.load(.seq_cst) == program) return program;
+    }
+}
+
+fn release() void {
+    hazard.?.store(null, .release);
+}
+
+fn register() *std.atomic.Value(?*const Program) {
+    const index = hazards_used.fetchAdd(1, .monotonic);
+    if (index >= threads_max) @panic("more threads render than templates.zig allows");
+    hazard = &hazards[index];
+    return hazard.?;
+}
+
+/// Reads the file and swaps it in, unless another thread did already;
+/// the old program is freed once no render holds it. A file that cannot
+/// be read, or holds another number of templates, is said and skipped:
+/// the old program keeps serving.
+fn swap_in(want: u32) void {
+    while (swapping.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+        std.atomic.spinLoopHint();
+    }
+    defer swapping.store(false, .release);
+    if (want != 0 and loaded.load(.acquire) == want) return;
+    defer loaded.store(want, .release);
+    const fresh = read_program(reload_path.?) catch |err| {
+        log_reload_failure(err);
+        return;
+    };
+    const old = current.swap(fresh, .seq_cst).?;
+    const used = @min(hazards_used.load(.acquire), threads_max);
+    for (hazards[0..used]) |*slot| {
+        while (slot.load(.seq_cst) == old) std.atomic.spinLoopHint();
+    }
+    if (old.words.len > 0) {
+        std.heap.page_allocator.free(old.words);
+        std.heap.page_allocator.destroy(old);
+    }
+}
+
+const ReadError = error{ Unreadable, Malformed, ContractsChanged, TemplatesChanged, OutOfMemory };
+
+fn read_program(path: [:0]const u8) ReadError!*const Program {
+    const linux = std.os.linux;
+    const opened = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (linux.errno(opened) != .SUCCESS) return error.Unreadable;
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    var stat: linux.Statx = undefined;
+    const flags: u32 = linux.AT.EMPTY_PATH;
+    if (linux.errno(linux.statx(fd, "", flags, .{ .SIZE = true }, &stat)) != .SUCCESS) {
+        return error.Unreadable;
+    }
+    const size: usize = @intCast(stat.size);
+    if (size < 16 + slack) return error.Malformed;
+    const words = try std.heap.page_allocator.alloc(u64, (size + 7) / 8);
+    errdefer std.heap.page_allocator.free(words);
+    const bytes = std.mem.sliceAsBytes(words);
+    var done: usize = 0;
+    while (done < size) {
+        const got = linux.read(fd, bytes[done..].ptr, size - done);
+        if (linux.errno(got) != .SUCCESS or got == 0) return error.Unreadable;
+        done += got;
+    }
+    const code_len = words[0];
+    const text_len = words[1];
+    if (code_len == 0 or code_len > words.len or
+        24 + code_len * 8 + text_len + slack != size) return error.Malformed;
+    const data = data_at(words.ptr);
+    // Made for other layouts (a contract changed, roc not rebuilt yet): its
+    // offsets are not this app's records'. Never read by them.
+    if (data.layouts != linked_program.data.layouts) return error.ContractsChanged;
+    if (data.code[0] != templates_count) return error.TemplatesChanged;
+    const program = try std.heap.page_allocator.create(Program);
+    program.* = .{ .words = words, .data = data };
+    return program;
+}
+
+fn log_reload_failure(err: ReadError) void {
+    const message = switch (err) {
+        error.Unreadable => "roux: the templates' program could not be read; the old one serves\n",
+        error.Malformed => "roux: the templates' program is malformed; the old one serves\n",
+        error.TemplatesChanged => "roux: templates were added or removed: the old program " ++
+            "serves until the restart\n",
+        error.ContractsChanged => "roux: the templates' contracts changed: the old program " ++
+            "serves until the restart\n",
+        error.OutOfMemory => "roux: out of memory rereading the templates; the old one serves\n",
+    };
+    _ = std.os.linux.write(2, message.ptr, message.len);
 }
 
 const Vm = struct {
