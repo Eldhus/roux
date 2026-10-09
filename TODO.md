@@ -122,8 +122,12 @@
        decides to specialize on Datastar (owner, 2026-10-09).
      - `page-union` (`../roux-page-union`): pages as a generated union
        of their contracts, data the host renders as the response is
-       sent; comparable in `roc test`. Being built (owner, 2026-10-09:
-       "do union type method and benchmark").
+       sent; comparable in `roc test`. Built and measured (its DIARY):
+       free on Menu; `/about` +10% as written (Roc stops folding the
+       context at compile time inside a tag, as inside a closure: the
+       closure's 10% was that too), +2.5% with the response a top-level
+       constant; every `Server.Response` gains a parameter; no template
+       named `Page`. Examples not ported.
      - Found on the way, in the site (fourneau-dragrace `f379a25`, on
        main): log10 by bisection on `F64.pow` was a third of the race
        page; by its series now, -33%.
