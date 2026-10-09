@@ -73,7 +73,7 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     var cache: rocstache.generate.Cache = .init(arena);
     var generation = try begin(arena, io, paths, app, &cache, null, stderr);
     const begun_at = Io.Timestamp.now(io, .awake);
-    var roc = start_roc(io, paths, app, mode) catch |err| {
+    var roc = start_roc(io, paths, app, mode, null) catch |err| {
         rocstache.generate.abandon(io, &generation);
         return err;
     };
@@ -138,10 +138,14 @@ pub fn begin(
 }
 
 /// roc started on the app's executable: roc links it, as any platform's.
-pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode) !std.process.Child {
+/// `log`: where roc's messages go (`roux dev` shows them in the page too);
+/// null for the terminal.
+pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode, log: ?Io.File) !std.process.Child {
     var buffer: [std.fs.max_path_bytes + 16]u8 = undefined;
     const output = try std.fmt.bufPrint(&buffer, "--output={s}", .{paths.archive});
-    return spawn(io, &.{ app.roc, "build", mode.roc_opt(), app.file, output }, app.dir);
+    const argv = &.{ app.roc, "build", mode.roc_opt(), app.file, output };
+    const to: std.process.SpawnOptions.StdIo = if (log) |file| .{ .file = file } else .inherit;
+    return spawn_to(io, argv, app.dir, to);
 }
 
 /// roc's executable with the templates' program attached after it, then
@@ -192,10 +196,22 @@ pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
 /// A tool started; one that cannot be is named, with why, as a tool that
 /// ran and failed would have said (rare: a plain unbuffered line).
 fn spawn(io: Io, argv: []const []const u8, cwd: []const u8) !std.process.Child {
+    return spawn_to(io, argv, cwd, .inherit);
+}
+
+/// The same, its output (stdout and stderr) to `to`.
+fn spawn_to(
+    io: Io,
+    argv: []const []const u8,
+    cwd: []const u8,
+    to: std.process.SpawnOptions.StdIo,
+) !std.process.Child {
     const how: std.process.SpawnOptions = .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .ignore,
+        .stdout = to,
+        .stderr = to,
     };
     return std.process.spawn(io, how) catch |err| {
         std.debug.print("roux: {s} could not run: {t}\n", .{ argv[0], err });
