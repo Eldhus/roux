@@ -283,7 +283,29 @@ fn template_names(
         try names.append(gpa, try gpa.dupe(u8, name));
     }
     std.mem.sort([]const u8, names.items, {}, string_less);
+    try refuse_nested(gpa, io, app, errors);
     return names.items;
+}
+
+/// A template in a subdirectory would be silently no template (they live
+/// beside the app's `.roc`): refused, named. Hidden directories (`.roux`)
+/// are not looked in.
+fn refuse_nested(gpa: Allocator, io: Io, app: Io.Dir, errors: *Io.Writer) Error!void {
+    var walker = try app.walkSelectively(gpa);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.basename[0] == '.') continue;
+        if (entry.kind == .directory) {
+            try walker.enter(io, entry);
+            continue;
+        }
+        const nested = std.mem.indexOfScalar(u8, entry.path, '/') != null;
+        if (nested and std.mem.endsWith(u8, entry.basename, ".rocstache")) {
+            try errors.print("{s}: a template lives beside the app's .roc, " ++
+                "not in a subdirectory\n", .{entry.path});
+            return error.Invalid;
+        }
+    }
 }
 
 fn string_less(_: void, a: []const u8, b: []const u8) bool {
