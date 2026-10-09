@@ -129,14 +129,21 @@
 6. **A release that needs only roc.** (owner, 2026-10-09: "would people
    be able to run a demo website with just a roc compiler and pull down
    the built platform"; on dropping Zig: "Oh yeah dig into this.")
-   - Where it stands (2026-10-09, branch `roc-link`, worktree
-     `../roux-roc-link`, not merged: the owner's call): roc links the
-     executable, roux attaches the templates' program after it; no Zig
-     anywhere in building an app. Examples, the site and `roux dev`
-     checked, cost unchanged (DIARY 2026-10-09). Next, if merged: the
-     dragrace's builds (they do not call Zig for roux apps either), then
-     the release itself: the platform tarball (roc's URL package) and a
-     static `roux` beside it.
+   - Where it stands (2026-10-09): merged (owner: "merge this in"). roc
+     links; roux attaches the templates' program; no Zig to build an app.
+     Releases are `tools/release.sh` then `gh release create`: v0.1.0,
+     v0.2.0 (templates/, the failure overlay), v0.2.1 (DIARY). The owner
+     then asked for **roux-tutor** (github.com/Eldhus/roux-tutor, beside
+     the others in ~/devel/eldhus): "our recommended onboarding exercise
+     for the world", the tutorial being the app, clone and go, markdown
+     minimal, five critical passes, "make roc devs and core team proud".
+     Built and published: ten lessons, each an edit the page shows; a
+     `./roux` launcher that fetches the pinned release by checksum; clone
+     to a served page in 2.3 s from GitHub in a clean environment. Its
+     notes live here (it keeps its own markdown to the README on
+     purpose). A new roux release means: bump `roux_version`, release,
+     then the tutor's `roux` (version, sha256) and `main.roc`'s platform
+     URL, and walk its lessons in a fresh clone.
 
 
 ## Plan
