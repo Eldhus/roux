@@ -38,11 +38,24 @@ Rocstache :: [].{
 	## The template rendered now as a Datastar patch: each line an
 	## `elements` line; Datastar replaces the element by its id.
 	patch! : Template(t) => Sse.Event
-	patch! = |made| {
-		lines = str!(made).split_on("\n").map(|line| "elements ${line}")
+	patch! = |made| patch_event(str!(made))
+
+	## A Datastar patch of `markup`: the template's final line break is no
+	## line of its own.
+	patch_event : Str -> Sse.Event
+	patch_event = |markup| {
+		lines = markup.drop_suffix("\n").split_on("\n").map(|line| "elements ${line}")
 		match Sse.Event.named("datastar-patch-elements", Str.join_with(lines, "\n")) {
 			Ok(event) => event
 			Err(InvalidEventName) => crash "a constant event name has no line break"
 		}
 	}
+
+	expect
+		Sse.Event.to_bytes(patch_event("<div id=\"a\">\n<b>x</b>\n</div>\n"))
+		== Str.to_utf8("event: datastar-patch-elements\ndata: elements <div id=\"a\">\ndata: elements <b>x</b>\ndata: elements </div>\n\n")
+
+	expect
+		Sse.Event.to_bytes(patch_event("<span id=\"c\">7</span>"))
+		== Str.to_utf8("event: datastar-patch-elements\ndata: elements <span id=\"c\">7</span>\n\n")
 }
