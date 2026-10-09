@@ -114,6 +114,9 @@
      - `fixed-format` (`../roux-fixed`): `{{ x | fixed "1" }}`, an F64
        printed by the VM as Roc rounds; the site's chart dots -1.1% of
        the race page, byte for byte.
+     - `sse-frame` (`../roux-sse`): `Sse.Event.lines!` frames an event
+       in the host, `Rocstache.patch!` makes a page a Datastar patch; the
+       site's patch route -9.5%, byte for byte.
      - Found on the way, in the site (fourneau-dragrace `f379a25`, on
        main): log10 by bisection on `F64.pow` was a third of the race
        page; by its series now, -33%.
