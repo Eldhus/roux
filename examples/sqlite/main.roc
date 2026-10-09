@@ -35,7 +35,7 @@ init! = || {
 
 Err : [NotFound, BadRequest(Str), DbErr(Sqlite.Err)]
 
-respond! : Server.Request, Context => Try(Server.Response, Err)
+respond! : Server.Request, Context => Try(Server.Response(_), Err)
 respond! = |request, { db }| {
 	path =
 		match request.target.split_first("?") {
@@ -79,7 +79,7 @@ respond! = |request, { db }| {
 	}
 }
 
-menu! : Sqlite.Db, Server.Request => Try(Server.Response, Err)
+menu! : Sqlite.Db, Server.Request => Try(Server.Response(_), Err)
 menu! = |db, request| {
 	dishes = Dishes.with_stars!(Sqlite.read(db, request))?
 	lines = dishes.map(
@@ -95,7 +95,7 @@ menu! = |db, request| {
 	Ok(Server.text("${Str.join_with(lines, "\n")}\n"))
 }
 
-dish! : Sqlite.Db, Server.Request, Str => Try(Server.Response, Err)
+dish! : Sqlite.Db, Server.Request, Str => Try(Server.Response(_), Err)
 dish! = |db, request, id_text| {
 	id = parse_i64(id_text)?
 	{ name, price_kr, note, .. } = Dishes.by_id!(Sqlite.read(db, request), { id: id })?
@@ -107,7 +107,7 @@ dish! = |db, request, id_text| {
 	Ok(Server.text("${name}: ${price_kr.to_str()} kr${about}\n"))
 }
 
-add_dish! : Sqlite.Db, Server.Request => Try(Server.Response, Err)
+add_dish! : Sqlite.Db, Server.Request => Try(Server.Response(_), Err)
 add_dish! = |db, request| {
 	name = query(request, "name")?
 	price_kr = parse_i64(query(request, "price_kr")?)?
@@ -119,10 +119,10 @@ add_dish! = |db, request| {
 	tx = Sqlite.write!(db, request)?
 	{ id } = Dishes.add!(tx, { name, price_kr, note }) ? constraint_as_bad_request
 	Sqlite.commit!(tx)?
-	Ok({ status: 201, headers: [], body: Str.to_utf8("dish ${id.to_str()}\n") })
+	Ok({ status: 201, headers: [], body: Text("dish ${id.to_str()}\n") })
 }
 
-rename! : Sqlite.Db, Server.Request, Str => Try(Server.Response, Err)
+rename! : Sqlite.Db, Server.Request, Str => Try(Server.Response(_), Err)
 rename! = |db, request, id_text| {
 	id = parse_i64(id_text)?
 	name = query(request, "name")?
@@ -132,14 +132,14 @@ rename! = |db, request, id_text| {
 	Ok(Server.text("renamed\n"))
 }
 
-review! : Sqlite.Db, Server.Request => Try(Server.Response, Err)
+review! : Sqlite.Db, Server.Request => Try(Server.Response(_), Err)
 review! = |db, request| {
 	dish_id = parse_i64(query(request, "dish_id")?)?
 	stars = parse_i64(query(request, "stars")?)?
 	tx = Sqlite.write!(db, request)?
 	Reviews.add!(tx, { dish_id, stars }) ? constraint_as_bad_request
 	Sqlite.commit!(tx)?
-	Ok({ status: 201, headers: [], body: Str.to_utf8("reviewed\n") })
+	Ok({ status: 201, headers: [], body: Text("reviewed\n") })
 }
 
 ## A constraint the request broke is the client's: 400, saying which.

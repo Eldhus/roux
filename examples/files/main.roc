@@ -25,13 +25,13 @@ init! = || {
 	Ok({ config: { port: 8080, static_dir: "public" }, context: { first_line } })
 }
 
-respond! : Server.Request, Context => Try(Server.Response, [NotFound, FileErr(File.FileErr)])
+respond! : Server.Request, Context => Try(Server.Response(_), [NotFound, FileErr(File.FileErr)])
 respond! = |request, { first_line }|
 	match request.target {
 		"/first-line" => Ok(Server.text("${first_line}\n"))
 		"/notes" => {
 			notes = File.read_utf8!("notes.txt", 64 * 1024)?
-			Ok(Rocstache.html(Notes.render!({ notes: notes })))
+			Ok(Rocstache.html(Notes.template({ notes: notes })))
 		}
 		"/missing" => {
 			_ = File.read_utf8!("no-such-file.txt", 1024)?

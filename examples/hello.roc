@@ -9,7 +9,7 @@ program = { init!, respond! }
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({ config: { port: 8080, static_dir: "" }, context: {} })
 
-respond! : Server.Request, Context => Try(Server.Response, [NotFound, BadRequest(Str)])
+respond! : Server.Request, Context => Try(Server.Response(_), [NotFound, BadRequest(Str)])
 respond! = |request, _context|
 	match request.target {
 		"/" => Ok(Server.text("hello\n"))

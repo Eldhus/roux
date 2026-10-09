@@ -63,7 +63,7 @@ Sse := [].{
 
 	## The stream's end, and what `respond!` returns for it: the response
 	## is on its way already. `Refused` after an end.
-	end! : Stream => Try(Server.Response(page), [SseErr(SseErr)])
+	end! : Stream => Try(Server.Response(t), [SseErr(SseErr)])
 	end! = |Stream.{ request }|
 		match Host.response_stream_end!(request) {
 			Ok({}) => Ok(Server.streamed)

@@ -195,16 +195,17 @@ pub fn compile(
 
 pub const Program = struct { code: []const u64, text: []const u8 };
 
-/// Where the app's `Page` union keeps which template a page is, and each
-/// template's tag: its discriminant and where its contract starts.
-pub const Pages = struct {
+/// Where the app's `Templates.Template` union keeps which template a value
+/// is, and each template's tag: its discriminant and where its contract
+/// starts.
+pub const Union = struct {
     discriminant_offset: u32 = 0,
     /// 0: one tag, no discriminant.
     discriminant_size: u32 = 0,
     /// By template index.
-    tags: []const PageTag = &.{},
+    tags: []const Tag = &.{},
 };
-pub const PageTag = struct { discriminant: u32, payload_offset: u32 };
+pub const Tag = struct { discriminant: u32, payload_offset: u32 };
 
 /// The header's length in words: the count, each template's `[start,
 /// end)`, the union's word, each template's tag word.
@@ -213,15 +214,15 @@ pub fn header_words(count: usize) usize {
 }
 
 /// The app's program from its templates' chunks: the header (each
-/// template's `[start, end)`; the pages' union: its discriminant's offset
-/// and size, then each template's discriminant and payload offset), then
-/// each chunk's code, its runs moved past the text placed before it.
+/// template's `[start, end)`; the templates' union: its discriminant's
+/// offset and size, then each template's discriminant and payload offset),
+/// then each chunk's code, its runs moved past the text placed before it.
 pub fn assemble(
     gpa: std.mem.Allocator,
     chunks: []const Chunk,
-    pages: Pages,
+    templates: Union,
 ) error{OutOfMemory}!Program {
-    assert(pages.tags.len == chunks.len);
+    assert(templates.tags.len == chunks.len);
     var code_len: usize = header_words(chunks.len);
     var text_len: usize = 0;
     for (chunks) |chunk| {
@@ -232,8 +233,9 @@ pub fn assemble(
     const text = try gpa.alloc(u8, text_len);
     code[0] = chunks.len;
     const union_at = 1 + 2 * chunks.len;
-    code[union_at] = pages.discriminant_offset | @as(u64, pages.discriminant_size) << 32;
-    for (pages.tags, 0..) |tag, index| {
+    code[union_at] = templates.discriminant_offset |
+        @as(u64, templates.discriminant_size) << 32;
+    for (templates.tags, 0..) |tag, index| {
         code[union_at + 1 + index] = tag.payload_offset | @as(u64, tag.discriminant) << 32;
     }
     var code_at: usize = header_words(chunks.len);
@@ -497,12 +499,12 @@ test "bytecode: assembled chunks, their runs moved past the text before them" {
             .runs = &.{.{ .at = 1, .shift = 0 }},
         },
     };
-    const tags = [_]PageTag{
+    const tags = [_]Tag{
         .{ .discriminant = 0, .payload_offset = 0 },
         .{ .discriminant = 1, .payload_offset = 0 },
     };
-    const pages: Pages = .{ .discriminant_offset = 24, .discriminant_size = 1, .tags = &tags };
-    const program = try assemble(arena.allocator(), &chunks, pages);
+    const templates: Union = .{ .discriminant_offset = 24, .discriminant_size = 1, .tags = &tags };
+    const program = try assemble(arena.allocator(), &chunks, templates);
     try std.testing.expectEqualStrings("abcde", program.text);
     // The header: two templates, [8, 9) and [9, 11); the union's
     // discriminant at 24, one byte; the tags 0 and 1.

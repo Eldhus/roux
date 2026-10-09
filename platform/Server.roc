@@ -16,16 +16,18 @@ Server := [].{
 		body : U64,
 	}
 
-	## `page` is the app's `Page`: the union of its templates' pages, each
-	## tag a template and its contract (`AboutPage({ … })`), which the host
-	## renders as the response is sent.
-	Response(page) : {
+	## `t` is the app's templates' union (`Templates.Template`, generated),
+	## which the host renders as the response is sent. Apps write
+	## `Server.Response(_)`: the generated constructors pin it.
+	Response(t) : {
 		status : U16,
 		headers : List(Header),
-		body : Body(page),
+		body : Body(t),
 	}
 
-	Body(page) : [Bytes(List(U8)), Text(Str), Html(page)]
+	## `Html`: a template's value as its generated `X.template` makes it
+	## (`Rocstache.Template`), rendered as it is sent.
+	Body(t) : [Bytes(List(U8)), Text(Str), Html({ layouts : U64, template : t })]
 
 	## `BodyAfterStream`: read after `Sse.start!`, when it no longer can be.
 	## `BodyDuringWrite`: read while the request holds the database's
@@ -36,16 +38,16 @@ Server := [].{
 	from_host : Host.RequestFromHost -> Request
 	from_host = |request| request
 
-	## The response as the host takes it: a page is rendered now, from the
-	## union as Roc laid it out (the box goes back to Roc to release).
-	to_host! : Response(page) => Host.ResponseToHost
+	## The response as the host takes it: a template is rendered now, from
+	## the union as Roc laid it out (the box goes back to Roc to release).
+	to_host! : Response(t) => Host.ResponseToHost
 	to_host! = |{ status, headers, body }| {
 		status,
 		headers,
 		body: match body {
 			Bytes(bytes) => bytes
 			Text(text) => Str.to_utf8(text)
-			Html(page) => Host.page_render!(Box.box(page)).bytes
+			Html(made) => Host.template_render!(made.layouts, Box.box(made.template)).bytes
 		},
 	}
 
@@ -67,27 +69,19 @@ Server := [].{
 		}
 	}
 
-	text : Str -> Response(page)
+	text : Str -> Response(t)
 	text = |body| {
 		status: 200,
 		headers: [{ name: "Content-Type", value: "text/plain; charset=utf-8" }],
 		body: Text(body),
 	}
 
-	## A page of the app's: 200, HTML, rendered by the host as it is sent.
-	page : page -> Response(page)
-	page = |p| {
-		status: 200,
-		headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }],
-		body: Html(p),
-	}
-
-	status_response : U16 -> Response(page)
+	status_response : U16 -> Response(t)
 	status_response = |status| { status, headers: [], body: Bytes([]) }
 
 	## What `respond!` returns after a stream (`Sse.end!` gives it): the
 	## response is on its way already. Returned without a stream, the host
 	## answers 500: status 0 is no status.
-	streamed : Response(page)
+	streamed : Response(t)
 	streamed = { status: 0, headers: [], body: Bytes([]) }
 }
