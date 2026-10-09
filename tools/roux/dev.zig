@@ -4,11 +4,13 @@
 //! One loop, one pass at a time, so a build never races a generator. A
 //! pass hashes the app's sources by kind and runs only what changed: a
 //! query (`*.sql`) runs roux-db; then the templates are generated, which
-//! rewrites a `Page.roc` only when its contract changed, and the templates'
-//! bytecode object when the markup did; Roc sources changed, roc builds
-//! (`--opt=dev`); either, the link and a restart. Editing markup never
-//! starts roc, nor any compiler. Content decides, never mtimes: a save that
-//! changes nothing, and the generators' own writes, cost nothing more.
+//! rewrites a `Page.roc` only when its contract changed, and the program
+//! (`templates.bin`) when the markup did. Markup alone: the running app
+//! is told to reread the program (SIGUSR1), no compiler, no restart. Roc
+//! changed (an edit, or a rewritten `Page.roc`): roc builds (`--opt=dev`)
+//! while glue lays out any changed contract, then the link and a restart.
+//! Content decides, never mtimes: a save that changes nothing, and the
+//! generators' own writes, cost nothing more.
 //!
 //! The app runs with `ROUX_DEV` set to the build's number, so the host
 //! answers `/_dev/events` and adds the reload script to HTML (host/dev.zig):

@@ -4,13 +4,12 @@
 //!   roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
 //!
 //! `build` generates the app's templates (each `Page.rocstache` beside
-//! `APP.roc` gets its `Page.roc` contract; the templates object's sources go
-//! in `.roux/APP/`), then, at the same time, roc builds the app as an
-//! archive and Zig compiles the templates object; then links the two into
+//! `APP.roc` gets its `Page.roc` contract; their bytecode, as an object
+//! roux writes itself, goes in `.roux/APP/`), roc building the app as an
+//! archive while glue lays the contracts out; then links the two into
 //! `APP` beside `APP.roc`, as `roc build` names it, or into `--output`.
-//! `--dev` is the fast build: roc `--opt=dev` and the templates Debug;
-//! without it, `--opt=speed` and ReleaseSafe. The same source either way
-//! (DESIGN.md, Templates).
+//! `--dev` is roc's `--opt=dev`; without it, `--opt=speed`. The templates'
+//! bytecode is the same either way (DESIGN.md, Templates).
 //!
 //! `dev` builds fast, runs the app, and rebuilds only what each edit needs,
 //! the browser reloading itself (dev.zig). `--static` names the app's
