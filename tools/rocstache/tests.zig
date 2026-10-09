@@ -10,7 +10,7 @@ test {
     _ = @import("cache.zig");
     _ = @import("bytecode.zig");
     _ = @import("roc.zig");
-    _ = @import("elf.zig");
+    _ = @import("program.zig");
     _ = @import("generate.zig");
     _ = @import("root.zig");
 }

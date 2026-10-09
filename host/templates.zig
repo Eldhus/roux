@@ -41,11 +41,80 @@ const Op = enum(u4) {
 };
 const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
 
-/// What the app's build linked in: roux build writes the object itself
-/// (tools/rocstache/elf.zig), so a markup edit compiles nothing. Words:
-/// the code's length in words, the text's in bytes, the code, then the
-/// text, with `slack` bytes after it.
-extern const rocstache_data: u64;
+/// The program roux build attached to the executable, read at start-up
+/// (`load_attached`): roc links the app as any platform's, and roux
+/// appends the templates' program after it, then a trailer: the program's
+/// length in bytes and `attached_magic`. Words: the code's length in
+/// words, the text's in bytes, the layouts' identity, the code, then the
+/// text, with `slack` bytes after it (elf.zig's `write_program`).
+var attached: Data = undefined;
+
+pub const attached_magic = "ROUXTPL1";
+
+/// An app with no templates: no tag, no code, no text.
+const empty_words = [_]u64{ 2, 0, 0, 0, 0 } ++ @as([slack / 8]u64, @splat(0));
+
+/// Reads the program after the executable's own bytes; none attached is an
+/// app without templates. Called once, before `init!`. An attachment that
+/// is malformed stops the app: it was built wrong.
+pub fn load_attached() void {
+    attached = data_at(&empty_words);
+    const words = read_attached() catch |err| switch (err) {
+        error.NoneAttached => return,
+        error.Unreadable => @panic("the executable could not be read for its templates"),
+        error.Malformed => @panic("the templates attached to the executable are malformed"),
+        error.OutOfMemory => @panic("out of memory reading the templates"),
+    };
+    attached = data_at(words.ptr);
+}
+
+fn read_attached() error{ NoneAttached, Unreadable, Malformed, OutOfMemory }![]u64 {
+    const linux = std.os.linux;
+    const opened = linux.open("/proc/self/exe", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (linux.errno(opened) != .SUCCESS) return error.Unreadable;
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    var stat: linux.Statx = undefined;
+    const flags: u32 = linux.AT.EMPTY_PATH;
+    if (linux.errno(linux.statx(fd, "", flags, .{ .SIZE = true }, &stat)) != .SUCCESS) {
+        return error.Unreadable;
+    }
+    const size: u64 = stat.size;
+    var trailer: [16]u8 = undefined;
+    if (size < trailer.len) return error.NoneAttached;
+    try pread_all(fd, &trailer, size - trailer.len);
+    if (!std.mem.eql(u8, trailer[8..], attached_magic)) return error.NoneAttached;
+    const length = std.mem.readInt(u64, trailer[0..8], .little);
+    if (length < 24 + slack or length % 8 != 0 or length > size - trailer.len) {
+        return error.Malformed;
+    }
+    const words = try std.heap.page_allocator.alloc(u64, @intCast(length / 8));
+    errdefer std.heap.page_allocator.free(words);
+    try pread_all(fd, std.mem.sliceAsBytes(words), size - trailer.len - length);
+    if (!well_formed(words, length)) return error.Malformed;
+    return words;
+}
+
+/// Whether `length` bytes of `words` hold one program, padded to whole
+/// words by up to 7 bytes (tools/rocstache/program.zig).
+fn well_formed(words: []const u64, length: usize) bool {
+    if (length < 24 + slack or words.len < 3) return false;
+    const code_len = words[0];
+    const text_len = words[1];
+    if (code_len < 2 or code_len > words.len) return false;
+    const used = 24 + code_len * 8 + text_len + slack;
+    return used <= length and length - used < 8;
+}
+
+fn pread_all(fd: i32, buffer: []u8, offset: u64) error{Unreadable}!void {
+    const linux = std.os.linux;
+    var done: usize = 0;
+    while (done < buffer.len) {
+        const got = linux.pread(fd, buffer[done..].ptr, buffer.len - done, @intCast(offset + done));
+        if (linux.errno(got) != .SUCCESS or got == 0) return error.Unreadable;
+        done += got;
+    }
+}
 
 /// A program: the linked one, one reread, or one a test assembled
 /// (templates_test.zig).
@@ -57,7 +126,7 @@ pub const Data = struct {
 };
 
 fn data_linked() Data {
-    return data_at(@ptrCast(&rocstache_data));
+    return attached;
 }
 
 /// The program in `words`, laid out as elf.zig writes it.
@@ -295,10 +364,7 @@ fn read_program(path: [:0]const u8) ReadError!*const Program {
         if (linux.errno(got) != .SUCCESS or got == 0) return error.Unreadable;
         done += got;
     }
-    const code_len = words[0];
-    const text_len = words[1];
-    if (code_len == 0 or code_len > words.len or
-        24 + code_len * 8 + text_len + slack != size) return error.Malformed;
+    if (!well_formed(words, size)) return error.Malformed;
     const data = data_at(words.ptr);
     // Made for other layouts (a contract changed, roc not rebuilt yet): its
     // offsets are not this app's records'. Never read by them.
