@@ -390,9 +390,15 @@ fn digests(arena: Allocator, io: Io, options: Options) !Digests {
     };
 }
 
-/// inotify over the app's directories, as they were when roux dev started.
+/// inotify over the app's directories (hidden ones left out), those made
+/// while roux dev runs too.
 const Watch = struct {
     fd: i32,
+    gpa: Allocator,
+    io: Io,
+    options: Options,
+    /// Each watch's directory, from the app's (`""` for the app's own).
+    paths: std.AutoHashMapUnmanaged(i32, []const u8) = .empty,
     /// Which watches are the static directory's (by watch descriptor).
     static: std.AutoHashMapUnmanaged(i32, void) = .empty,
     /// What the events named since the last pass.
@@ -459,39 +465,66 @@ const Watch = struct {
 
     fn start(gpa: Allocator, io: Io, options: Options) !Watch {
         const fd: i32 = @intCast(try syscall(linux.inotify_init1(linux.IN.CLOEXEC)));
-        var watch: Watch = .{ .fd = fd };
+        var watch: Watch = .{ .fd = fd, .gpa = gpa, .io = io, .options = options };
         errdefer watch.deinit(gpa);
-        const mask = linux.IN.CLOSE_WRITE | linux.IN.MOVED_TO | linux.IN.CREATE | linux.IN.DELETE;
-        watch.root = try watch.add(gpa, options.app.dir, mask, false);
-        var dir = try Io.Dir.cwd().openDir(io, options.app.dir, .{ .iterate = true });
-        defer dir.close(io);
-        var walker = try dir.walkSelectively(gpa);
-        defer walker.deinit();
-        var count: u32 = 1;
-        while (try walker.next(io)) |entry| {
-            if (entry.kind != .directory or entry.basename[0] == '.') continue;
-            count += 1;
-            if (count > directories_max) return error.TooManyDirectories;
-            const path = try std.fs.path.join(gpa, &.{ options.app.dir, entry.path });
-            defer gpa.free(path);
-            _ = try watch.add(gpa, path, mask, in_static(options, entry.path));
-            try walker.enter(io, entry);
-        }
+        watch.root = try watch.add_tree("");
         return watch;
     }
 
     fn deinit(watch: *Watch, gpa: Allocator) void {
+        var paths = watch.paths.valueIterator();
+        while (paths.next()) |path| gpa.free(path.*);
+        watch.paths.deinit(gpa);
         watch.static.deinit(gpa);
         _ = linux.close(watch.fd);
         watch.* = undefined;
     }
 
-    fn add(watch: *Watch, gpa: Allocator, path: []const u8, mask: u32, static: bool) !i32 {
-        const path_z = try gpa.dupeSentinel(u8, path, 0);
-        defer gpa.free(path_z);
-        const wd: i32 = @intCast(try syscall(linux.inotify_add_watch(watch.fd, path_z, mask)));
-        if (static) try watch.static.put(gpa, wd, {});
+    /// `relative` (from the app's directory) watched, and each directory
+    /// under it that is not hidden; its own watch descriptor.
+    fn add_tree(watch: *Watch, relative: []const u8) !i32 {
+        const gpa = watch.gpa;
+        const io = watch.io;
+        const top = try watch.add(relative);
+        const path = try std.fs.path.join(gpa, &.{ watch.options.app.dir, relative });
+        defer gpa.free(path);
+        var dir = try Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+        defer dir.close(io);
+        var walker = try dir.walkSelectively(gpa);
+        defer walker.deinit();
+        while (try walker.next(io)) |entry| {
+            if (entry.kind != .directory or entry.basename[0] == '.') continue;
+            const below = try std.fs.path.join(gpa, &.{ relative, entry.path });
+            defer gpa.free(below);
+            _ = try watch.add(below);
+            try walker.enter(io, entry);
+        }
+        return top;
+    }
+
+    fn add(watch: *Watch, relative: []const u8) !i32 {
+        const gpa = watch.gpa;
+        if (watch.paths.count() == directories_max) return error.TooManyDirectories;
+        const path = try std.fs.path.joinZ(gpa, &.{ watch.options.app.dir, relative });
+        defer gpa.free(path);
+        const mask = linux.IN.CLOSE_WRITE | linux.IN.MOVED_TO | linux.IN.CREATE | linux.IN.DELETE;
+        const wd: i32 = @intCast(try syscall(linux.inotify_add_watch(watch.fd, path, mask)));
+        const entry = try watch.paths.getOrPut(gpa, wd);
+        if (entry.found_existing) gpa.free(entry.value_ptr.*);
+        entry.value_ptr.* = try gpa.dupe(u8, relative);
+        if (in_static(watch.options, relative)) try watch.static.put(gpa, wd, {});
         return wd;
+    }
+
+    /// A directory made (or moved in) under a watched one: it and what it
+    /// holds are watched now, and what it holds may be sources.
+    fn appeared(watch: *Watch, wd: i32, name: []const u8) void {
+        const parent = watch.paths.get(wd) orelse return;
+        const relative = std.fs.path.join(watch.gpa, &.{ parent, name }) catch return;
+        defer watch.gpa.free(relative);
+        _ = watch.add_tree(relative) catch {};
+        watch.changed.other = true;
+        watch.changed.listing = true;
     }
 
     const Woken = enum { source, exited, stopping };
@@ -530,18 +563,24 @@ const Watch = struct {
             const event: *const linux.inotify_event = @ptrCast(@alignCast(&buffer[at]));
             const name_bytes = buffer[at + @sizeOf(linux.inotify_event) ..][0..event.len];
             const name = std.mem.sliceTo(name_bytes, 0);
+            const made = linux.IN.CREATE | linux.IN.MOVED_TO;
             if (event.mask & linux.IN.Q_OVERFLOW != 0) {
                 watch.changed.other = true;
                 watch.changed.listing = true;
                 source = true;
+            } else if (event.mask & linux.IN.ISDIR != 0) {
+                if (event.mask & made != 0 and name.len > 0 and name[0] != '.') {
+                    watch.appeared(event.wd, name);
+                    source = true;
+                }
             } else if (watch.static.contains(event.wd)) {
                 watch.changed.other = true;
                 source = true;
             } else switch (kind_of(name)) {
                 .templates => {
                     watch.changed.templates = true;
-                    const appeared = event.mask & (linux.IN.CREATE | linux.IN.DELETE) != 0;
-                    if (appeared or event.wd != watch.root) {
+                    const listed = event.mask & (linux.IN.CREATE | linux.IN.DELETE) != 0;
+                    if (listed or event.wd != watch.root) {
                         watch.changed.listing = true;
                     } else {
                         watch.changed.note(name[0 .. name.len - ".rocstache".len]);

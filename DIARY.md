@@ -1471,3 +1471,15 @@ navigation and `empty` for `fetch()`. The script now goes only where it
 is `document`, `iframe` or absent (curl and agents send none, and keep
 it). Checked against examples/templates under roux dev: the script with
 no header and with `document`, none with `empty`; a test in dev.zig.
+
+## 2026-10-09: directories made while roux dev runs are watched
+
+roux dev watched the directories that were there when it started, so a
+directory made later (a `db/` for the first queries, a module folder)
+and everything in it went unseen. Each watch now knows its directory
+(by watch descriptor), and a directory created or moved in under one is
+watched with all it holds (`add_tree`, the one walk startup uses too;
+`mkdir -p a/b` is caught by the walk), and the next pass lists and
+hashes again. Checked on examples/templates: `mkdir newdir`, then
+`newdir/X.roc`: build 2 (roc); `mkdir -p deep/er`, then
+`deep/er/Y.roc`: build 3. The old binary, the same steps: build 1 only.
