@@ -15,6 +15,21 @@ handlers on fibers, with templates, server-sent events and a SQLite
 database typed by roux-db (no migrations yet); the milestones and where
 it stands are in [TODO.md](TODO.md).
 
+## Use a release
+
+With roc on PATH at the nightly the release names, and the release's
+`roux` beside it, an app names the platform by URL; start from
+[roux-tutor](https://github.com/Eldhus/roux-tutor):
+
+```roc
+app [Context, program] { pf: platform "https://github.com/Eldhus/roux/releases/download/v0.1.0/4Jpv2ScrZxQ4bUn6dGDjZu3hzHSQ1r6kisZytAzmy95G.tar.zst" }
+```
+
+`tools/release.sh` makes one (`dist/`: the platform's `HASH.tar.zst`,
+from `roc bundle`, and `roux-VERSION-x86_64-linux.tar.gz`, roux and
+roux-db static); `gh release create vVERSION dist/*` publishes it. The
+version is build.zig's `roux_version`.
+
 ## Build
 
 roux builds against fourneau checked out beside it:

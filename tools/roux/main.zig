@@ -15,10 +15,11 @@
 //! the browser reloading itself (dev.zig). `--static` names the app's
 //! static files' directory, whose changes restart it.
 //!
-//! The toolchain is the pinned one, named at roux's build (build.zig): the
-//! Zig that built this roux, and the roc nightly roux's `.roc-version`
-//! names where it is installed, unless `--roc` names it elsewhere (the
-//! dragrace installs its own, the same pin).
+//! roc is the one tool: the nightly roux's `.roc-version` names, which
+//! roux checks before anything. Built here, roux runs it where nightlies
+//! are installed side by side; a release (`-Droc=roc`) runs the `roc` on
+//! PATH; `--roc` names another (the dragrace installs its own, the same
+//! pin). `roux version` says which roux and which roc.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -30,6 +31,7 @@ const dev = @import("dev.zig");
 const usage =
     \\usage: roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
     \\       roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
+    \\       roux version
     \\
 ;
 
@@ -51,6 +53,10 @@ pub fn main(init: std.process.Init) !void {
     var stderr_file: Io.File.Writer = .initStreaming(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file.interface;
     defer stderr.flush() catch {};
+    if (args.len == 2 and std.mem.eql(u8, args[1], "version")) {
+        try stderr.print("roux {s}, for roc {s}\n", .{ options.version, options.roc_version });
+        return;
+    }
     if (args.len < 3) return usage_exit(stderr);
     const command = args[1];
     const building = std.mem.eql(u8, command, "build");
@@ -58,6 +64,7 @@ pub fn main(init: std.process.Init) !void {
     const flags = parse(args[2 .. args.len - 1], building) orelse return usage_exit(stderr);
     const file = args[args.len - 1];
     if (!std.mem.endsWith(u8, file, ".roc")) return usage_exit(stderr);
+    try check_roc(arena, io, flags.roc, stderr);
     const app: pipeline.App = try .of(arena, file, flags.output, flags.roc);
     const result = if (building)
         pipeline.build(arena, io, app, if (flags.dev) .dev else .release, stderr)
@@ -74,6 +81,41 @@ pub fn main(init: std.process.Init) !void {
         },
         else => return err,
     };
+}
+
+/// The roc roux will run is the nightly roux was made for, or roux says
+/// which it needs and stops: another nightly's compiler lays records out
+/// and names builtins its own way, and fails late and obscurely.
+fn check_roc(arena: std.mem.Allocator, io: Io, roc: []const u8, stderr: *Io.Writer) !void {
+    const want = "Roc compiler version " ++ options.roc_version;
+    const ran = std.process.run(arena, io, .{
+        .argv = &.{ roc, "version" },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch {
+        try stderr.print(
+            "roux {s} needs roc {s}, and `{s}` could not be run.\n" ++
+                "Install that nightly (https://www.roc-lang.org/install), put its `roc` on\n" ++
+                "PATH, or name it: --roc=PATH.\n",
+            .{ options.version, options.roc_version, roc },
+        );
+        try stderr.flush();
+        std.process.exit(1);
+    };
+    const said = std.mem.trim(u8, ran.stdout, " \n");
+    if (std.mem.eql(u8, said, want)) return;
+    const found = if (std.mem.startsWith(u8, said, "Roc compiler version "))
+        said["Roc compiler version ".len..]
+    else
+        said;
+    try stderr.print(
+        "roux {s} needs roc {s}; `{s}` is {s}.\n" ++
+            "Install that nightly (https://www.roc-lang.org/install), put its `roc` on\n" ++
+            "PATH, or name it: --roc=PATH.\n",
+        .{ options.version, options.roc_version, roc, found },
+    );
+    try stderr.flush();
+    std.process.exit(1);
 }
 
 /// The flags before `APP.roc`; null for one that is not the command's.

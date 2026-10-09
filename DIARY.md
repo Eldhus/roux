@@ -1767,3 +1767,35 @@ rewrites the executable drops the program; the app then stops at the
 first template (its value names layouts the empty program has not
 got). The program is read into memory at start instead of mapped from
 the binary: its size, once (the site's is tens of KB).
+
+## 2026-10-09: roc-link merged; releases
+
+The owner: merge it, then do releases (and a tutor repo, roux-tutor).
+
+Merged into main. Checked there: `zig build test`; all five examples
+build with Zig off the PATH and answer (hello, a three-event stream, a
+dish added and read back, a 404); `roc test` on the platform (32) and
+examples/templates (35); fourneau-dragrace's full `dragrace build` (every
+competitor), its site (96 tests; 22 routes identical to the build before
+the merge) and the competitor's `/menu` (workloads/menu.html, md5
+61f660a7…).
+
+Releases (`tools/release.sh`, dist/):
+- roc unpacks a URL package up to 10 MB by default (`--max-package-mb`);
+  the platform was 34 MB, most of it debug information. `zig build
+  platform -Dhost-strip=true` makes the host 4.5 MB (26), and musl's
+  libc.a stripped (binutils `strip --strip-debug`) 2.6 MB (9.1): 7.2 MB
+  unpacked, the bundle 1.76 MB (`roc bundle --compression 19`). The
+  bundle's hash is the same for the same files (two runs).
+- The tools static (`-Dtarget=x86_64-linux-musl`; roux-db was linked
+  against glibc before), running the `roc` on PATH (`-Droc=roc`; a local
+  build still runs the pinned nightly where it is installed).
+- roux checks the roc it will run before anything: `roc version` must be
+  the nightly `.roc-version` names, else it says which it needs, which
+  it found and where to install it, and exits 1. `roux version` says
+  both.
+- Checked as a newcomer would: an empty HOME, PATH holding only the
+  pinned `roc` and the release's tools (`env -i`), examples/templates
+  naming the platform by URL (served from dist/ on localhost): roc
+  fetched the bundle, `roux build` built it, the page byte for byte the
+  source build's; `roux dev` served it, a markup edit reread in 0.2 ms.
