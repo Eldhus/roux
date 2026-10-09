@@ -208,7 +208,10 @@ fn swap_in(want: u32) void {
         std.atomic.spinLoopHint();
     }
     defer swapping.store(false, .release);
-    if (want != 0 and loaded.load(.acquire) == want) return;
+    // Another thread swapped in this request, or a later one, while this
+    // one waited: nothing to do (counters wrap, so compared as a distance).
+    const ahead: i32 = @bitCast(loaded.load(.acquire) -% want);
+    if (want != 0 and ahead >= 0) return;
     defer loaded.store(want, .release);
     const fresh = read_program(reload_path.?) catch |err| {
         log_reload_failure(err);
