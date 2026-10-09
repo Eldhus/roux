@@ -7,7 +7,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const options = @import("roux_options");
 const rocstache = @import("rocstache");
 
 pub const App = struct {
@@ -52,7 +51,7 @@ pub const Paths = struct {
     out: []const u8,
     /// The same, from the working directory.
     out_path: []const u8,
-    /// `.roux/main/app.a`, from the app's directory.
+    /// `.roux/main/app`, roc's executable, from the app's directory.
     archive: []const u8,
 
     pub fn of(arena: Allocator, app: App) Allocator.Error!Paths {
@@ -60,7 +59,7 @@ pub const Paths = struct {
         return .{
             .out = out,
             .out_path = try std.fs.path.join(arena, &.{ app.dir, out }),
-            .archive = try std.fmt.allocPrint(arena, "{s}/app.a", .{out}),
+            .archive = try std.fmt.allocPrint(arena, "{s}/app", .{out}),
         };
     }
 };
@@ -72,7 +71,7 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     const start = Io.Timestamp.now(io, .awake);
     if (has_queries(io, app)) try query_types(arena, io, app);
     var cache: rocstache.generate.Cache = .init(arena);
-    var generation = try begin(arena, io, paths, app, &cache, null, false, stderr);
+    var generation = try begin(arena, io, paths, app, &cache, null, stderr);
     const begun_at = Io.Timestamp.now(io, .awake);
     var roc = start_roc(io, paths, app, mode) catch |err| {
         rocstache.generate.abandon(io, &generation);
@@ -84,9 +83,9 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     };
     try wait_roc(io, &roc);
     const compiled_at = Io.Timestamp.now(io, .awake);
-    try link(arena, io, paths, app);
+    try attach(arena, io, paths, app);
     const linked_at = Io.Timestamp.now(io, .awake);
-    const line = "roux: {d} templates ({d} ms{s}), roc and glue {d} ms, link {d} ms: ";
+    const line = "roux: {d} templates ({d} ms{s}), roc and glue {d} ms, attach {d} ms: ";
     try stderr.print(line, .{
         generated.templates,
         milliseconds(start, begun_at),
@@ -119,8 +118,7 @@ pub fn query_types(arena: Allocator, io: Io, app: App) !void {
 /// The templates' modules written and glue started (generate.zig's
 /// `begin`); `rocstache.generate.finish` writes their program. `changed`:
 /// the templates whose files `roux dev` saw written (null: all may have
-/// been). `dev`: for `roux dev`, whose app reads `templates.bin` and links
-/// only for Roc.
+/// been).
 pub fn begin(
     arena: Allocator,
     io: Io,
@@ -128,7 +126,6 @@ pub fn begin(
     app: App,
     cache: *rocstache.generate.Cache,
     changed: ?[]const []const u8,
-    dev: bool,
     stderr: *Io.Writer,
 ) !rocstache.generate.Generation {
     return rocstache.generate.begin(arena, io, .{
@@ -136,37 +133,60 @@ pub fn begin(
         .build = paths.out_path,
         .roc = app.roc,
         .cache = cache,
-        .object_on_layouts_only = dev,
         .changed = changed,
     }, cache, stderr);
 }
 
-/// roc started on the app's archive.
+/// roc started on the app's executable: roc links it, as any platform's.
 pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode) !std.process.Child {
     var buffer: [std.fs.max_path_bytes + 16]u8 = undefined;
     const output = try std.fmt.bufPrint(&buffer, "--output={s}", .{paths.archive});
     return spawn(io, &.{ app.roc, "build", mode.roc_opt(), app.file, output }, app.dir);
 }
 
-pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
-    if (!(try roc.wait(io)).success()) return error.ChildFailed;
+/// roc's executable with the templates' program attached after it, then
+/// the trailer the host looks for (host/templates.zig's `load_attached`):
+/// the program's length and a magic. Written beside the output and renamed
+/// over it, so a running binary is not overwritten.
+pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App) !void {
+    const copies_max = 16; // 16 GiB: no executable is
+    const cwd = Io.Dir.cwd();
+    const built = try std.fs.path.joinZ(arena, &.{ app.dir, paths.archive });
+    const program_path = try std.fs.path.join(arena, &.{
+        paths.out_path,
+        rocstache.generate.program_name,
+    });
+    const program = try cwd.readFileAlloc(io, program_path, arena, .limited(1 << 30));
+    const trailer = rocstache.program.trailer(program.len);
+    const attached = try std.fmt.allocPrintSentinel(arena, "{s}.new", .{app.output}, 0);
+    const linux = std.os.linux;
+    const source = linux.open(built, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (linux.errno(source) != .SUCCESS) return error.AttachFailed;
+    defer _ = linux.close(@intCast(source));
+    const how: linux.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
+    const opened = linux.open(attached, how, 0o755);
+    if (linux.errno(opened) != .SUCCESS) return error.AttachFailed;
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    // roc's executable, copied in the kernel, a gigabyte at most a call.
+    for (0..copies_max) |_| {
+        const copied = linux.copy_file_range(@intCast(source), null, fd, null, 1 << 30, 0);
+        if (linux.errno(copied) != .SUCCESS) return error.AttachFailed;
+        if (copied == 0) break;
+    } else return error.AttachFailed;
+    for ([_][]const u8{ program, &trailer }) |part| {
+        var done: usize = 0;
+        while (done < part.len) {
+            const wrote = linux.write(fd, part[done..].ptr, part.len - done);
+            if (linux.errno(wrote) != .SUCCESS or wrote == 0) return error.AttachFailed;
+            done += wrote;
+        }
+    }
+    try cwd.rename(attached, cwd, app.output, io);
 }
 
-/// roc's archive and the templates' object, into the output: a new file
-/// renamed over the old, so a running binary is not overwritten.
-pub fn link(arena: Allocator, io: Io, paths: Paths, app: App) !void {
-    const linked = try std.fmt.allocPrint(arena, "{s}.new", .{app.output});
-    var linker = try spawn(io, &.{
-        options.zig,
-        "ld.lld",
-        "-static",
-        "-o",
-        linked,
-        try std.fs.path.join(arena, &.{ app.dir, paths.archive }),
-        try std.fs.path.join(arena, &.{ paths.out_path, rocstache.generate.object_name }),
-    }, ".");
-    if (!(try linker.wait(io)).success()) return error.ChildFailed;
-    try Io.Dir.cwd().rename(linked, Io.Dir.cwd(), app.output, io);
+pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
+    if (!(try roc.wait(io)).success()) return error.ChildFailed;
 }
 
 /// A tool started; one that cannot be is named, with why, as a tool that

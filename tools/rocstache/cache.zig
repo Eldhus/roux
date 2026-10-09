@@ -36,8 +36,6 @@ pub const Cache = struct {
     templates: std.StringHashMapUnmanaged(Kept) = .empty,
     /// What this generation replaced: freed when it succeeds.
     retired: std.ArrayList(Retired) = .empty,
-    /// The layouts' identity the object was last written for.
-    object_layouts: ?u64 = null,
     /// The templates' names from the last listing of the app's directory,
     /// for a generation told which files changed (`changed`).
     names: std.ArrayList([]const u8) = .empty,
