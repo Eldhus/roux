@@ -1635,3 +1635,41 @@ in a patch ("needs the first argument to be: Rocstache.Template(t)").
 Completion after `Menu.` returns nothing (the experimental LSP). The
 comparison for the Roc team is an artifact (roux Page Shapes, version
 2), built from this probe's captured output.
+
+## 2026-10-09: the Templates union, built into roux
+
+The owner chose it ("The union one is the one we will be merging in").
+What the probe hand-wrote, roux now generates, and the effectful path
+is gone (no side by side):
+
+- `roux build` writes each `X.roc` with `template : Ctx ->
+  Rocstache.Template(Templates.Template)` (no index any more: a template
+  added before it in the alphabet no longer rewrites it), and the app's
+  `Templates.roc`: the contracts spelled out as tags, and `layouts`, the
+  layouts' identity. The identity hashes what glue reads, so it is known
+  before glue runs and roc still starts at once (generate.zig's
+  `begin`); Templates.roc is written only when it changes.
+- Glue's throwaway platform takes the union as `Contracts.templates!`
+  (was `pages!`); bytecode.zig's `Pages` is `Union`.
+- The platform: `Rocstache.Template(t)`, `html`, `bytes!`, `str!`,
+  `patch!`; `Server.Response(t)`, its `Html` body that record; one
+  hosted `template_render! : U64, Box(a) => { bytes, template }` (the
+  index-taking one and `page_render!` gone; the ABI regenerated, only
+  those changed). `requires` leaves the union open (`_template`).
+- The host checks `layouts` against its program's and stops on any
+  other (Templates.roc and the program from different builds: offsets
+  that are not this program's), and stops on a discriminant its program
+  lacks rather than read past the union. Both @panic: a broken build,
+  not a request's error.
+- A template named `Templates` is refused (it would be the module roux
+  writes).
+- host/templates_test.zig renders through `render_union` now, over a
+  value laid out as Roc lays a two-tag union (payload first, the byte
+  after): the 3,000 seeds pass.
+- The examples: `Server.Response(_)` everywhere (apps without templates
+  too: the parameter is unconstrained there, and roc accepts it); bodies
+  `Text(…)` instead of bytes; examples/templates' response is a pure
+  `respond` with three `expect`s (the response compared, the 404, a field
+  matched out of it). `zig build test` passes; every example builds;
+  templates and files serve their pages (200, escaped; 404); `roc test`
+  in examples/templates: 33 pass.

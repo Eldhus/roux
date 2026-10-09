@@ -1,8 +1,10 @@
 platform "roux"
 	requires {
-		[Context : context, Page : page] for program : {
+		[Context : context] for program : {
 			init! : () => Try({ config : Server.Config, context : context }, [Exit(I64), ..]),
-			respond! : Server.Request, context => Try(Server.Response(page), _err),
+			# `_template`: the app's Templates.Template, which its generated
+			# constructors pin whatever the app sends (DESIGN.md, Templates).
+			respond! : Server.Request, context => Try(Server.Response(_template), _err),
 		}
 	}
 	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url, Sqlite]
@@ -26,7 +28,6 @@ platform "roux"
 		"hosted_sqlite_commit": Host.sqlite_commit!,
 		"hosted_sqlite_backup": Host.sqlite_backup!,
 		"hosted_template_render": Host.template_render!,
-		"hosted_page_render": Host.page_render!,
 	}
 	# An archive, not an executable: `roux build` links it with the app's
 	# templates object (DESIGN.md, Templates).

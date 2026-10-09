@@ -92,11 +92,13 @@ pub const Layouts = struct {
         return null;
     }
 
-    /// The app's pages: the union `Contracts.pages!` takes, or null (no
-    /// templates).
-    pub fn pages(layouts: *const Layouts) ?TagUnion {
+    /// The app's `Templates.Template`: the union `Contracts.templates!`
+    /// takes, or null (no templates).
+    pub fn templates(layouts: *const Layouts) ?TagUnion {
         for (layouts.contracts) |c| {
-            if (std.mem.eql(u8, c.name, "Contracts.pages!")) return layouts.get(c.type).tag_union;
+            if (std.mem.eql(u8, c.name, "Contracts.templates!")) {
+                return layouts.get(c.type).tag_union;
+            }
         }
         return null;
     }
@@ -136,7 +138,7 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) error{ OutOfMemory, Invalid }
 pub const Contract = struct {
     /// The template's index among the app's, sorted by name.
     index: u32,
-    /// Its name: its tag in the app's pages.
+    /// Its name: its tag in the app's `Templates.Template`.
     name: []const u8,
     contract: *const contract_.Contract,
 
@@ -156,9 +158,9 @@ pub fn write_contracts(contracts: []const Contract, writer: *Writer) Writer.Erro
         try contract_.write_line(c.contract, c.contract.root, writer);
         try writer.writeAll(" => {}\n");
     }
-    // The app's pages, as Pages.roc spells them: a tag a template.
+    // The app's templates, as Templates.roc spells them: a tag each.
     if (contracts.len > 0) {
-        try writer.writeAll("\tpages! : [");
+        try writer.writeAll("\ttemplates! : [");
         for (contracts, 0..) |c, k| {
             if (k > 0) try writer.writeAll(", ");
             try writer.print("{s}(", .{c.name});
@@ -181,7 +183,9 @@ pub fn write_platform(contracts: []const Contract, writer: *Writer) Writer.Error
         if (c.empty()) continue;
         try writer.print("\t\t\"contract_t{d}\": Contracts.t{d}!,\n", .{ c.index, c.index });
     }
-    if (contracts.len > 0) try writer.writeAll("\t\t\"contract_pages\": Contracts.pages!,\n");
+    if (contracts.len > 0) {
+        try writer.writeAll("\t\t\"contract_templates\": Contracts.templates!,\n");
+    }
     try writer.writeAll("\t}\n" ++
         "\ttargets: { inputs_dir: \"targets/\", x64musl: { inputs: [app] } }\n\n" ++
         "import Contracts\n\nmain_for_host! : () => {}\nmain_for_host! = || main!()\n");
