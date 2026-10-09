@@ -1111,10 +1111,21 @@ fn shard_count() u32 {
     return @max(1, @min(count, wanted, shards_max));
 }
 
+/// A shard failed to start: the first says why (the others fail alike).
+var shard_failed: std.atomic.Value(bool) = .init(false);
+
 fn run_shard(app: *App, listen: Listen) void {
     run_shard_or_fail(app, listen) catch |err| {
-        var buffer: [128]u8 = undefined;
-        write_line(2, std.fmt.bufPrint(&buffer, "roux: shard: {t}", .{err}) catch "roux");
+        var buffer: [192]u8 = undefined;
+        const line = switch (err) {
+            // The common first-run surprise: said once, with the way out.
+            error.AddressInUse => std.fmt.bufPrint(&buffer, "roux: port {d} is taken: another " ++
+                "server listens there. Stop it, or choose another port: ROUX_PORT=8081", .{
+                listen.port,
+            }),
+            else => std.fmt.bufPrint(&buffer, "roux: shard: {t}", .{err}),
+        } catch "roux";
+        if (!shard_failed.swap(true, .acq_rel)) write_line(2, line);
         std.process.exit(1);
     };
 }

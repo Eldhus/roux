@@ -87,6 +87,12 @@ pub fn main(init: std.process.Init) !void {
 /// which it needs and stops: another nightly's compiler lays records out
 /// and names builtins its own way, and fails late and obscurely.
 fn check_roc(arena: std.mem.Allocator, io: Io, roc: []const u8, stderr: *Io.Writer) !void {
+    // Roc's installer gives the newest nightly it knows, not this one: the
+    // nightly's own page is named too.
+    const install =
+        "Get it at https://github.com/roc-lang/nightlies/releases/tag/{s}\n" ++
+        "(how to install Roc: https://www.roc-lang.org/install), put its `roc` on\n" ++
+        "PATH, or name it: --roc=PATH.\n";
     const want = "Roc compiler version " ++ options.roc_version;
     const ran = std.process.run(arena, io, .{
         .argv = &.{ roc, "version" },
@@ -94,10 +100,8 @@ fn check_roc(arena: std.mem.Allocator, io: Io, roc: []const u8, stderr: *Io.Writ
         .stderr_limit = .limited(4096),
     }) catch {
         try stderr.print(
-            "roux {s} needs roc {s}, and `{s}` could not be run.\n" ++
-                "Install that nightly (https://www.roc-lang.org/install), put its `roc` on\n" ++
-                "PATH, or name it: --roc=PATH.\n",
-            .{ options.version, options.roc_version, roc },
+            "roux {s} needs roc {s}, and `{s}` could not be run.\n" ++ install,
+            .{ options.version, options.roc_version, roc, options.roc_version },
         );
         try stderr.flush();
         std.process.exit(1);
@@ -109,10 +113,8 @@ fn check_roc(arena: std.mem.Allocator, io: Io, roc: []const u8, stderr: *Io.Writ
     else
         said;
     try stderr.print(
-        "roux {s} needs roc {s}; `{s}` is {s}.\n" ++
-            "Install that nightly (https://www.roc-lang.org/install), put its `roc` on\n" ++
-            "PATH, or name it: --roc=PATH.\n",
-        .{ options.version, options.roc_version, roc, found },
+        "roux {s} needs roc {s}; `{s}` is {s}.\n" ++ install,
+        .{ options.version, options.roc_version, roc, found, options.roc_version },
     );
     try stderr.flush();
     std.process.exit(1);
