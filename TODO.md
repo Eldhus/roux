@@ -90,6 +90,19 @@
    - Decided (owner, 2026-10-08): a markup edit reloads the whole page
      (`location.reload()`); no morphing the page in place ("i dont wannt
      messs with morhphdin"). Scroll and focus are lost, as with any reload.
+5. **The templates' night: fixes, then nothing sacred.** (owner,
+   2026-10-09: "fix 1,2 ... 4 ok do experiments and if success if
+   verified commit and take it"; "take one more high level design pass,
+   treating NOTHING as sacred. can we do better with ergonomics or api??
+   non effectful renderer even if tons more work? ... you have ALL
+   night"). The index in `Page.roc` stays (owner: "3 sound dumbs ... do
+   not do that"); no release-strip decision now. Serial: the fixes in
+   Todo first, then experiments, each measured, written down, committed.
+   First experiment: a pure `render` (hosted functions must be
+   effectful, so `Page.render(ctx)` would return a value holding the
+   effect, run by the platform when it sends; the host might then render
+   straight into the response, no copy into a Roc list).
+   - Where it stands (2026-10-09): starting the fixes.
 
 
 ## Plan
@@ -234,14 +247,6 @@ worth it first:
   ignores SIGUSR1 itself (SIG_IGN survives exec, a handler does not), so
   the child is born ignoring it until the host's handler goes in; an edit
   in that window is not lost (`reload_from` reads the file at start).
-- [ ] Elegance: `Page.roc` names its template by its index in the
-  alphabet, so adding `About.rocstache` rewrites every later template's
-  module (a roc build of all, and git churn in modules whose type did not
-  change: against DESIGN's "its history in git is the history of the
-  template's type"). Name a template by a hash of its name instead; the
-  program's header maps it to the code (built at assembly, a sorted table
-  or a perfect hash; one lookup a render, to measure). The
-  `TemplatesChanged` refusal then follows from an unknown id.
 - [ ] Faster contract edits: glue (~0.3-0.6 s) and roc both start from
   the written modules and contracts, and neither needs the other, yet
   they run in turn. Run them together, then compile the bytecode and
@@ -276,9 +281,6 @@ worth it first:
   TESTING.md's template-compiler line (the writers' measures, the
   renderer on hand-laid contracts). And contract.zig's message "cannot be
   used so here".
-- [ ] Question for the owner: the release binary keeps its debug info
-  (examples/templates: 17 MB, 3.1 MB of it code and data). Strip it in
-  `roux build` (release), or keep it for stack traces?
 - Not worth doing, measured: the render is not where a request goes. The
   host VM is 510 instructions a request behind comptime (15,595 against
   15,085) on a page whose request is all HTTP and Roc around it; the
