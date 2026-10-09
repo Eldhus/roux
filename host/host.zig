@@ -931,6 +931,7 @@ fn run() !void {
     init_io = startup_io;
     const shards = shard_count();
     try sqlite_setup(shards);
+    templates.load_attached();
     start_dev();
     const init = abi.roc_init_for_host();
     if (init.tag == .Err) {

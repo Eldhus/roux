@@ -126,6 +126,17 @@
      - Found on the way, in the site (fourneau-dragrace `f379a25`, on
        main): log10 by bisection on `F64.pow` was a third of the race
        page; by its series now, -33%.
+6. **A release that needs only roc.** (owner, 2026-10-09: "would people
+   be able to run a demo website with just a roc compiler and pull down
+   the built platform"; on dropping Zig: "Oh yeah dig into this.")
+   - Where it stands (2026-10-09, branch `roc-link`, worktree
+     `../roux-roc-link`, not merged: the owner's call): roc links the
+     executable, roux attaches the templates' program after it; no Zig
+     anywhere in building an app. Examples, the site and `roux dev`
+     checked, cost unchanged (DIARY 2026-10-09). Next, if merged: the
+     dragrace's builds (they do not call Zig for roux apps either), then
+     the release itself: the platform tarball (roc's URL package) and a
+     static `roux` beside it.
 
 
 ## Plan

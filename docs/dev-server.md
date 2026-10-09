@@ -16,16 +16,16 @@ never half written), and content decides from there, never mtimes.
 | edit | what runs | save to page (the dragrace site, 2026-10-08) |
 |---|---|---|
 | a template's markup, a page's or a partial's | the generation of what the edit touched (0.1-1.7 ms), then SIGUSR1: the running app rereads the program. No link, no restart, no compiler; the app's state kept | 1.39 ms median from a client for a page, 2.0 ms for a partial nine pages inline |
-| a template's contract (a field added, a type) | its `Page.roc` rewritten, glue (~0.3 s), `roc build --opt=dev`, the link, a restart | a Roc edit's and glue's (not measured end to end) |
-| Roc source | `roc build --opt=dev`, the link, a restart | 1.1-1.2 s |
+| a template's contract (a field added, a type) | its `Page.roc` and `Templates.roc` rewritten, glue (~0.3 s), `roc build --opt=dev` (roc links), the program attached, a restart | a Roc edit's and glue's (not measured end to end) |
+| Roc source | `roc build --opt=dev` (roc links), the program attached, a restart | 1.1-1.2 s; 1.03 s with roc linking (2026-10-09, roc-link) |
 | a query (`db/*.sql`) | roux-db, then as Roc source | |
 | a static file | a restart (the host reads them at startup) | |
 
 ## The reread
 
-roux build writes the templates' program twice: as an object the link
-takes (`templates.o`, production's), and alone (`templates.bin`). In
-development the app is started with `ROUX_DEV_TEMPLATES` naming the file,
+roux build writes the templates' program to `templates.bin` and attaches
+it after the executable roc linked (production's). In development the
+app is started with `ROUX_DEV_TEMPLATES` naming the file,
 and reads its program from it, from before `init!`. On a markup edit
 roux dev rewrites the file and sends the app SIGUSR1:
 
@@ -94,9 +94,9 @@ save by temporary file and rename.
 
 ## Integration points
 
-- **The link is roux's.** The platform's target is `output: Archive`;
-  roux links roc's `app.a` with the templates' object. In development
-  only a Roc change links.
+- **roc links.** roux attaches the templates' program after roc's
+  executable (until 2026-10-09 roc made an archive and roux linked it
+  with `zig ld.lld`). In development only a Roc change attaches again.
 - **Reload without a proxy.** The host serves `/_dev/events` itself, in
   development only, and appends the reload script to `text/html`
   answers; the templates' output stays production's.

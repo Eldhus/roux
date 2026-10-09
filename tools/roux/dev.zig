@@ -8,7 +8,7 @@
 //! (`templates.bin`) when the markup did. Markup alone: the running app
 //! is told to reread the program (SIGUSR1), no compiler, no restart. Roc
 //! changed (an edit, or a rewritten `Page.roc`): roc builds (`--opt=dev`)
-//! while glue lays out any changed contract, then the link and a restart.
+//! while glue lays out any changed contract, then the attach and a restart.
 //! Content decides, never mtimes: a save that changes nothing, and the
 //! generators' own writes, cost nothing more.
 //!
@@ -191,9 +191,9 @@ const State = struct {
             return;
         }
         // The app reads its program from `templates.bin` in development, so
-        // only Roc (or no binary yet) needs the link.
+        // only Roc (or no binary yet) needs the program attached again.
         if (roc or state.build == 0) {
-            pipeline.link(arena, io, paths, app) catch |err| return state.failed(stderr, err);
+            pipeline.attach(arena, io, paths, app) catch |err| return state.failed(stderr, err);
         }
         state.built = now;
         state.build += 1;
@@ -222,7 +222,7 @@ const State = struct {
     ) !struct { now: Digests, program_changed: bool } {
         const app = state.options.app;
         var generation =
-            try pipeline.begin(arena, io, paths, app, &state.cache, p.written, true, stderr);
+            try pipeline.begin(arena, io, paths, app, &state.cache, p.written, stderr);
         const now = if (generation.modules_changed)
             digests(arena, io, state.options) catch |err| {
                 rocstache.generate.abandon(io, &generation);

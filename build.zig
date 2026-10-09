@@ -194,10 +194,9 @@ const example_databases = [_][]const u8{
 /// roux-db.
 fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
-    // roux runs the pinned toolchain: the Zig building it, and the Roc
-    // nightly `.roc-version` names, where they are installed side by side.
+    // roux runs the pinned Roc nightly `.roc-version` names, where they are
+    // installed side by side (`--roc` overrides it). No Zig: roc links.
     const roux_options = b.addOptions();
-    roux_options.addOption([]const u8, "zig", b.graph.zig_exe);
     roux_options.addOption([]const u8, "roc", roc_path(b));
     const rocstache = b.createModule(.{
         .root_source_file = b.path("tools/rocstache/root.zig"),
