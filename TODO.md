@@ -269,7 +269,10 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 - roc-lang/roc#12120 (`x ? mapper` whose argument type does not fit
   segfaults `roc check`; filed 2026-10-06, owner: "Feldman is really on
-  top of these"). Fixed? Then: try ~/devel/rocbugs/try-mapper-mismatch
+  top of these"). Closed 2026-10-08 ("no longer reproduces"); checked
+  2026-10-08: fixed on upstream main b8bc57a (both `? narrow` and
+  `? |e| narrow(e)` report the mismatch), still segfaults on
+  nightly-2026-10-06-c34079d, the newest. Waiting on a nightly. Then: try ~/devel/rocbugs/try-mapper-mismatch
   on the nightly that has it, take that nightly at the weekly Latest Roc
   chore, strike the gotcha in the roc skill and the row in
   compiler-bugs.md, update rocbugs' STATUS. roux has no workaround to
