@@ -233,16 +233,24 @@ so a generic function cannot read field N of a record it does not know.)
    template's own scopes. Each value is fused with the static run before
    it, and a Str's formatting (escaped, raw, upper, lower, url) rides in
    the run word's top byte.
-4. It writes the program and the text as an **ELF object** itself
-   (elf.zig: one read-only section, one symbol, `rocstache_data`). No
-   compiler runs: a markup edit costs the generation (~10 ms for the
-   site) and the link.
-5. **`roc build`** emits the app as an archive, when any Roc changed (a
-   contract change rewrote a module). It starts as soon as the modules
-   are written, while glue runs (neither needs the other: generate.zig's
-   `begin` and `finish`): a contract change costs the longer of the two,
-   not their sum (the dragrace site, `--dev`: 1.04 s against 1.31 s).
-6. **roux links** the archive and the object (`zig ld.lld`, 40-80 ms).
+4. It writes the program and the text as one file, `templates.bin`
+   (program.zig). No compiler runs: a markup edit costs the generation
+   (~10 ms for the site).
+5. **`roc build`** links the app's executable, as with any platform, when
+   any Roc changed (a contract change rewrote a module). It starts as
+   soon as the modules are written, while glue runs (neither needs the
+   other: generate.zig's `begin` and `finish`): a contract change costs
+   the longer of the two, not their sum.
+6. **roux attaches** the program after roc's executable, then a 16-byte
+   trailer (its length, `ROUXTPL1`): a copy in the kernel and an append,
+   6-20 ms. The host reads it from `/proc/self/exe` before `init!`
+   (templates.zig's `load_attached`); none attached is an app without
+   templates. So roux needs only roc: no Zig, no linker of its own
+   (2026-10-09; until then roc made an archive and roux linked it with a
+   templates object, `zig ld.lld`). An app without templates builds with
+   `roc build` alone. Stripping the executable drops the program: a
+   template's value then names layouts the host has not got, and it
+   stops.
 
 At run time `Page.template(ctx)` is only a value: `{ layouts, template:
 Page(ctx) }`, a tag of the app's union. A response carries it

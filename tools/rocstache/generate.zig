@@ -1,10 +1,11 @@
 //! An app's templates, generated: every `*.rocstache` in the app's
 //! directory gets its module beside it (`Page.roc`: the contract and a
-//! one-line `render!`, roc.zig), the contracts are laid out by Roc's
-//! compiler (`roc glue`, only when one changed: layout.zig), and the build
-//! directory gets the program, every template's bytecode and text, as an
-//! object the link takes (elf.zig) and alone (`templates.bin`, which `roux
-//! dev` has a running app reread): a markup edit runs no compiler.
+//! one-line `template`, roc.zig) and the app gets `Templates.roc`, the
+//! contracts are laid out by Roc's compiler (`roc glue`, only when one
+//! changed: layout.zig), and the build directory gets the program, every
+//! template's bytecode and text (`templates.bin`, program.zig), which
+//! `roux build` attaches to the executable and `roux dev` has a running
+//! app reread: a markup edit runs no compiler and links nothing.
 //!
 //! Each template is parsed, given its contract and compiled on its own, so
 //! a long-lived caller keeps them (cache.zig) and an edit redoes only what
@@ -23,7 +24,7 @@ const parse = @import("parse.zig");
 const contract_ = @import("contract.zig");
 const roc = @import("roc.zig");
 const bytecode = @import("bytecode.zig");
-const elf = @import("elf.zig");
+const program_ = @import("program.zig");
 const layout = @import("layout.zig");
 const cache_ = @import("cache.zig");
 const Kept = cache_.Kept;
@@ -41,10 +42,6 @@ pub const Options = struct {
     /// What a long-lived caller (`roux dev`) keeps between generations
     /// (cache.zig); null for one generation alone.
     cache: ?*Cache = null,
-    /// Whether to write the object only when the layouts change: `roux
-    /// dev`, whose app reads `templates.bin` and links the object only for
-    /// a Roc change. Its layouts' identity must stay the linked one's.
-    object_on_layouts_only: bool = false,
     /// The templates whose files changed since the last generation, by
     /// name (inotify told `roux dev`); the others' kept sources are theirs.
     /// Null: read every one, and list the directory.
@@ -53,9 +50,8 @@ pub const Options = struct {
 
 pub const Cache = cache_.Cache;
 
-/// The object's name in the build directory.
-pub const object_name = "templates.o";
-/// The same program alone, which `roux dev` has a running app reread.
+/// The program's name in the build directory: `roux build` attaches it,
+/// `roux dev` has a running app reread it.
 pub const program_name = "templates.bin";
 
 pub const Result = struct {
@@ -204,7 +200,7 @@ fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error
     const chunks = try compile(gpa, g.cache, g.kept, g.templates, &laid, errors);
     const templates = try union_table(gpa, g.kept, &laid.layouts, errors);
     const program = try bytecode.assemble(gpa, chunks, templates);
-    const program_changed = try write_program(gpa, io, g.build, g.options, g.cache, .{
+    const program_changed = try write_program(gpa, io, g.build, g.cache, .{
         .code = program.code,
         .text = program.text,
         .layouts = laid.id,
@@ -252,28 +248,17 @@ fn union_table(
     };
 }
 
-/// The program as the file roux dev has a running app reread, and as the
-/// object the link takes (with `object_on_layouts_only`, only when the
-/// layouts changed); says whether the program changed.
+/// The program as its file; says whether it changed.
 fn write_program(
     gpa: Allocator,
     io: Io,
     build: Io.Dir,
-    options: Options,
     cache: *Cache,
-    made: elf.Program,
+    made: program_.Program,
 ) Error!bool {
-    var program: Io.Writer.Allocating = .init(gpa);
-    try elf.write_program(made, &program.writer);
-    const bytes = program.written();
-    const changed = try write_output(cache, gpa, io, build, "build", program_name, bytes);
-    if (!options.object_on_layouts_only or cache.object_layouts != made.layouts) {
-        var object: Io.Writer.Allocating = .init(gpa);
-        try elf.write(made, &object.writer);
-        _ = try write_output(cache, gpa, io, build, "build", object_name, object.written());
-        cache.object_layouts = made.layouts;
-    }
-    return changed;
+    var bytes: Io.Writer.Allocating = .init(gpa);
+    try program_.write(made, &bytes.writer);
+    return write_output(cache, gpa, io, build, "build", program_name, bytes.written());
 }
 
 /// The templates' names: the kept listing, when the caller says which

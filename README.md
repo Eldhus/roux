@@ -37,15 +37,17 @@ one-line `Page.template` making the template's value, and the app gets
 `Templates.roc`, the union of them, which the host renders as a response
 is sent; `roc glue` lays the
 contracts out when one changed; all the templates' bytecode goes into one
-object roux writes itself), then roc, then the link, into `APP` beside
-`APP.roc` (DESIGN.md, Templates). `--dev` builds with roc `--opt=dev`;
-without it, `--opt=speed`. A bare `roc build` makes only an archive now.
+file), then roc, which links the executable, then roux attaches the
+bytecode after it, into `APP` beside `APP.roc` (DESIGN.md, Templates).
+roux needs only roc: no Zig. `--dev` builds with roc `--opt=dev`;
+without it, `--opt=speed`. An app without templates builds with a bare
+`roc build` too.
 
 `roux dev APP.roc` builds fast, runs the app, and on each save rebuilds
 only what changed; the page in the browser reloads itself. A markup
 edit is on the screen in milliseconds (the running app rereads the
 templates' bytecode: no compiler, no link, no restart), a Roc or
-contract change in about 1.2 s on the dragrace site (roc, the link, a
+contract change in about 1.0 s on the dragrace site (roc, the attach, a
 restart; docs/dev-server.md). It also runs roux-db when the app
 has `db/`, as `roux build` does.
 `--port=N`, `--static=DIR` (the app's static files, which restart it).

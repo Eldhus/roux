@@ -29,11 +29,11 @@ platform "roux"
 		"hosted_sqlite_backup": Host.sqlite_backup!,
 		"hosted_template_render": Host.template_render!,
 	}
-	# An archive, not an executable: `roux build` links it with the app's
-	# templates object (DESIGN.md, Templates).
+	# roc links the executable; `roux build` then attaches the app's
+	# templates' program after it (DESIGN.md, Templates).
 	targets: {
 		inputs_dir: "targets/",
-		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"], output: Archive },
+		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
 	}
 
 import Host

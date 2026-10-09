@@ -1724,3 +1724,46 @@ three interleaved rounds (`ipr.sh`: one shard, 200,000 requests, load
 committed, `respond!` calling a pure `respond(target, context)`,
 11,502-11,510: +2.4%, the call and its `Try` re-wrapped, not the union.
 The race's competitor matches inline.
+
+## 2026-10-09: roc links; roux attaches the templates (branch roc-link)
+
+The owner asked whether a release could be roc and the platform alone,
+then whether Zig could ship in it (185 MB, 40 MB xz, for `ld.lld`), then
+to dig into the way without it. Zig was needed only by roux's design:
+the platform made an archive (`output: Archive`) so roux could link
+each app's templates object with `zig ld.lld`. Before templates, roc
+linked roux apps itself (M4).
+
+Probe, branch `roc-link` (worktree `../roux-roc-link`):
+
+- The platform's target is roc's default executable again. The host no
+  longer has an extern `rocstache_data`: before `init!` it reads the
+  program from its own executable's end (`/proc/self/exe`: a 16-byte
+  trailer, the length and `ROUXTPL1`; templates.zig's `load_attached`);
+  none attached is an empty program (an app without templates).
+- `roux build`: roc links the executable (`.roux/APP/app`); roux copies
+  it (`copy_file_range`), appends `templates.bin` and the trailer, and
+  renames it over `APP`. elf.zig is gone: `program.zig` writes the
+  program, padded to whole words, and the trailer. roux no longer knows
+  a Zig path (build.zig's `zig` option gone).
+- Found on the way: the dev reread's size check wanted the exact size;
+  with the padding it said "malformed". One `well_formed` for both
+  readers now.
+
+Checked, Zig off the PATH (`env PATH=/usr/bin:/bin`):
+- `roc build hello.roc` alone: a static executable in 0.42 s, serving.
+- `roux build` of all five examples: attach 16-20 ms (the link was
+  40-80); examples/templates' page md5 identical to main's linked build.
+- A copy of the dragrace site (12 templates, partials): attach 6 ms; all
+  22 routes, bodies and headers, identical to main's build of it.
+- `roux dev` on the site copy: five markup edits on screen 7-8 ms after
+  the save (reread 0.2 ms); a Roc edit 1.03 s.
+- Menu, instructions a request, three interleaved rounds: linked
+  11,497-11,501, attached 11,497-11,501.
+- `zig build test` passes (a test of the padding and the trailer).
+
+Costs: production is still one file, but `strip` or anything that
+rewrites the executable drops the program; the app then stops at the
+first template (its value names layouts the empty program has not
+got). The program is read into memory at start instead of mapped from
+the binary: its size, once (the site's is tens of KB).
