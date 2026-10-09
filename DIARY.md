@@ -1507,3 +1507,14 @@ found by the compiler's refusal, which names the field.
 
 The seeds come from fourneau's `prng` (tidy refuses the standard
 library's), which the `fourneau` module now exports (fourneau, same day).
+
+## 2026-10-09: the subdirectory refusal, reverted
+
+`cfe8286` refused any `.rocstache` under the app's directory but beside
+its `.roc`. Wrong: an app's directory may hold other apps, as
+`examples/` does (`hello.roc` beside `files/` and `templates/`), and
+`roux build examples/hello.roc` was refused for `files/Notes.rocstache`.
+Found porting the examples on another branch; reverted (`c76b630`),
+hello builds again. A template in a subdirectory stays silently no
+template: which directories are the app's is not something roux can
+know from the files, so it says nothing rather than guess.
