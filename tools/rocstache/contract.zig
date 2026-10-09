@@ -92,35 +92,37 @@ pub const Contract = struct {
         return null;
     }
 
+    /// Adds a field to a record's chain, which is kept sorted by name.
     fn add_field(contract: *Contract, record: u16, name: []const u8, child: u16) Error!void {
         if (contract.fields_len == fields_max) return error.Invalid;
         const type_ = &contract.types[record];
         assert(type_.kind == .record);
-        contract.fields[contract.fields_len] = .{
-            .name = name,
-            .type = child,
-            .next = type_.first,
-        };
-        type_.first = contract.fields_len;
+        var link = &type_.first;
+        while (link.* != none and std.mem.lessThan(u8, contract.fields[link.*].name, name)) {
+            link = &contract.fields[link.*].next;
+        }
+        contract.fields[contract.fields_len] = .{ .name = name, .type = child, .next = link.* };
+        link.* = contract.fields_len;
         contract.fields_len += 1;
     }
 
-    /// A record's fields sorted by name, into `buffer`.
-    pub fn sorted_fields(contract: *const Contract, record: u16, buffer: []Field) []Field {
-        var len: usize = 0;
-        var at = contract.get(record).first;
-        while (at != none) : (at = contract.fields[at].next) {
-            buffer[len] = contract.fields[at];
-            len += 1;
-        }
-        std.mem.sort(Field, buffer[0..len], {}, field_less);
-        return buffer[0..len];
+    /// A record's fields, sorted by name.
+    pub fn fields_of(contract: *const Contract, record: u16) Fields {
+        return .{ .contract = contract, .at = contract.get(record).first };
     }
-};
 
-fn field_less(_: void, a: Field, b: Field) bool {
-    return std.mem.lessThan(u8, a.name, b.name);
-}
+    pub const Fields = struct {
+        contract: *const Contract,
+        at: u16,
+
+        pub fn next(fields: *Fields) ?Field {
+            if (fields.at == none) return null;
+            const f = fields.contract.fields[fields.at];
+            fields.at = f.next;
+            return f;
+        }
+    };
+};
 
 /// The contract of `templates[0]`, checked; its partials are found among
 /// `templates` by name.
@@ -130,7 +132,13 @@ pub fn of(
     diagnostic: *Diagnostic,
 ) Error!void {
     assert(templates.len > 0);
-    contract.* = .{};
+    // The header only: the arrays are filled as they grow (a whole `.{}`
+    // would write all of them, ~200 KB, in a safe build).
+    contract.types_len = 0;
+    contract.fields_len = 0;
+    contract.root = none;
+    contract.declared = false;
+    contract.docs = "";
     const self = templates[0];
     var walker: Walker = .{
         .contract = contract,
@@ -178,16 +186,14 @@ pub fn write_line_as(
             try writer.writeAll(")");
         },
         .record => {
-            var buffer: [fields_max]Field = undefined;
-            const fields = contract.sorted_fields(index, &buffer);
-            if (fields.len == 0) return writer.writeAll("{}");
-            try writer.writeAll("{ ");
-            for (fields, 0..) |f, k| {
-                if (k > 0) try writer.writeAll(", ");
+            var fields = contract.fields_of(index);
+            var k: usize = 0;
+            while (fields.next()) |f| : (k += 1) {
+                try writer.writeAll(if (k == 0) "{ " else ", ");
                 try writer.print("{s} : ", .{f.name});
                 try write_line_as(contract, f.type, writer, how);
             }
-            try writer.writeAll(" }");
+            try writer.writeAll(if (k == 0) "{}" else " }");
         },
     }
 }
@@ -595,8 +601,9 @@ const Walker = struct {
     fn has(walker: *Walker, record: u16, message: []const u8) Error![]const u8 {
         var writer: std.Io.Writer = .fixed(&message_buffer);
         writer.print("{s} (it has: ", .{message}) catch return message;
-        var buffer: [fields_max]Field = undefined;
-        for (walker.contract.sorted_fields(record, &buffer), 0..) |f, k| {
+        var fields = walker.contract.fields_of(record);
+        var k: usize = 0;
+        while (fields.next()) |f| : (k += 1) {
             writer.print("{s}{s}", .{ if (k == 0) "" else ", ", f.name }) catch return message;
         }
         writer.writeAll(")") catch return message;

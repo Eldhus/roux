@@ -121,7 +121,11 @@ pub const Error = error{Invalid};
 
 pub fn parse(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!void {
     if (source.len > source_bytes_max) return fail(diagnostic, 0, "the template is too large", "");
-    tree.* = .{};
+    // The header only: nodes are written as they are pushed (a whole `.{}`
+    // would write all 1,024 of them in a safe build).
+    tree.len = 0;
+    tree.block = "";
+    tree.block_offset = 0;
     var open: [depth_max]u16 = undefined;
     var open_len: usize = 0;
     var at: usize = try skip_block(source, tree, diagnostic);

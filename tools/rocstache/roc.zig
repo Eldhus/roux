@@ -93,9 +93,9 @@ fn write_type(
             try writer.writeAll(")");
         },
         .record => {
-            var buffer: [contract_.fields_max]contract_.Field = undefined;
             try writer.writeAll("{\n");
-            for (contract.sorted_fields(index, &buffer)) |f| {
+            var fields = contract.fields_of(index);
+            while (fields.next()) |f| {
                 try write_tabs(indent + 1, writer);
                 try writer.print("{s} : ", .{f.name});
                 try write_type(contract, f.type, indent + 1, writer);

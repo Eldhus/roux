@@ -31,10 +31,71 @@ pub const Options = struct {
     build: []const u8,
     /// The pinned `roc`, for glue.
     roc: []const u8,
+    /// What a long-lived caller (`roux dev`) keeps between generations.
+    cache: ?*Cache = null,
 };
+
+/// Kept between generations by `roux dev`: the contracts' layouts, parsed,
+/// while glue's inputs are unchanged (parsing the ZON was a quarter of a
+/// markup edit's generation), and the hash of what each output file was
+/// last written with, so an unchanged one is neither read nor written
+/// (reading them back was another quarter). roux dev is the only writer
+/// of its build directory and of the generated modules.
+pub const Cache = struct {
+    gpa: Allocator,
+    arena: std.heap.ArenaAllocator,
+    layouts: ?layout.Layouts = null,
+    written: std.StringHashMapUnmanaged(u64) = .empty,
+
+    pub fn init(gpa: Allocator) Cache {
+        return .{ .gpa = gpa, .arena = .init(gpa) };
+    }
+
+    pub fn deinit(cache: *Cache) void {
+        var keys = cache.written.keyIterator();
+        while (keys.next()) |key| cache.gpa.free(key.*);
+        cache.written.deinit(cache.gpa);
+        cache.arena.deinit();
+        cache.* = undefined;
+    }
+};
+
+/// `write_if_changed`, remembering what it wrote in `cache` (keyed by the
+/// directory's role and the path): an output the same as last time costs a
+/// hash.
+fn write_output(
+    cache: ?*Cache,
+    gpa: Allocator,
+    io: Io,
+    dir: Io.Dir,
+    role: []const u8,
+    path: []const u8,
+    data: []const u8,
+) Error!bool {
+    const c = cache orelse return write_if_changed(gpa, io, dir, path, data);
+    const hash = std.hash.Wyhash.hash(0, data);
+    const key = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ role, path });
+    if (c.written.get(key)) |old| if (old == hash) return false;
+    const changed = try write_if_changed(gpa, io, dir, path, data);
+    const entry = try c.written.getOrPut(c.gpa, key);
+    if (!entry.found_existing) entry.key_ptr.* = try c.gpa.dupe(u8, key);
+    entry.value_ptr.* = hash;
+    return changed;
+}
+
+/// A large struct (a tree, a contract: hundreds of KB of bounded arrays)
+/// without a safe build's fill of `undefined` (`create`'s): its user resets
+/// the header and writes each element before reading it.
+fn create_unfilled(gpa: Allocator, comptime T: type) Allocator.Error!*T {
+    const bytes = gpa.rawAlloc(@sizeOf(T), .of(T), @returnAddress()) orelse
+        return error.OutOfMemory;
+    return @ptrCast(@alignCast(bytes));
+}
 
 /// The object's name in the build directory.
 pub const object_name = "templates.o";
+/// The same program alone, which `roux dev` has a running app reread.
+pub const program_name = "templates.bin";
 
 pub const Result = struct {
     templates: u32,
@@ -82,13 +143,15 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
         };
         try roc.write_module(module, &text.writer);
         const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{l.name});
-        if (try write_if_changed(gpa, io, app, path, text.written())) result.modules_changed = true;
+        const changed = try write_output(options.cache, gpa, io, app, "app", path, text.written());
+        if (changed) result.modules_changed = true;
     }
 
     try cwd.createDirPath(io, options.build);
     var build = try cwd.openDir(io, options.build, .{});
     defer build.close(io);
-    const layouts = try glue(gpa, io, build, options, contracts, errors);
+    const laid = try glue(gpa, io, build, options, contracts, errors);
+    const layouts = laid.layouts;
     const compiled = try gpa.alloc(bytecode.Template, loaded.len);
     for (templates, compiled, 0..) |t, *c, index| {
         const root = layouts.root(index) orelse bytecode.nothing;
@@ -111,10 +174,30 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
             return error.Invalid;
         },
     };
-    var object: Io.Writer.Allocating = .init(gpa);
-    try elf.write(builder.code.items, builder.text.items, &object.writer);
-    result.object_changed = try write_if_changed(gpa, io, build, object_name, object.written());
+    result.object_changed = try write_program(gpa, io, build, options.cache, .{
+        .code = builder.code.items,
+        .text = builder.text.items,
+        .layouts = laid.id,
+    });
     return result;
+}
+
+/// The program as the object the link takes and as the file roux dev has
+/// a running app reread; says whether the object changed.
+fn write_program(
+    gpa: Allocator,
+    io: Io,
+    build: Io.Dir,
+    cache: ?*Cache,
+    made: elf.Program,
+) Error!bool {
+    var object: Io.Writer.Allocating = .init(gpa);
+    try elf.write(made, &object.writer);
+    const changed = try write_output(cache, gpa, io, build, "build", object_name, object.written());
+    var program: Io.Writer.Allocating = .init(gpa);
+    try elf.write_program(made, &program.writer);
+    _ = try write_output(cache, gpa, io, build, "build", program_name, program.written());
+    return changed;
 }
 
 /// Every `*.rocstache` in the app's directory, sorted by name, parsed.
@@ -138,7 +221,7 @@ fn load(gpa: Allocator, io: Io, app: Io.Dir, errors: *Io.Writer) Error![]const L
             return error.Invalid;
         }
         const source = try app.readFileAlloc(io, file, gpa, .limited(parse.source_bytes_max));
-        const tree = try gpa.create(parse.Tree);
+        const tree = try create_unfilled(gpa, parse.Tree);
         var diagnostic: parse.Diagnostic = .{};
         parse.parse(source, tree, &diagnostic) catch {
             try report(errors, source, .{
@@ -216,7 +299,7 @@ fn contract_of(
     // contract.of takes the template first, the partials it may include after.
     const ordered = try gpa.dupe(contract_.Template, templates);
     std.mem.swap(contract_.Template, &ordered[0], &ordered[index]);
-    const contract = try gpa.create(contract_.Contract);
+    const contract = try create_unfilled(gpa, contract_.Contract);
     var diagnostic: contract_.Diagnostic = .{};
     contract_.of(contract, ordered, &diagnostic) catch {
         const source = for (templates) |t| {
@@ -259,59 +342,101 @@ fn glue(
     options: Options,
     contracts: []const layout.Contract,
     errors: *Io.Writer,
-) Error!layout.Layouts {
+) Error!Laid {
     try build.createDirPath(io, "glue");
     var platform: Io.Writer.Allocating = .init(gpa);
     try layout.write_platform(contracts, &platform.writer);
     var declared: Io.Writer.Allocating = .init(gpa);
     try layout.write_contracts(contracts, &declared.writer);
+    var identity = std.hash.Wyhash.init(0);
+    identity.update(layout.spec);
+    identity.update(options.roc);
+    identity.update(declared.written());
+    const id = identity.final();
     // The layouts are the compiler's: a new spec or another roc (a nightly
     // bump; its path names it) lays them out again, as a contract does.
-    const spec_changed = try write_if_changed(gpa, io, build, "glue/Layout.roc", layout.spec);
-    const roc_changed = try write_if_changed(gpa, io, build, "glue/roc", options.roc);
-    _ = try write_if_changed(gpa, io, build, "glue/main.roc", platform.written());
+    const c = options.cache;
+    const spec_changed =
+        try write_output(c, gpa, io, build, "build", "glue/Layout.roc", layout.spec);
+    const roc_changed = try write_output(c, gpa, io, build, "build", "glue/roc", options.roc);
+    _ = try write_output(c, gpa, io, build, "build", "glue/main.roc", platform.written());
     const contracts_changed =
-        try write_if_changed(gpa, io, build, "glue/Contracts.roc", declared.written());
+        try write_output(c, gpa, io, build, "build", "glue/Contracts.roc", declared.written());
     const changed = spec_changed or roc_changed or contracts_changed;
     const zon = "glue/layouts.zon";
-    const present = if (build.access(io, zon, .{})) true else |_| false;
-    if (changed or !present) {
-        const spec = try std.fmt.allocPrint(gpa, "{s}/glue/Layout.roc", .{options.build});
-        const output = try std.fmt.allocPrint(gpa, "{s}/glue/out", .{options.build});
-        const main = try std.fmt.allocPrint(gpa, "{s}/glue/main.roc", .{options.build});
-        const result = std.process.run(gpa, io, .{
-            .argv = &.{ options.roc, "glue", "--no-cache", spec, output, main },
-            .stdout_limit = .limited(1 << 20),
-            .stderr_limit = .limited(1 << 20),
-        }) catch |err| {
-            try errors.print("roc glue ({s}) could not run: {t}\n", .{ options.roc, err });
-            return error.Invalid;
-        };
-        if (!result.term.success()) {
-            try errors.print("roc glue failed on the contracts:\n{s}{s}", .{
-                result.stdout,
-                result.stderr,
-            });
-            // Its Contracts.roc goes, so the next run tries again.
-            build.deleteFile(io, "glue/Contracts.roc") catch {};
-            return error.Invalid;
-        }
-        const out = "glue/out/layouts.zon";
-        const written = try build.readFileAlloc(io, out, gpa, .limited(16 << 20));
-        _ = try write_if_changed(gpa, io, build, zon, written);
+    if (!changed) {
+        const cache = options.cache;
+        if (cache) |kept| if (kept.layouts) |layouts| return .{ .layouts = layouts, .id = id };
     }
-    const source = try build.readFileAllocOptions(io, zon, gpa, .limited(16 << 20), .of(u8), 0);
-    return layout.parse(gpa, source) catch |err| switch (err) {
+    const present = if (build.access(io, zon, .{})) true else |_| false;
+    if (changed or !present) try run_glue(gpa, io, build, options, errors);
+    // Parsed into the cache's memory when there is one, to keep.
+    const memory = if (options.cache) |cache| blk: {
+        cache.layouts = null;
+        _ = cache.arena.reset(.retain_capacity);
+        break :blk cache.arena.allocator();
+    } else gpa;
+    const source = try build.readFileAllocOptions(io, zon, memory, .limited(16 << 20), .of(u8), 0);
+    const layouts = layout.parse(memory, source) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.Invalid => {
             try errors.print("{s}/{s}: not the layouts roux's glue spec writes\n", .{
                 options.build,
                 zon,
             });
-            build.deleteFile(io, "glue/Contracts.roc") catch {};
+            glue_again(io, build, options);
             return error.Invalid;
         },
     };
+    if (options.cache) |cache| cache.layouts = layouts;
+    return .{ .layouts = layouts, .id = id };
+}
+
+/// The contracts' layouts, and their identity: a hash of what glue lays
+/// them out from (the spec, the roc, the contracts), which the program
+/// carries so the host rereads only a program its Roc was built for.
+const Laid = struct { layouts: layout.Layouts, id: u64 };
+
+/// After glue failed: its Contracts.roc goes (from the cache too), so the
+/// next generation runs glue again rather than read old layouts.
+fn glue_again(io: Io, build: Io.Dir, options: Options) void {
+    build.deleteFile(io, "glue/Contracts.roc") catch {};
+    const cache = options.cache orelse return;
+    cache.layouts = null;
+    if (cache.written.fetchRemove("build/glue/Contracts.roc")) |entry| cache.gpa.free(entry.key);
+}
+
+/// `roc glue` with roux's spec on the throwaway platform: `layouts.zon`.
+fn run_glue(
+    gpa: Allocator,
+    io: Io,
+    build: Io.Dir,
+    options: Options,
+    errors: *Io.Writer,
+) Error!void {
+    const spec = try std.fmt.allocPrint(gpa, "{s}/glue/Layout.roc", .{options.build});
+    const output = try std.fmt.allocPrint(gpa, "{s}/glue/out", .{options.build});
+    const main = try std.fmt.allocPrint(gpa, "{s}/glue/main.roc", .{options.build});
+    const result = std.process.run(gpa, io, .{
+        .argv = &.{ options.roc, "glue", "--no-cache", spec, output, main },
+        .stdout_limit = .limited(1 << 20),
+        .stderr_limit = .limited(1 << 20),
+    }) catch |err| {
+        try errors.print("roc glue ({s}) could not run: {t}\n", .{ options.roc, err });
+        glue_again(io, build, options);
+        return error.Invalid;
+    };
+    if (!result.term.success()) {
+        try errors.print("roc glue failed on the contracts:\n{s}{s}", .{
+            result.stdout,
+            result.stderr,
+        });
+        glue_again(io, build, options);
+        return error.Invalid;
+    }
+    const out = "glue/out/layouts.zon";
+    const written = try build.readFileAlloc(io, out, gpa, .limited(16 << 20));
+    _ = try write_if_changed(gpa, io, build, "glue/layouts.zon", written);
 }
 
 /// Writes `data` unless the file holds exactly that already; says whether

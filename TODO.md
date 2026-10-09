@@ -73,24 +73,27 @@
      on dedicated cores (`dragrace adhoc race`, three rounds each)
      131k requests a second against 136k (comptime, -3.1%) and 127k
      (walkers, -6.3%). The site: 410 generated lines (was ~15,000), release build
-     39 s (78; comptime 50), a Roc edit 1.2 s (2.0; comptime 1.3), markup
-     88-111 ms. The competitor is ported on fourneau-dragrace's branch
-     `templates-vm` (`51b803a`). The site's port is still scratch only.
-     The owner chooses between the branches. Then, if this one is chosen:
-     the site on fourneau-dragrace's branch.
-   - Todo (owner, 2026-10-08): **in dev, reread the bytecode, no link and
-     no restart**, for a markup edit. The biggest benefit is not losing
-     the server's state to change a page (its memory, open SSE streams,
-     anything `init!` built), not the latency (owner, 2026-10-08). Today
-     it is linked into the binary as in production (40-80 ms) and the app
-     restarted (tens of ms, its `init!` again, SSE connections dropped).
-     Simpler since the VM is the host's: no Roc holds the program. Needs:
-     the dev host rereading the program and text when roux dev rewrites
-     them (between requests, or the old kept until no render uses it); a
-     "changed" event on `/_dev/events`, since no restart drops the
-     stream. Contract and Roc edits keep glue, roc, the link and a
-     restart. Expected ~50 ms save to page (unmeasured); production
-     unchanged.
+     39 s (78; comptime 50), a Roc edit 1.1-1.2 s (2.0; comptime 1.3).
+     The owner chose this branch (2026-10-08: "focus on the host VM,
+     obviously"); the comptime one is written up in
+     docs/templates-comptime.md. **The reread is built**: a markup edit
+     rewrites the program file and signals the running app, which swaps
+     the program in (hazard pointers), keeping its state and SSE streams:
+     2.2-2.5 ms median save to page (88-111 with link and restart),
+     production unchanged but a comparison a render (docs/dev-server.md).
+     The competitor is ported on fourneau-dragrace's branch `templates-vm`
+     (`51b803a`). Nothing merges yet (owner, 2026-10-08: tonight's race
+     runs `main` as it is, to see the runner work). Next: the site on
+     fourneau-dragrace's branch; then the merge, with the nightly and the
+     skill's vendored docs.
+   - Todo: generation reparses and rechecks all templates on every edit
+     (~1 ms of the 2.2 on the site): keep trees and contracts by content
+     between passes, recompute only the edited template and what inlines
+     it. Worth it on a site with hundreds of templates, not this one.
+     (2026-10-08)
+   - Todo: a markup edit reloads the whole page (`location.reload()`):
+     scroll and focus are lost, as with any reload. Swapping the body in
+     place (a morph) would keep them. (2026-10-08)
 
 
 ## Plan

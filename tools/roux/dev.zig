@@ -24,6 +24,7 @@ const linux = std.os.linux;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const pipeline = @import("pipeline.zig");
+const rocstache = @import("rocstache");
 
 pub const Options = struct {
     app: pipeline.App,
@@ -38,7 +39,7 @@ const files_max = 4096;
 const directories_max = 256;
 /// Saves come in bursts (an editor writes, renames, writes again): a pass
 /// starts once the app's sources are quiet this long.
-const quiet_milliseconds = 30;
+const quiet_milliseconds = 0;
 
 /// What the app is built from, a hash of each kind's paths and contents.
 const Digests = struct {
@@ -64,7 +65,8 @@ pub fn run(
     defer stderr.flush() catch {};
     var watch: Watch = try .start(gpa, io, options);
     defer watch.deinit(gpa);
-    var state: State = .{ .options = options, .environ = environ };
+    var state: State = .{ .options = options, .environ = environ, .cache = .init(gpa) };
+    defer state.cache.deinit();
     defer state.stop(io);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
@@ -72,7 +74,9 @@ pub fn run(
     // Until SIGINT or SIGTERM: roux dev runs as long as it is wanted.
     while (!stopping.load(.monotonic)) {
         _ = arena_state.reset(.retain_capacity);
-        state.pass(arena_state.allocator(), io, stderr) catch |err| switch (err) {
+        const markup_only = watch.changed.markup_only();
+        watch.changed = .{};
+        state.pass(arena_state.allocator(), io, stderr, markup_only) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {},
         };
@@ -111,38 +115,51 @@ fn stop_on_signals() void {
 const State = struct {
     options: Options,
     environ: *const std.process.Environ.Map,
+    /// What generation keeps between passes (the parsed layouts).
+    cache: rocstache.generate.Cache,
     built: Digests = .{},
     build: u32 = 0,
+    /// The rereads of the templates' program by the running build.
+    rereads: u32 = 0,
     child: ?std.process.Child = null,
     /// The child's pidfd, readable when it exits; -1 with no child.
     child_fd: i32 = -1,
     /// The last pass failed: the next that finds nothing to build says so.
     failing: bool = false,
 
-    /// One pass: what changed is built, then the app restarted.
-    fn pass(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer) !void {
+    /// One pass: what changed is built, then the app restarted, or told to
+    /// reread its templates. `markup_only`: inotify named only templates,
+    /// so no other source changed and hashing them is skipped.
+    fn pass(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer, markup_only: bool) !void {
         const app = state.options.app;
         const start = Io.Timestamp.now(io, .awake);
-        const before = try digests(arena, io, state.options);
+        // After a failure the sources may hold Roc the app was not built
+        // from (a contract that changed, roc that failed): hash them all.
+        const before = if (markup_only and state.child != null and !state.failing)
+            state.built
+        else
+            try digests(arena, io, state.options);
         if (before.sql_files > 0 and before.sql != state.built.sql) {
             pipeline.query_types(arena, io, app) catch |err| return state.failed(stderr, err);
         }
         const paths: pipeline.Paths = try .of(arena, app);
-        const generated = pipeline.generate(arena, io, paths, app, stderr) catch |err|
+        const generated = pipeline.generate(arena, io, paths, app, &state.cache, stderr) catch |err|
             return state.failed(stderr, err);
-        // After generation: a contract that changed rewrote its Page.roc.
-        const now = try digests(arena, io, state.options);
+        // A contract that changed rewrote its Page.roc: hash the Roc again.
+        const now = if (generated.modules_changed)
+            try digests(arena, io, state.options)
+        else
+            before;
         const roc = now.roc != state.built.roc;
-        if (roc) {
-            pipeline.compile(io, paths, app, .dev) catch |err| return state.failed(stderr, err);
-        }
-        // Markup compiles to the templates' object, written directly: an
-        // edit's whole cost is the link.
-        const templates = generated.object_changed or state.build == 0;
-        const changed = roc or templates or now.static != state.built.static;
-        // Nothing changed, and the app runs: nothing to do. (Exited: start
-        // it again, it may have been a passing failure.)
-        if (!changed and state.child != null) {
+        const static = now.static != state.built.static;
+        const templates = generated.object_changed;
+        // Only markup changed, and the app runs: it rereads the program
+        // (`templates.bin`), no link and no restart, its state kept.
+        if (!roc and !static and state.child != null) {
+            state.built = now;
+            if (templates) return state.reread(io, stderr, start);
+            // Nothing changed at all. (Exited: start it again, below; it
+            // may have been a passing failure.)
             if (state.failing) {
                 const again = "roux dev: the sources are build {d}'s again; it serves\n";
                 try stderr.print(again, .{state.build});
@@ -150,17 +167,40 @@ const State = struct {
             state.failing = false;
             return;
         }
-        if (roc or templates) {
+        if (roc) {
+            pipeline.compile(io, paths, app, .dev) catch |err| return state.failed(stderr, err);
+        }
+        // The app reads its program from `templates.bin` in development, so
+        // only Roc (or no binary yet) needs the link.
+        if (roc or state.build == 0) {
             pipeline.link(arena, io, paths, app) catch |err| return state.failed(stderr, err);
         }
         state.built = now;
         state.build += 1;
+        state.rereads = 0;
         state.failing = false;
-        try state.restart(arena, io);
+        try state.restart(arena, io, paths);
         try stderr.print("roux dev: build {d} ok ({s}) in {d} ms\n", .{
             state.build,
             built_what(roc, templates),
             pipeline.milliseconds(start, Io.Timestamp.now(io, .awake)),
+        });
+    }
+
+    /// The running app told to reread the templates' program (SIGUSR1;
+    /// host/templates.zig): it swaps it in at its next render and tells
+    /// the browser, whose page reloads.
+    fn reread(state: *State, io: Io, stderr: *Io.Writer, start: Io.Timestamp) !void {
+        _ = linux.kill(state.child.?.id.?, .USR1);
+        state.rereads += 1;
+        state.failing = false;
+        const tenths: u64 = @intCast(@divTrunc(start.durationTo(Io.Timestamp.now(io, .awake))
+            .nanoseconds, 100 * std.time.ns_per_us));
+        try stderr.print("roux dev: build {d} ok (templates reread, {d}) in {d}.{d} ms\n", .{
+            state.build,
+            state.rereads,
+            tenths / 10,
+            tenths % 10,
         });
     }
 
@@ -200,10 +240,15 @@ const State = struct {
     /// The old build stopped (its database closed), the new one started,
     /// on two shards unless the environment says otherwise (host.zig,
     /// shard_count: eight right after eight did not fit the laptop).
-    fn restart(state: *State, arena: Allocator, io: Io) !void {
+    fn restart(state: *State, arena: Allocator, io: Io, paths: pipeline.Paths) !void {
         state.stop(io);
         var environ = try state.environ.clone(arena);
         try environ.put("ROUX_DEV", try std.fmt.allocPrint(arena, "{d}", .{state.build}));
+        const program = try std.fs.path.join(arena, &.{
+            try Io.Dir.cwd().realPathFileAlloc(io, paths.out_path, arena),
+            rocstache.generate.program_name,
+        });
+        try environ.put("ROUX_DEV_TEMPLATES", program);
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");
         const output = state.options.app.output;
@@ -290,6 +335,18 @@ const Watch = struct {
     fd: i32,
     /// Which watches are the static directory's (by watch descriptor).
     static: std.AutoHashMapUnmanaged(i32, void) = .empty,
+    /// What the events named since the last pass.
+    changed: Changed = .{},
+
+    const Changed = struct {
+        templates: bool = false,
+        /// Roc, SQL, static files, or events lost (the queue overflowed).
+        other: bool = false,
+
+        fn markup_only(changed: Changed) bool {
+            return changed.templates and !changed.other;
+        }
+    };
 
     fn start(gpa: Allocator, io: Io, options: Options) !Watch {
         const fd: i32 = @intCast(try syscall(linux.inotify_init1(linux.IN.CLOEXEC)));
@@ -363,7 +420,23 @@ const Watch = struct {
             const event: *const linux.inotify_event = @ptrCast(@alignCast(&buffer[at]));
             const name_bytes = buffer[at + @sizeOf(linux.inotify_event) ..][0..event.len];
             const name = std.mem.sliceTo(name_bytes, 0);
-            if (watch.static.contains(event.wd) or kind_of(name) != .other) source = true;
+            if (event.mask & linux.IN.Q_OVERFLOW != 0) {
+                watch.changed.other = true;
+                source = true;
+            } else if (watch.static.contains(event.wd)) {
+                watch.changed.other = true;
+                source = true;
+            } else switch (kind_of(name)) {
+                .templates => {
+                    watch.changed.templates = true;
+                    source = true;
+                },
+                .roc, .sql, .static => {
+                    watch.changed.other = true;
+                    source = true;
+                },
+                .other => {},
+            }
             at += @sizeOf(linux.inotify_event) + event.len;
         }
         return if (source) .source else .quiet;

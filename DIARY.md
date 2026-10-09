@@ -1297,3 +1297,46 @@ roc path (and the spec) now count as glue's inputs, so a bump lays the
 contracts out again (once, ~0.25 s). Checked: `zig build test`; both
 examples, the race's Menu, and the site copy's 12 pages and patches
 byte for byte as before; the site's release build 38 s.
+
+## 2026-10-08: the comptime branch written up; the reread
+
+The owner chose the host VM and asked for the comptime branch to be
+documented in full: docs/templates-comptime.md (how it built and
+rendered, every measurement, why the VM won, how to bring it back).
+
+Then the reread (owner: "Reread is phenomenal ... Don't stop till this
+shit is fucking tight"). A markup edit no longer links or restarts:
+roux build writes the program alone too (`templates.bin`); roux dev
+starts the app with `ROUX_DEV_TEMPLATES` naming it and, on a markup
+edit, rewrites it and sends SIGUSR1. The handler bumps a counter and
+wakes the `/_dev/events` streams through the futex (they wait on
+io_uring futexes now, not a sleep); the next render swaps the program
+in under hazard pointers, so a render on another shard never reads a
+freed one. Pages carry the name they were made under, read before they
+render, so a page made mid-swap reloads once more, never once too few.
+
+Measured with a client that holds the event stream and fetches the page
+on each event, 20-40 edits each (docs/dev-server.md has the table):
+save to page 88-111 ms with the link and restart, 34-46 ms with the
+reread, 6.1 ms without roux dev's 30 ms quiet window, 4.4 ms without
+the safe build's 0xaa fill of whole trees and contracts (hundreds of
+KB each: only headers are reset now; a record's fields are kept sorted
+as added, so no sort buffer), 2.9 ms with the layouts kept parsed
+between passes, 2.2-2.5 ms without hashing sources when inotify named
+only templates, outputs' hashes kept in memory. Stamped stages: wake
+0.13-0.32 ms, generation 0.42-1.55, signal to event 0.11-0.31; they
+scale together with the laptop's clock.
+
+Checked: 300 edits ten milliseconds apart under 175k requests a second
+(two shards): 1.4 million responses, all 200, 30,858 pages read back
+whole with markers that were written; the app's memory flat over 600
+more. A broken template keeps the old program serving. Found while
+testing: after a contract change whose roc failed, a later markup edit
+would have had the old app reread a program laid out for the new
+contract, reading records at wrong offsets. Two guards now: the program
+carries its layouts' identity and the host refuses any other (shown by
+signalling the app by hand: "the templates' contracts changed: the old
+program serves until the restart"), and roux dev hashes every source
+after a failed pass. Production: the Menu at 15,649 instructions a
+request, from 15,595 at `591de12`; the new nightly and the render's one
+comparison are both in the difference, not separated.

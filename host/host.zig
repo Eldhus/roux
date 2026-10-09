@@ -687,6 +687,9 @@ const App = struct {
 
     pub fn handle(app: *App, request: *Server.Request) Response {
         requests_in_flight += 1;
+        // Development: the program this page is made under, read before
+        // it is rendered (dev.zig).
+        const program = if (dev_build != null) templates.requested.load(.acquire) else 0;
         if (dev_build) |build| {
             if (dev.is_events(request.head.path_and_query)) return dev_events(request, build);
         }
@@ -744,24 +747,28 @@ const App = struct {
             .roc = roc,
             .handle = request_handle,
         };
-        if (dev_build != null) add_reload_script(&response);
+        if (dev_build) |build| add_reload_script(&response, build, program);
         return response;
     }
 
     /// In development, an HTML page gets the reload script (dev.zig).
-    fn add_reload_script(response: *Response) void {
+    fn add_reload_script(response: *Response, build: []const u8, program: u32) void {
         for (response.headers) |header| {
             if (!std.ascii.eqlIgnoreCase(header.name, "content-type")) continue;
             if (!dev.is_html(header.value)) return;
+            var buffer: [64]u8 = undefined;
+            const made = dev.name(build, program, &buffer);
             // Out of memory: the page goes without the script.
-            const body = dev.with_script(std.heap.smp_allocator, response.body) catch return;
+            const body = dev.with_script(std.heap.smp_allocator, response.body, made) catch
+                return;
             response.body = body;
             response.dev_body = body;
             return;
         }
     }
 
-    /// `/_dev/events`, in development: the build's name, then a comment
+    /// `/_dev/events`, in development: the name serving, then the name
+    /// again each time the templates' program is reread, and a comment
     /// every `keepalive_seconds` until the client leaves (a day at most).
     fn dev_events(request: *Server.Request, build: []const u8) Response {
         const over: Response = .{
@@ -776,13 +783,33 @@ const App = struct {
             .{ .name = "Cache-Control", .value = "no-store" },
         };
         request.stream_start(200, &headers) catch return over;
+        var seen = templates.requested.load(.acquire);
+        var name_buffer: [64]u8 = undefined;
         var buffer: [128]u8 = undefined;
-        request.stream_send(dev.first_event(build, &buffer)) catch return over;
+        const first = dev.event(dev.name(build, seen, &name_buffer), true, &buffer);
+        request.stream_send(first) catch return over;
         request.stream_flush() catch return over;
-        const keepalives_max = std.time.s_per_day / dev.keepalive_seconds;
-        for (0..keepalives_max) |_| {
-            shard_io.?.sleep(.fromSeconds(dev.keepalive_seconds), .awake) catch break;
-            request.stream_send(": \n\n") catch break;
+        const io = shard_io.?;
+        const keepalive: std.Io.Timeout = .{ .duration = .{
+            .raw = .fromSeconds(dev.keepalive_seconds),
+            .clock = .awake,
+        } };
+        const deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+            .raw = .fromSeconds(std.time.s_per_day),
+            .clock = .awake,
+        });
+        while (true) {
+            // Woken by a reread (SIGUSR1's futex wake), or the keepalive.
+            io.futexWaitTimeout(u32, &templates.requested.raw, seen, keepalive) catch break;
+            const now = templates.requested.load(.acquire);
+            if (now != seen) {
+                seen = now;
+                const next = dev.event(dev.name(build, seen, &name_buffer), false, &buffer);
+                request.stream_send(next) catch break;
+            } else {
+                if (deadline.compare(.lt, .now(io, .awake))) break;
+                request.stream_send(": \n\n") catch break;
+            }
             request.stream_flush() catch break;
         }
         if (request.stream_state() == .streaming) request.stream_end() catch {};
@@ -892,6 +919,7 @@ fn run() !void {
     init_io = startup_io;
     const shards = shard_count();
     try sqlite_setup(shards);
+    start_dev();
     const init = abi.roc_init_for_host();
     if (init.tag == .Err) {
         const code = init.payload_err();
@@ -919,8 +947,6 @@ fn run() !void {
         static_site = site;
     }
 
-    // `roux dev` names the build: development mode, decided once (dev.zig).
-    dev_build = if (environment("ROUX_DEV")) |build| (if (build.len > 0) build else null) else null;
     var app: App = .{ .context = started.context };
     // `init!` is over: the database is open, or there is none.
     serving = true;
@@ -964,6 +990,26 @@ fn https_from_environment() fourneau.https.Options {
         .redirect_port = port_from(environment("ROUX_REDIRECT_PORT")),
         .https_host = environment("ROUX_HTTPS_HOST"),
     };
+}
+
+/// `roux dev` names the build: development mode, decided once, before
+/// `init!` (dev.zig). It names the templates' program file too: reread on
+/// SIGUSR1, no restart (templates.zig).
+fn start_dev() void {
+    dev_build = if (environment("ROUX_DEV")) |build| (if (build.len > 0) build else null) else null;
+    if (dev_build == null) return;
+    const path = std.c.getenv("ROUX_DEV_TEMPLATES") orelse return;
+    templates.reload_from(std.mem.span(path));
+    const action: std.os.linux.Sigaction = .{
+        .handler = .{ .handler = on_reload_signal },
+        .mask = std.os.linux.sigemptyset(),
+        .flags = std.os.linux.SA.RESTART,
+    };
+    _ = std.os.linux.sigaction(.USR1, &action, null);
+}
+
+fn on_reload_signal(_: std.os.linux.SIG) callconv(.c) void {
+    templates.request_reload();
 }
 
 fn environment(name: [*:0]const u8) ?[]const u8 {
