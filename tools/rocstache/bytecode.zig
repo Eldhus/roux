@@ -195,11 +195,35 @@ pub fn compile(
 
 pub const Program = struct { code: []const u64, text: []const u8 };
 
+/// Where the app's `Templates.Template` union keeps which template a value
+/// is, and each template's tag: its discriminant and where its contract
+/// starts.
+pub const Union = struct {
+    discriminant_offset: u32 = 0,
+    /// 0: one tag, no discriminant.
+    discriminant_size: u32 = 0,
+    /// By template index.
+    tags: []const Tag = &.{},
+};
+pub const Tag = struct { discriminant: u32, payload_offset: u32 };
+
+/// The header's length in words: the count, each template's `[start,
+/// end)`, the union's word, each template's tag word.
+pub fn header_words(count: usize) usize {
+    return 1 + 2 * count + 1 + count;
+}
+
 /// The app's program from its templates' chunks: the header (each
-/// template's `[start, end)`), then each chunk's code, its runs moved past
-/// the text placed before it.
-pub fn assemble(gpa: std.mem.Allocator, chunks: []const Chunk) error{OutOfMemory}!Program {
-    var code_len: usize = 1 + 2 * chunks.len;
+/// template's `[start, end)`; the templates' union: its discriminant's
+/// offset and size, then each template's discriminant and payload offset),
+/// then each chunk's code, its runs moved past the text placed before it.
+pub fn assemble(
+    gpa: std.mem.Allocator,
+    chunks: []const Chunk,
+    templates: Union,
+) error{OutOfMemory}!Program {
+    assert(templates.tags.len == chunks.len);
+    var code_len: usize = header_words(chunks.len);
     var text_len: usize = 0;
     for (chunks) |chunk| {
         code_len += chunk.code.len;
@@ -208,7 +232,13 @@ pub fn assemble(gpa: std.mem.Allocator, chunks: []const Chunk) error{OutOfMemory
     const code = try gpa.alloc(u64, code_len);
     const text = try gpa.alloc(u8, text_len);
     code[0] = chunks.len;
-    var code_at: usize = 1 + 2 * chunks.len;
+    const union_at = 1 + 2 * chunks.len;
+    code[union_at] = templates.discriminant_offset |
+        @as(u64, templates.discriminant_size) << 32;
+    for (templates.tags, 0..) |tag, index| {
+        code[union_at + 1 + index] = tag.payload_offset | @as(u64, tag.discriminant) << 32;
+    }
+    var code_at: usize = header_words(chunks.len);
     var text_at: usize = 0;
     for (chunks, 0..) |chunk, index| {
         code[1 + 2 * index] = code_at;
@@ -430,7 +460,7 @@ fn int_of(kind: layout.Kind) ?Int {
         .i32 => .i32,
         .i64 => .i64,
         .list => .list,
-        .other, .record, .str, .bool => null,
+        .other, .record, .str, .bool, .tag_union => null,
     };
 }
 
@@ -469,12 +499,20 @@ test "bytecode: assembled chunks, their runs moved past the text before them" {
             .runs = &.{.{ .at = 1, .shift = 0 }},
         },
     };
-    const program = try assemble(arena.allocator(), &chunks);
+    const tags = [_]Tag{
+        .{ .discriminant = 0, .payload_offset = 0 },
+        .{ .discriminant = 1, .payload_offset = 0 },
+    };
+    const templates: Union = .{ .discriminant_offset = 24, .discriminant_size = 1, .tags = &tags };
+    const program = try assemble(arena.allocator(), &chunks, templates);
     try std.testing.expectEqualStrings("abcde", program.text);
-    // The header: two templates, [5, 6) and [6, 8).
-    try std.testing.expectEqualSlices(u64, &.{ 2, 5, 6, 6, 8 }, program.code[0..5]);
-    try std.testing.expectEqual(text_word(run_a), program.code[5]);
-    try std.testing.expectEqual(str_word, program.code[6]);
+    // The header: two templates, [8, 9) and [9, 11); the union's
+    // discriminant at 24, one byte; the tags 0 and 1.
+    const union_word = 24 | @as(u64, 1) << 32;
+    const header = [_]u64{ 2, 8, 9, 9, 11, union_word, 0, @as(u64, 1) << 32 };
+    try std.testing.expectEqualSlices(u64, &header, program.code[0..8]);
+    try std.testing.expectEqual(text_word(run_a), program.code[8]);
+    try std.testing.expectEqual(str_word, program.code[9]);
     // "de" now starts at 3; its mode, in the top byte, untouched.
-    try std.testing.expectEqual(3 * 65536 + 2 + (@as(u64, 2) << mode_shift), program.code[7]);
+    try std.testing.expectEqual(3 * 65536 + 2 + (@as(u64, 2) << mode_shift), program.code[10]);
 }

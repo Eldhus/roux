@@ -2,10 +2,11 @@
 //! VM for every template of every app. roux build compiles the app's
 //! templates to bytecode (tools/rocstache/bytecode.zig), each read a byte
 //! offset where Roc's compiler laid the contract's record out (`roc glue`
-//! told it), and links the bytecode and the static text in. A page's
-//! `render!` boxes its record and calls `hosted_template_render`; the VM
-//! walks the bytecode reading the record in place: no copy of it, no Roc
-//! value made per part.
+//! told it), and links the bytecode and the static text in. A template's
+//! value (`Menu.template(ctx)`, a tag of the app's `Templates.Template`)
+//! is boxed as it is sent and given to `hosted_template_render`; the VM
+//! finds the template by the tag and walks its bytecode reading the
+//! record in place: no copy of it, no Roc value made per part.
 //!
 //! The writing is the hot path: one pass into a buffer of the shard's (no
 //! measuring pass), static runs and short strings copied as whole 16- or
@@ -88,13 +89,53 @@ threadlocal var scratch: ?[]u8 = null;
 /// and in the partials it includes (the compiler's bound).
 const scopes_max = 16 * 9 + 1;
 
-/// Template `index` rendered from the record at `context`, in one Roc
-/// list. The record is only read.
-pub fn render(index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
-    if (reload_path == null) return render_from(data_linked(), index, context, roc_host);
+/// The app's `Templates.Template` at `template` (a box's payload), made
+/// for `layouts`, rendered in one Roc list: which template by the union's
+/// discriminant, from its tag's payload, as glue laid the union out (the
+/// program's header: bytecode.zig's `Pages`). The value is only read.
+pub fn render(layouts: u64, template: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+    if (reload_path == null) return render_union(data_linked(), layouts, template, roc_host);
     const program = acquire();
     defer release();
-    return render_from(program.data, index, context, roc_host);
+    return render_union(program.data, layouts, template, roc_host);
+}
+
+pub fn render_union(data: Data, layouts: u64, template: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+    // A value made for other layouts would be read at another program's
+    // offsets: memory the host must never send. roux build writes the
+    // app's Templates.roc and this program from one generation, and a
+    // reread program keeps the linked layouts, so this is a broken build.
+    if (layouts != data.layouts) @panic("a template's value made for other layouts than the " ++
+        "templates' program: Templates.roc and the program are from different builds");
+    const code = data.code;
+    const count: usize = @intCast(code[0]);
+    assert(count > 0);
+    const union_word = code[1 + 2 * count];
+    const offset: usize = @intCast(union_word & 0xffff_ffff);
+    const size: usize = @intCast(union_word >> 32);
+    const base = @intFromPtr(template);
+    const discriminant: u64 = switch (size) {
+        0 => 0,
+        1 => @as(*const u8, @ptrFromInt(base + offset)).*,
+        2 => @as(*const u16, @ptrFromInt(base + offset)).*,
+        4 => @as(*const u32, @ptrFromInt(base + offset)).*,
+        8 => @as(*const u64, @ptrFromInt(base + offset)).*,
+        else => unreachable,
+    };
+    const tags = code[2 + 2 * count ..][0..count];
+    // Roc numbers tags by name, as templates are: the template is usually
+    // the discriminant's own index; else found.
+    const index: usize = blk: {
+        if (discriminant < count and tags[@intCast(discriminant)] >> 32 == discriminant) {
+            break :blk @intCast(discriminant);
+        }
+        for (tags, 0..) |tag, i| if (tag >> 32 == discriminant) break :blk i;
+        // A union narrower than glue's (a value built by hand, not by the
+        // generated constructor): never read past it.
+        @panic("a template's tag the templates' program does not have");
+    };
+    const payload: usize = @intCast(tags[index] & 0xffff_ffff);
+    return render_from(data, index, @ptrFromInt(base + payload), roc_host);
 }
 
 pub fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {

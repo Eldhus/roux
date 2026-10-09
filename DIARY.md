@@ -1518,3 +1518,158 @@ Found porting the examples on another branch; reverted (`c76b630`),
 hello builds again. A template in a subdirectory stays silently no
 template: which directories are the app's is not something roux can
 know from the files, so it says nothing rather than guess.
+
+## 2026-10-09: pages as a union, rendered by the host (branch page-union)
+
+The owner: "do union type method and benchmark", after the closure
+(branch pure-render) cost 1.4-10%. A page is data: a tag naming the
+template, its contract as payload. roux writes the app's `Pages.roc`
+(`Page : [AboutPage(AboutPage.Ctx), …]`); the platform takes the app's
+`Page` as it takes `Context` (`requires { [Context : context, Page :
+page] … }`); `Server.Response(page)`'s body is `Bytes`, `Text` or
+`Html(page)`, and `Server.page(AboutPage({ … }))` makes one, purely.
+`Server.to_host!` boxes the page and calls the new hosted
+`page_render!`: the host reads the discriminant where glue says, finds
+the template by its tag, and runs the VM from the payload; the box goes
+back to Roc to release. Glue lays the union out: the throwaway platform
+gains `pages! : [Name(contract), …] => {}`, and the spec writes a tag
+union's discriminant offset and size and each tag's name, discriminant
+and payload type. The payload is at the union's start, as roc's own
+ZigGlue.roc reads a one-payload tag (`payload_fields` describe only
+tuples); each page's tag must hold exactly one payload, checked. The
+program's header carries the table (bytecode.zig's `Pages`): templates
+found by name, never by position. Tags are structural, so code that
+makes a page imports only that page's module; only `main` names the
+union.
+
+Probed: `roc test` passes `expect view("/about", …) == Ok(About({ who:
+"Escoffier", since: "1870" }))`: a view's result compared as data, the
+testing the closure could not give. Glue on a two-template app: a
+56-byte union, a one-byte discriminant at 48, tags by name (About 0,
+Menu 1), payload types the contracts' records.
+
+Measured, instructions a request (release, interleaved):
+- Menu (examples/templates, its template renamed Menu: a template named
+  `Page` collides with the app's `Page` type): eager 11,224-11,256,
+  closure 11,391-11,395, union 11,226-11,260. The union is free there.
+- The site's `/about`: eager 22,828-22,833, union 25,189-25,193 (+10%,
+  as the closure). Its profile: `str_concat`, allocation and `memset`
+  that the eager build has not: `frame("About", "/about")` evaluated per
+  request. Roc folds the context at compile time when it goes straight
+  into `render!`, and not inside a union's tag (nor a closure's capture:
+  so the closure's 10% was this too, not the closure). With the response
+  a top-level constant (`about = Server.page(AboutPage({ … }))`): 23,401-
+  23,405, +2.5%, the union's own price (a 264-byte union boxed and
+  zeroed for a small page, the body matched).
+- The site's `/`: 11.27 M either way (the database).
+Every page of the site, the 404 and a patch byte for byte.
+
+Costs that are not instructions: every `Server.Response` gains its
+parameter (31 annotations in the site: `Server.Response(Page)` in main,
+`Server.Response(page)` where none is made); no template may be named
+`Page`; a hand-written `Page` not `Pages.Page` would be read by the
+wrong layout (nothing checks it); apps without templates (hello, sse,
+sqlite) would need an empty `Page`, not tried: the repository's examples
+are not ported on this branch (the measurements used scratch copies).
+The dependency graph (owner's question): `main` depends on every
+page's contract through `Pages.roc`, and only it.
+
+## 2026-10-09: can the app lose `import Pages` and `Page : Pages.Page`?
+
+The owner asked whether the union's app could import as the other two
+variants do. Tried on scratch copies (the probe app, a scratch platform):
+- `import Pages exposing [Page]` with `Page` still in the app header:
+  refused, "exposed but not defined" and "the platform expects your app
+  module to define a type named Page". A type the platform requires is
+  the app module's own, as `Context` is.
+- The platform not asking for `Page`, the page type left open
+  (`Server.Response(_page)` in `requires`, as `_err` is): compiles, and
+  the app needs neither line. But the union Roc infers is the tags the
+  app sends: an app sending only `Menu` got a one-tag union, while glue
+  laid out the whole one, and the host served About's template over
+  Menu's record ("Eldhús &lt;menu&gt; cooks since Ro", status 200).
+  Unsafe.
+- The same open platform, and each page module exporting `page : Ctx ->
+  Pages.Page` (`page = |ctx| Menu(ctx)`), with `Pages.roc` spelling the
+  contracts out rather than importing the page modules (no cycle): the
+  app is `app [Context, program]`, `import Menu` only,
+  `Server.page(Menu.page(ctx))`, annotations `Server.Response(_)`; an
+  app sending only Menu rendered it right (built and linked by hand, the
+  modules hand-edited). The constructor's type pins the whole union
+  whatever the app sends. The cost: every page module imports Pages,
+  which changes with any template's contract, so a contract change
+  touches every page module (the hub, moved from main to the pages).
+- The bare tag still compiles there (`Server.page(Menu(ctx))`), and the
+  owner asked whether anyone would write it by accident: yes (the LSP's
+  hover shows the union's tags, completion offers `Menu`, tests reach for
+  `Ok(Menu({ … }))`). Caught at compile time by having `Server.page`
+  take `{ layouts : U64, page : p }`, which only the generated `X.page`
+  builds (`{ layouts: Pages.layouts, page: Menu(ctx) }`): the bare tag is
+  "This argument has the type: [Menu(Menu.Ctx)] But the function needs
+  the first argument to be: { layouts: U64, page: p }" on its line; the
+  `Menu.page` app checks clean (type level only, the scratch platform).
+  The `layouts` field would also let the host refuse a page made for
+  other layouts (a stale build) with a 500, at a comparison a page: not
+  built. Building the record by hand with a subset union stays possible,
+  on purpose only.
+
+## 2026-10-09: Templates, not Pages; a patch takes the union too
+
+The owner: rename the union `Templates` (a fragment is no page), and
+can a Datastar patch take the union? Probed on a scratch copy of this
+branch's platform, with two pages and a fragment (Menu, About, Count),
+the program and glue's layout from this branch's roux, the Roc modules
+hand-written in the shape roux would generate: `Templates.roc` spells
+the contracts out (`Template : [About({…}), Count({…}), Menu({…})]`,
+`layouts = 0x…`, the program's own identity), each template's module
+has `template : Ctx -> Rocstache.Template(Templates.Template)`, and the
+platform's `Rocstache` takes that value: `html` (a response, rendered
+when sent), `bytes!`, `str!` and `patch!` (rendered now; the patch
+framed in Roc here). The app is `app [Context, program]` and imports
+only its templates; `respond!`'s result is `Server.Response(_)`, which
+the LSP shows as `Server.Response(Templates.Template)`. Ran: the pages
+right, `/count` a real `datastar-patch-elements` event; `roc test`
+passes `view("/about", …) == Ok(About.template({ … }))`. A bare tag is
+refused in the view ("expected … Try(Rocstache.Template(_a), …)") and
+in a patch ("needs the first argument to be: Rocstache.Template(t)").
+Completion after `Menu.` returns nothing (the experimental LSP). The
+comparison for the Roc team is an artifact (roux Page Shapes, version
+2), built from this probe's captured output.
+
+## 2026-10-09: the Templates union, built into roux
+
+The owner chose it ("The union one is the one we will be merging in").
+What the probe hand-wrote, roux now generates, and the effectful path
+is gone (no side by side):
+
+- `roux build` writes each `X.roc` with `template : Ctx ->
+  Rocstache.Template(Templates.Template)` (no index any more: a template
+  added before it in the alphabet no longer rewrites it), and the app's
+  `Templates.roc`: the contracts spelled out as tags, and `layouts`, the
+  layouts' identity. The identity hashes what glue reads, so it is known
+  before glue runs and roc still starts at once (generate.zig's
+  `begin`); Templates.roc is written only when it changes.
+- Glue's throwaway platform takes the union as `Contracts.templates!`
+  (was `pages!`); bytecode.zig's `Pages` is `Union`.
+- The platform: `Rocstache.Template(t)`, `html`, `bytes!`, `str!`,
+  `patch!`; `Server.Response(t)`, its `Html` body that record; one
+  hosted `template_render! : U64, Box(a) => { bytes, template }` (the
+  index-taking one and `page_render!` gone; the ABI regenerated, only
+  those changed). `requires` leaves the union open (`_template`).
+- The host checks `layouts` against its program's and stops on any
+  other (Templates.roc and the program from different builds: offsets
+  that are not this program's), and stops on a discriminant its program
+  lacks rather than read past the union. Both @panic: a broken build,
+  not a request's error.
+- A template named `Templates` is refused (it would be the module roux
+  writes).
+- host/templates_test.zig renders through `render_union` now, over a
+  value laid out as Roc lays a two-tag union (payload first, the byte
+  after): the 3,000 seeds pass.
+- The examples: `Server.Response(_)` everywhere (apps without templates
+  too: the parameter is unconstrained there, and roc accepts it); bodies
+  `Text(…)` instead of bytes; examples/templates' response is a pure
+  `respond` with three `expect`s (the response compared, the 404, a field
+  matched out of it). `zig build test` passes; every example builds;
+  templates and files serve their pages (200, escaped; 404); `roc test`
+  in examples/templates: 33 pass.

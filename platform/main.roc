@@ -2,7 +2,9 @@ platform "roux"
 	requires {
 		[Context : context] for program : {
 			init! : () => Try({ config : Server.Config, context : context }, [Exit(I64), ..]),
-			respond! : Server.Request, context => Try(Server.Response, _err),
+			# `_template`: the app's Templates.Template, which its generated
+			# constructors pin whatever the app sends (DESIGN.md, Templates).
+			respond! : Server.Request, context => Try(Server.Response(_template), _err),
 		}
 	}
 	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url, Sqlite]
@@ -63,12 +65,12 @@ respond_for_host! : Host.RequestFromHost, Box(Context) => Host.ResponseToHost
 respond_for_host! = |request, boxed_context| {
 	context = Box.unbox(boxed_context)
 	match (program.respond!)(Server.from_host(request), context) {
-		Ok(response) => Server.to_host(response)
+		Ok(response) => Server.to_host!(response)
 		Err(err) => {
 			inspected = Str.inspect(err)
 			status = error_status(inspected)
 			Stderr.line!("${if status == 500 "ERROR" else "WARN"} respond! ${request.method} ${request.target}: ${inspected}")
-			Server.to_host(Server.status_response(status))
+			Server.to_host!(Server.status_response(status))
 		}
 	}
 }

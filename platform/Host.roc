@@ -73,11 +73,12 @@ Host := [].{
 	## keeping that many copies; gives the copy's name.
 	sqlite_backup! : U64, Str, U32 => Try(Str, SqliteErr)
 
-	## Template `index` (its place among the app's, sorted by name)
-	## rendered by the host from its contract, boxed: the host runs the
-	## template's bytecode, reading the record where Roc's compiler laid
-	## its fields out (DESIGN.md, Templates). One function for every
-	## template. The box comes back untouched for Roc to release: Roc
-	## knows its type.
-	template_render! : U64, Box(a) => { bytes : List(U8), context : Box(a) }
+	## The app's `Templates.Template`, boxed, rendered: the host reads which
+	## template by its tag and runs its bytecode over the tag's payload,
+	## reading the record where Roc's compiler laid its fields out, as glue
+	## laid the union out (DESIGN.md, Templates). `layouts` is the identity
+	## the value was made for (`Templates.layouts`); the host stops on any
+	## other, whose offsets are not this program's. The box comes back
+	## untouched for Roc to release: Roc knows its type.
+	template_render! : U64, Box(a) => { bytes : List(U8), template : Box(a) }
 }

@@ -179,7 +179,8 @@ host** (host/templates.zig), the same for every template of every app,
 runs it over the page's record, reading the record where Roc's compiler
 laid it out. The bytecode is data: editing markup changes it and nothing
 else, so no compiler runs. No Roc is generated but each template's
-contract and a one-line `render!`. (Until 2026-10-08 the branch
+contract and a one-line constructor, and the union of the templates
+(below). (Until 2026-10-08 the branch
 generated pure Roc walkers per template instead, ~15,000 lines on the
 dragrace site; the owner had them removed. A renderer in pure Roc that
 is not generated per template cannot be written: Roc has no reflection,
@@ -189,27 +190,41 @@ so a generic function cannot read field N of a record it does not know.)
 
 1. **`roux build`** (`tools/roux`, with `tools/rocstache`) parses each
    `Page.rocstache` and decides its **contract** (below: declared or
-   inferred). It writes `Page.roc`:
+   inferred). It writes `Page.roc`, and the app's `Templates.roc`:
 
    ```roc
    Page :: [].{
        Ctx : { items : List({ name : Str, price : U32 }), title : Str }
-       render! : Ctx => Rocstache.Html
-       render! = |ctx| Rocstache.render!(0, Box.box(ctx))
+       template : Ctx -> Rocstache.Template(Templates.Template)
+       template = |ctx| { layouts: Templates.layouts, template: Page(ctx) }
+   }
+
+   Templates :: [].{
+       Template : [
+           About({ since : Str, who : Str }),
+           Page({ items : List({ name : Str, price : U32 }), title : Str }),
+       ]
+       layouts : U64
+       layouts = 0xf1c8d176c052f990
    }
    ```
 
-   The number is the template's index among the app's, sorted by name.
+   `Templates.roc` spells the contracts out (a template's module imports
+   it, so it cannot import them) and carries the layouts' identity (a
+   hash of what glue lays out from, so known before glue runs).
 2. **`roc glue`** lays the contracts out, only when one changed (~0.3 s;
    layout.zig). roux writes a throwaway platform with one hosted
-   function per contract, taking it concretely, and runs glue on it with
+   function per contract, taking it concretely, and one taking the
+   templates' union (its discriminant's offset and size, each tag's
+   discriminant and payload), and runs glue on it with
    its own spec (`tools/rocstache/Layout.roc`), which writes the
    compiler's layout facts as ZON (`layouts.zon` in the build
    directory): every type's kind and size, each record's fields'
    offsets. Nothing guesses an offset. Glue runs with `--no-cache`: its
    cache handed back another spec's compiled script (nightly-2026-10-04).
 3. It compiles every template to one **program** (bytecode.zig): a
-   header (each template's `[start, end)`), then the code; and one
+   header (each template's `[start, end)`, the union's discriminant,
+   each template's tag), then the code; and one
    **text**, every static run of every template. A word is a `u64`: the
    op in 4 bits, how many scopes up the read starts in 4, the byte
    offset from that scope in 24, the rest (a section's length, an
@@ -229,8 +244,15 @@ so a generic function cannot read field N of a record it does not know.)
    not their sum (the dragrace site, `--dev`: 1.04 s against 1.31 s).
 6. **roux links** the archive and the object (`zig ld.lld`, 40-80 ms).
 
-At run time `Page.render!(ctx)` boxes the record and calls the host
-(`hosted_template_render(index, box)`). The VM keeps a stack of scope
+At run time `Page.template(ctx)` is only a value: `{ layouts, template:
+Page(ctx) }`, a tag of the app's union. A response carries it
+(`Rocstache.html`, body `Html(…)`), and the platform renders it as the
+response is sent: it boxes the union and calls the host
+(`hosted_template_render(layouts, box)`), which refuses a value made for
+other layouts than its program's (a broken build: it stops), reads the
+discriminant where glue said, and runs that template's code from the
+tag's payload. `Rocstache.bytes!`, `str!` and `patch!` render a value
+now, where effectful code needs the bytes. The VM keeps a stack of scope
 pointers, the record's address first: a list's section pushes each
 element's address in turn (its stride the element's size), a record's
 pushes the record's, and a read is a load at a scope's address plus the
@@ -239,7 +261,7 @@ one pass into a buffer of the shard's: static runs copied in 32-byte
 blocks (the text has slack after it), values escaped 16 bytes at a time
 through loads that cannot cross a page, numbers two digits at a time;
 then one allocation of the exact size, a Roc `List(U8)`. The box goes
-back to Roc untouched (`{ bytes, context }`), and Roc releases it: Roc
+back to Roc untouched (`{ bytes, template }`), and Roc releases it: Roc
 knows the record's type, the host never needs to.
 
 A partial comes two ways. `{{> Top}}` is inlined: its code is compiled
@@ -281,9 +303,29 @@ roc, the link and a restart: 1.1-1.2 s on the site (1.3 s on the
 
 ### What it costs the app
 
-- `render!` is effectful: hosted functions are, so code that renders is
-  effectful too. `Rocstache.html` and `str` (a response, a Datastar
-  patch's Str) are pure.
+- Templates are data (owner, 2026-10-09, over an effectful `render!`):
+  a handler that only chooses a template and fills it is a pure
+  function, and `roc test` compares its response with `==` or matches
+  into it (examples/templates). The rendered bytes are tested below the
+  app (TESTING.md). Every `Server.Response` takes the union as a
+  parameter; apps write `Server.Response(_)` and Roc infers it.
+- The union is pinned by the generated constructors' annotations: the
+  platform's `requires` leaves it open (an app need not name it), and
+  an inferred union holds only the tags the app sends, laid out unlike
+  glue's (DIARY 2026-10-09: the host served one template over another's
+  record). Responses take `Rocstache.Template(t)`, a record only the
+  constructor builds, so a bare tag (`Page(ctx)`) is a type error. A
+  record built by hand with a narrower union is still possible on
+  purpose, and the host cannot tell: it reads the value as glue laid the
+  full union out (it stops only on a discriminant its program lacks).
+  Building the record by hand is the one way to misuse it.
+- A context Roc folded at compile time when passed straight to an
+  effectful `render!` is built per request inside a tag: +10% on the
+  site's `/about` as written, +2.5% with the response a top-level
+  constant (DIARY 2026-10-09).
+- A template's module imports `Templates.roc`, which changes with any
+  contract: whether that rebuilds every template's importers depends on
+  what a future incremental Roc compiler keys on.
 - A contract is a concrete record: the app passes exactly its fields
   (an inferred contract's leaves are `Str`; numbers need a declared
   `Ctx`).
@@ -291,10 +333,7 @@ roc, the link and a restart: 1.1-1.2 s on the site (1.3 s on the
   anything else is computed in Roc into a field. Integers up to 64 bits
   render; other leaf types (`F64`, `Dec`, tags) are refused by roux
   build.
-- `Rocstache.render!` trusts its caller: only generated modules call it,
-  with the index that matches the box's type.
-- A template's index among the app's (sorted by name) is in its module:
-  adding a template before it in the alphabet rewrites the module.
+- No template may be named `Templates` (roux writes that module).
 
 ### Against the other ways
 

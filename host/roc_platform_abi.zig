@@ -853,49 +853,49 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct_f5f250fc11b4cdee
-pub const __AnonStruct_f5f250fc11b4cdee = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct_d302c9b63b4b56ea
+pub const __AnonStruct_d302c9b63b4b56ea = if (@sizeOf(usize) == 4) extern struct {
     bytes: RocListWith(u8, false),
-    context: RocBox,
+    template: RocBox,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.bytes.decref(roc_host);
-        decrefBox(@ptrCast(value.context), roc_host);
+        decrefBox(@ptrCast(value.template), roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.bytes.incref(amount);
-        increfBox(@ptrCast(value.context), amount);
+        increfBox(@ptrCast(value.template), amount);
     }
 } else extern struct {
     bytes: RocListWith(u8, false),
-    context: RocBox,
+    template: RocBox,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.bytes.decref(roc_host);
-        decrefBox(@ptrCast(value.context), roc_host);
+        decrefBox(@ptrCast(value.template), roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.bytes.incref(amount);
-        increfBox(@ptrCast(value.context), amount);
+        increfBox(@ptrCast(value.template), amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_f5f250fc11b4cdee) != 32) @compileError("__AnonStruct_f5f250fc11b4cdee size mismatch");
-        if (@alignOf(__AnonStruct_f5f250fc11b4cdee) != 8) @compileError("__AnonStruct_f5f250fc11b4cdee alignment mismatch");
+        if (@sizeOf(__AnonStruct_d302c9b63b4b56ea) != 32) @compileError("__AnonStruct_d302c9b63b4b56ea size mismatch");
+        if (@alignOf(__AnonStruct_d302c9b63b4b56ea) != 8) @compileError("__AnonStruct_d302c9b63b4b56ea alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_f5f250fc11b4cdee) != 16) @compileError("__AnonStruct_f5f250fc11b4cdee size mismatch");
-        if (@alignOf(__AnonStruct_f5f250fc11b4cdee) != 4) @compileError("__AnonStruct_f5f250fc11b4cdee alignment mismatch");
+        if (@sizeOf(__AnonStruct_d302c9b63b4b56ea) != 16) @compileError("__AnonStruct_d302c9b63b4b56ea size mismatch");
+        if (@alignOf(__AnonStruct_d302c9b63b4b56ea) != 4) @compileError("__AnonStruct_d302c9b63b4b56ea alignment mismatch");
     }
 }
 
@@ -1762,10 +1762,10 @@ comptime {
 /// Fields ordered by compiler-emitted ABI offsets.
 pub const HostTemplate_renderRetRecord = if (@sizeOf(usize) == 4) extern struct {
     bytes: RocListWith(u8, false),
-    context: RocBox,
+    template: RocBox,
 } else extern struct {
     bytes: RocListWith(u8, false),
-    context: RocBox,
+    template: RocBox,
 };
 
 comptime {
@@ -1883,7 +1883,7 @@ pub const HostSqlite_backupArgs = extern struct {
 };
 
 /// Arguments for Host.template_render!
-/// Roc signature: U64, Box(rigid) => { bytes : List(U8), context : Box(rigid) }
+/// Roc signature: U64, Box(rigid) => { bytes : List(U8), template : Box(rigid) }
 /// Refcounted fields are owned by the hosted function.
 pub const HostTemplate_renderArgs = extern struct {
     arg0: u64,
@@ -1922,7 +1922,7 @@ pub const HostSqlite_commitResultPayload = HostSqlite_write_beginResultPayload;
 pub const HostSqlite_commitResultTag = HostSqlite_write_beginResultTag;
 pub const HostSqlite_commitErr = __AnonStruct_4c605145331877e7;
 pub const HostSqlite_backupErr = __AnonStruct_4c605145331877e7;
-pub const HostTemplate_render = __AnonStruct_f5f250fc11b4cdee;
+pub const HostTemplate_render = __AnonStruct_d302c9b63b4b56ea;
 pub const Init_for_hostOk = __AnonStruct_2a70a3dd551fa8a1;
 pub const Respond_for_hostArg0 = __AnonStruct_28781edfe447a702;
 pub const Respond_for_hostArg0Headers = __AnonStruct_82a96c5d55d63488;
@@ -2167,8 +2167,8 @@ pub const HostSqlite_backupResultRelease = struct {
     }
 };
 
-pub const __AnonStruct_f5f250fc11b4cdeeRelease = struct {
-    pub fn release(value: __AnonStruct_f5f250fc11b4cdee, roc_host: *RocHost) void {
+pub const __AnonStruct_d302c9b63b4b56eaRelease = struct {
+    pub fn release(value: __AnonStruct_d302c9b63b4b56ea, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -2264,7 +2264,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == BlobOrIntegerOrNullOrRealOrText) return BlobOrIntegerOrNullOrRealOrTextRelease;
     if (T == HostSqlite_write_beginResult) return HostSqlite_write_beginResultRelease;
     if (T == HostSqlite_backupResult) return HostSqlite_backupResultRelease;
-    if (T == __AnonStruct_f5f250fc11b4cdee) return __AnonStruct_f5f250fc11b4cdeeRelease;
+    if (T == __AnonStruct_d302c9b63b4b56ea) return __AnonStruct_d302c9b63b4b56eaRelease;
     if (T == Init_for_hostResult) return Init_for_hostResultRelease;
     if (T == __AnonStruct_2a70a3dd551fa8a1) return __AnonStruct_2a70a3dd551fa8a1Release;
     if (T == __AnonStruct_a14cd3b7d5755441) return __AnonStruct_a14cd3b7d5755441Release;
@@ -2381,12 +2381,12 @@ pub extern fn hosted_sqlite_commit(arg0: u64) callconv(.c) HostSqlite_write_begi
 pub extern fn hosted_sqlite_backup(arg0: u64, arg1: RocStr, arg2: u32) callconv(.c) HostSqlite_backupResult;
 
 /// Hosted symbol for Host.template_render!
-/// Roc signature: U64, Box(rigid) => { bytes : List(U8), context : Box(rigid) }
+/// Roc signature: U64, Box(rigid) => { bytes : List(U8), template : Box(rigid) }
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
 ///     decrefBox(@ptrCast(arg1), roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
-pub extern fn hosted_template_render(arg0: u64, arg1: RocBox) callconv(.c) __AnonStruct_f5f250fc11b4cdee;
+pub extern fn hosted_template_render(arg0: u64, arg1: RocBox) callconv(.c) __AnonStruct_d302c9b63b4b56ea;
 
 /// Default memory management functions for Roc platforms.
 ///

@@ -34,6 +34,11 @@ const Ctx = extern struct {
     count: u32,
     open: bool,
 };
+/// The app's `Templates.Template` as Roc lays a two-tag union out: the
+/// payload at its start, the discriminant after it.
+const Template = extern struct { ctx: Ctx, tag: u8 };
+/// The layouts' identity the program and the values carry.
+const layouts_id: u64 = 0x5eed;
 
 /// The types' indexes in the hand-laid layouts.
 const T = struct {
@@ -542,18 +547,30 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
             return err;
         };
     }
-    const program = try bytecode.assemble(arena, &chunks);
+    // Rendered as an app's value is: a union whose tag says template 1, its
+    // payload the record at the union's start, the discriminant after it.
+    const tags = [_]bytecode.Tag{
+        .{ .discriminant = 0, .payload_offset = 0 },
+        .{ .discriminant = 1, .payload_offset = 0 },
+    };
+    const program = try bytecode.assemble(arena, &chunks, .{
+        .discriminant_offset = @offsetOf(Template, "tag"),
+        .discriminant_size = 1,
+        .tags = &tags,
+    });
     const text = try arena.alloc(u8, program.text.len + templates.slack);
     @memcpy(text[0..program.text.len], program.text);
     const data: templates.Data = .{
         .code = program.code,
         .text = text[0..program.text.len],
-        .layouts = 0,
+        .layouts = layouts_id,
     };
     var runs: u32 = 0;
     for (0..4) |_| {
         const ctx = try random_ctx(random, arena);
-        const got = templates.render_from(data, 1, @ptrCast(ctx), host);
+        const value = try arena.create(Template);
+        value.* = .{ .ctx = ctx.*, .tag = 1 };
+        const got = templates.render_union(data, layouts_id, @ptrCast(value), host);
         var oracle: Oracle = .{ .arena = arena, .sources = &sources };
         const scopes = [_]Scope{.{ .ctx = ctx }};
         try oracle.walk(sources[1].tree, 0, sources[1].tree.len, &scopes);

@@ -164,20 +164,36 @@ fn begin_with(
     var modules_changed = false;
     const contracts = try gpa.alloc(layout.Contract, names.len);
     for (kept, contracts, 0..) |k, *c, index| {
-        c.* = .{ .index = @intCast(index), .contract = k.contract.? };
-        const changed = try write_module(gpa, io, app, cache, k, @intCast(index));
+        c.* = .{ .index = @intCast(index), .name = k.name, .contract = k.contract.? };
+        const changed = try write_module(gpa, io, app, cache, k);
         if (changed) modules_changed = true;
     }
     try cwd.createDirPath(io, options.build);
     var build = try cwd.openDir(io, options.build, .{});
     errdefer build.close(io);
+    const glue = try glue_start(gpa, io, build, options, cache, kept, contracts, errors);
+    // The union and its layouts' identity, known before glue runs (the
+    // identity hashes what glue reads), so roc can start at once.
+    if (names.len > 0) {
+        const roots = try gpa.alloc(*const contract_.Contract, names.len);
+        for (kept, roots) |k, *root| root.* = k.contract.?;
+        var text: Io.Writer.Allocating = .init(gpa);
+        try roc.write_templates(.{
+            .names = names,
+            .contracts = roots,
+            .layouts = glue.id(),
+        }, &text.writer);
+        if (try write_output(cache, gpa, io, app, "app", "Templates.roc", text.written())) {
+            modules_changed = true;
+        }
+    }
     return .{
         .options = options,
         .cache = cache,
         .kept = kept,
         .templates = templates,
         .build = build,
-        .glue = try glue_start(gpa, io, build, options, cache, kept, contracts, errors),
+        .glue = glue,
         .templates_count = @intCast(names.len),
         .modules_changed = modules_changed,
     };
@@ -186,7 +202,8 @@ fn begin_with(
 fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error!Result {
     const laid = try glue_finish(gpa, io, g.build, g.options, g.cache, &g.glue, errors);
     const chunks = try compile(gpa, g.cache, g.kept, g.templates, &laid, errors);
-    const program = try bytecode.assemble(gpa, chunks);
+    const templates = try union_table(gpa, g.kept, &laid.layouts, errors);
+    const program = try bytecode.assemble(gpa, chunks, templates);
     const program_changed = try write_program(gpa, io, g.build, g.options, g.cache, .{
         .code = program.code,
         .text = program.text,
@@ -196,6 +213,42 @@ fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error
         .templates = g.templates_count,
         .modules_changed = g.modules_changed,
         .program_changed = program_changed,
+    };
+}
+
+/// Each template's tag in the app's `Templates.Template`, as glue laid the
+/// union out: found by name, never by position.
+fn union_table(
+    gpa: Allocator,
+    kept: []const *Kept,
+    layouts: *const layout.Layouts,
+    errors: *Io.Writer,
+) Error!bytecode.Union {
+    if (kept.len == 0) return .{};
+    const laid = layouts.templates() orelse {
+        try errors.writeAll("glue laid out no templates union\n");
+        return error.Invalid;
+    };
+    const tags = try gpa.alloc(bytecode.Tag, kept.len);
+    for (kept, tags) |k, *tag| {
+        const found = for (laid.tags) |t| {
+            if (std.mem.eql(u8, t.name, k.name)) break t;
+        } else {
+            try errors.print("{s}: no tag in glue's templates union\n", .{k.name});
+            return error.Invalid;
+        };
+        if (found.payload_count != 1) {
+            try errors.print("{s}: its tag in glue's templates union holds {d} payloads\n", .{
+                k.name, found.payload_count,
+            });
+            return error.Invalid;
+        }
+        tag.* = .{ .discriminant = found.discriminant, .payload_offset = found.payload_offset };
+    }
+    return .{
+        .discriminant_offset = laid.discriminant_offset,
+        .discriminant_size = laid.discriminant_size,
+        .tags = tags,
     };
 }
 
@@ -276,6 +329,12 @@ fn template_names(
         const name = entry.name[0 .. entry.name.len - ".rocstache".len];
         if (!parse.is_type_name(name)) {
             try errors.print("{s}: a template's name is a Roc type name, like `Page`\n", .{
+                entry.name,
+            });
+            return error.Invalid;
+        }
+        if (std.mem.eql(u8, name, "Templates")) {
+            try errors.print("{s}: `Templates` is the module roux writes for the union\n", .{
                 entry.name,
             });
             return error.Invalid;
@@ -462,22 +521,13 @@ fn contract_of(
     return contract;
 }
 
-/// A template's `Page.roc`, unless its contract and place are what they
-/// were when it was last written; says whether the file changed.
-fn write_module(
-    gpa: Allocator,
-    io: Io,
-    app: Io.Dir,
-    cache: *Cache,
-    k: *Kept,
-    index: u32,
-) Error!bool {
-    var hasher = std.hash.Wyhash.init(k.contract_key);
-    hasher.update(std.mem.asBytes(&index));
-    const key = hasher.final();
+/// A template's `Menu.roc`, unless its contract is what it was when it was
+/// last written; says whether the file changed.
+fn write_module(gpa: Allocator, io: Io, app: Io.Dir, cache: *Cache, k: *Kept) Error!bool {
+    const key = k.contract_key;
     if (k.module_key == key) return false;
     var text: Io.Writer.Allocating = .init(gpa);
-    const module: roc.Module = .{ .name = k.name, .contract = k.contract.?, .index = index };
+    const module: roc.Module = .{ .name = k.name, .contract = k.contract.? };
     try roc.write_module(module, &text.writer);
     const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{k.name});
     const changed = try write_output(cache, gpa, io, app, "app", path, text.written());
@@ -565,6 +615,15 @@ const Glue = union(enum) {
     kept: Laid,
     parse: u64,
     running: struct { child: std.process.Child, id: u64 },
+
+    /// The layouts' identity (`Laid.id`), whichever the step.
+    fn id(glue: Glue) u64 {
+        return switch (glue) {
+            .kept => |laid| laid.id,
+            .parse => |id_| id_,
+            .running => |running| running.id,
+        };
+    }
 };
 
 /// The contracts' layouts: the throwaway platform written, and `roc glue`
