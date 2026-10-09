@@ -103,7 +103,20 @@
    effect, run by the platform when it sends; the host might then render
    straight into the response, no copy into a Roc list).
    - Where it stands (2026-10-09): the fixes done and committed (DIARY,
-     2026-10-09); next, the design pass, starting with a pure render.
+     2026-10-09). Design experiments, each on its own branch and
+     worktree, each written up in that branch's DIARY, none merged (the
+     owner's call):
+     - `pure-render` (`../roux-pure-render`): `Page.render : Ctx ->
+       Html`, pure, rendered as the response is sent; bodies `Bytes`,
+       `Text`, `Html`. Works, every example and the site byte for byte;
+       costs +1.4% instructions (Menu) to +10% (`/about`: Roc folds a
+       constant context no more once a closure holds it).
+     - `fixed-format` (`../roux-fixed`): `{{ x | fixed "1" }}`, an F64
+       printed by the VM as Roc rounds; the site's chart dots -1.1% of
+       the race page, byte for byte.
+     - Found on the way, in the site (fourneau-dragrace `f379a25`, on
+       main): log10 by bisection on `F64.pow` was a third of the race
+       page; by its series now, -33%.
 
 
 ## Plan
