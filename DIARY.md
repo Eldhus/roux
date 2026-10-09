@@ -1446,3 +1446,17 @@ only ~100 ms). Checked: every site page (8, 67 KB) byte for byte from a
 release build before and after; glue failing (a fake roc whose `glue`
 exits 3: "roc glue failed on the contracts: glue says no", no roc left
 running); roc failing (a broken main.roc: roc's message, glue finished).
+
+## 2026-10-09: a failure says why; the reread counter never steps back
+
+A tool that cannot start (a roux-db not beside roux, as above) is now
+named by roux, as a tool that ran and failed would have said: "roux:
+.../roux-db could not run: FileNotFound", and roux dev names any other
+failure that no compiler printed ("build 1 failed (…)"). In the host,
+`swap_in` skips a request another thread has already met or passed
+(counters compared as a wrapping distance): before, a thread waiting
+with an older request set `loaded` back and every render read the file
+once more. Checked on the site copy: 300 edits ten milliseconds apart
+under `oha -c 32` for 12 s, 1,905,863 responses all 200 (158,801 a
+second, two shards), 21,462 pages read whole, each marker one written;
+301 rereads.

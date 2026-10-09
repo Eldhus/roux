@@ -169,8 +169,18 @@ pub fn link(arena: Allocator, io: Io, paths: Paths, app: App) !void {
     try Io.Dir.cwd().rename(linked, Io.Dir.cwd(), app.output, io);
 }
 
+/// A tool started; one that cannot be is named, with why, as a tool that
+/// ran and failed would have said (rare: a plain unbuffered line).
 fn spawn(io: Io, argv: []const []const u8, cwd: []const u8) !std.process.Child {
-    return std.process.spawn(io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdin = .ignore });
+    const how: std.process.SpawnOptions = .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+    };
+    return std.process.spawn(io, how) catch |err| {
+        std.debug.print("roux: {s} could not run: {t}\n", .{ argv[0], err });
+        return error.ChildFailed;
+    };
 }
 
 pub fn milliseconds(from: Io.Timestamp, to: Io.Timestamp) i64 {

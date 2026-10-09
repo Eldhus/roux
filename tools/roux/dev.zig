@@ -283,13 +283,17 @@ const State = struct {
         }
     }
 
-    /// The compilers printed why; the last good build keeps serving.
+    /// The last good build keeps serving. A compiler's failure was printed
+    /// by it (`Invalid`, `ChildFailed`); any other is named here (a tool
+    /// that would not start, a file that could not be written).
     fn failed(state: *State, stderr: *Io.Writer, err: anyerror) anyerror {
         state.failing = true;
-        stderr.print("roux dev: build {d} failed; build {d} still serving\n", .{
-            state.build + 1,
-            state.build,
-        }) catch {};
+        stderr.print("roux dev: build {d} failed", .{state.build + 1}) catch {};
+        switch (err) {
+            error.Invalid, error.ChildFailed => {},
+            else => stderr.print(" ({t})", .{err}) catch {},
+        }
+        stderr.print("; build {d} still serving\n", .{state.build}) catch {};
         return err;
     }
 
