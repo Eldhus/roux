@@ -158,12 +158,15 @@ fn sqlite_module(b: *std.Build, options: struct {
     /// True for the host, which roc links as a position-independent
     /// executable; null for the target's default.
     pic: ?bool,
+    /// Without debug information (a release's host).
+    strip: ?bool = null,
 }) *std.Build.Module {
     const module = b.createModule(.{
         .root_source_file = b.path("sqlite/sqlite.zig"),
         .target = options.target,
         .optimize = options.optimize,
         .pic = options.pic,
+        .strip = options.strip,
         .link_libc = true,
     });
     add_sqlite_c(b, module);
@@ -194,10 +197,15 @@ const example_databases = [_][]const u8{
 /// roux-db.
 fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
-    // roux runs the pinned Roc nightly `.roc-version` names, where they are
-    // installed side by side (`--roc` overrides it). No Zig: roc links.
+    // roux runs the pinned Roc nightly `.roc-version` names: here, where
+    // nightlies are installed side by side; in a release (`-Droc=roc`), the
+    // `roc` on PATH. `--roc` overrides either, and roux checks the version.
+    // No Zig: roc links.
+    const roc = b.option([]const u8, "roc", "The roc roux runs (default: the pinned nightly's)");
     const roux_options = b.addOptions();
-    roux_options.addOption([]const u8, "roc", roc_path(b));
+    roux_options.addOption([]const u8, "roc", roc orelse roc_path(b));
+    roux_options.addOption([]const u8, "roc_version", roc_version(b));
+    roux_options.addOption([]const u8, "version", roux_version);
     const rocstache = b.createModule(.{
         .root_source_file = b.path("tools/rocstache/root.zig"),
         .target = target,
@@ -244,11 +252,19 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
 /// The pinned Roc nightly's `roc`: `.roc-version` names it
 /// (`nightly-2026-10-06-c34079d`), installed under
 /// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
-fn roc_path(b: *std.Build) []const u8 {
+/// roux's version: a release's tag (`v0.1.0`) without the `v`.
+const roux_version = "0.1.0";
+
+/// `.roc-version`: `nightly-2026-10-06-c34079d`.
+fn roc_version(b: *std.Build) []const u8 {
     const pin_path = b.root.joinString(b.allocator, ".roc-version") catch @panic("OOM");
     const pin = std.Io.Dir.cwd().readFileAlloc(b.graph.io, pin_path, b.allocator, .limited(256)) catch
         @panic("cannot read .roc-version");
-    const version = std.mem.trim(u8, pin, " \n");
+    return std.mem.trim(u8, pin, " \n");
+}
+
+fn roc_path(b: *std.Build) []const u8 {
+    const version = roc_version(b);
     const prefix = "nightly-";
     if (!std.mem.startsWith(u8, version, prefix)) @panic(".roc-version is not nightly-<date>-<commit>");
     const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is not set");
@@ -273,6 +289,10 @@ fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
         "host-heap",
         "The Roc heap: smp (default) or checked (SafeAllocator)",
     ) orelse .smp;
+    // A release's host carries no debug information: roc unpacks a URL
+    // package only up to 10 MB by default, and debug information is most of
+    // the host's size (a panic still names its message).
+    const strip = b.option(bool, "host-strip", "The host without debug information (releases)") orelse false;
     const host_options = b.addOptions();
     host_options.addOption(bool, "heap_checked", host_heap == .checked);
     // fourneau's exported modules take the importer's target and mode; roc
@@ -289,6 +309,7 @@ fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
             .target = target,
             .optimize = optimize,
             .pic = true,
+            .strip = strip,
             // Fibers run on threads; without Zig's start code (musl's crt1.o
             // starts the program), musl's pthreads set up thread-local storage.
             .link_libc = true,
@@ -300,6 +321,7 @@ fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
                     .target = target,
                     .optimize = optimize,
                     .pic = true,
+                    .strip = strip,
                 }) },
             },
         }),

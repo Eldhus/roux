@@ -4,6 +4,8 @@ zig-out/
 *.db-wal
 *.db-shm
 platform/targets/
+# tools/release.sh's output
+dist/
 # roux build's working files, beside each app
 .roux/
 # Apps built by roux build (named after their .roc file, no extension)
