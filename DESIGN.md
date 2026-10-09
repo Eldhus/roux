@@ -168,9 +168,11 @@ started it; the choices in TODO.md, WIP 4).
 ## Templates
 
 This branch (`templates-vm`, DIARY 2026-10-08) is the second of two
-experiments; the `templates` branch has the first, templates compiled to
-machine code by Zig. Both replace the compiler that turned a template
-into Roc code (`tools/rocstache-gen`).
+experiments, the one the owner chose (2026-10-08); the `templates`
+branch has the first, templates compiled to machine code by Zig,
+written up in full in
+[docs/templates-comptime.md](docs/templates-comptime.md). Both replace
+the compiler that turned a template into Roc code (`tools/rocstache-gen`).
 
 A rocstache template is compiled to **bytecode**, and one **VM in the
 host** (host/templates.zig), the same for every template of every app,
