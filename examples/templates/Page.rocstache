@@ -1,12 +1,14 @@
 {{%
-import pf.Rocstache exposing [plural]
+## The menu page. Declared rather than inferred, because the prices are
+## numbers (an inferred contract's values are `Str`).
+Ctx : { title : Str, items : List({ name : Str, price : U32 }) }
 %}}
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <title>{{ title }}</title>
 <h1>{{ title }}</h1>
-<p>{{ items | List.len | plural "dish" "dishes" }} on the menu.</p>
+<p>{{ items | len | plural "dish" "dishes" }} on the menu.</p>
 <ul>
 {{#items}}  <li>{{ name }}: {{ price }} kr</li>
 {{/items}}</ul>

@@ -2,7 +2,9 @@ platform "roux"
 	requires {
 		[Context : context] for program : {
 			init! : () => Try({ config : Server.Config, context : context }, [Exit(I64), ..]),
-			respond! : Server.Request, context => Try(Server.Response, _err),
+			# `_template`: the app's Templates.Template, which its generated
+			# constructors pin whatever the app sends (DESIGN.md, Templates).
+			respond! : Server.Request, context => Try(Server.Response(_template), _err),
 		}
 	}
 	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url, Sqlite]
@@ -25,10 +27,13 @@ platform "roux"
 		"hosted_sqlite_write_begin": Host.sqlite_write_begin!,
 		"hosted_sqlite_commit": Host.sqlite_commit!,
 		"hosted_sqlite_backup": Host.sqlite_backup!,
+		"hosted_template_render": Host.template_render!,
 	}
+	# An archive, not an executable: `roux build` links it with the app's
+	# templates object (DESIGN.md, Templates).
 	targets: {
 		inputs_dir: "targets/",
-		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
+		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"], output: Archive },
 	}
 
 import Host
@@ -60,12 +65,12 @@ respond_for_host! : Host.RequestFromHost, Box(Context) => Host.ResponseToHost
 respond_for_host! = |request, boxed_context| {
 	context = Box.unbox(boxed_context)
 	match (program.respond!)(Server.from_host(request), context) {
-		Ok(response) => Server.to_host(response)
+		Ok(response) => Server.to_host!(response)
 		Err(err) => {
 			inspected = Str.inspect(err)
 			status = error_status(inspected)
 			Stderr.line!("${if status == 500 "ERROR" else "WARN"} respond! ${request.method} ${request.target}: ${inspected}")
-			Server.to_host(Server.status_response(status))
+			Server.to_host!(Server.status_response(status))
 		}
 	}
 }

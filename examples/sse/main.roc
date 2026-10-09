@@ -20,7 +20,7 @@ program = { init!, respond! }
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({ config: { port: 8080, static_dir: "" }, context: {} })
 
-respond! : Server.Request, Context => Try(Server.Response, [NotFound, BadRequest(Str), SseErr(Sse.SseErr), GaveUp])
+respond! : Server.Request, Context => Try(Server.Response(_), [NotFound, BadRequest(Str), SseErr(Sse.SseErr), GaveUp])
 respond! = |request, _context| {
 	path =
 		match request.target.split_first("?") {
@@ -62,7 +62,7 @@ respond! = |request, _context| {
 }
 
 ## Bounded: at most 100 events.
-count! : Server.Request => Try(Server.Response, [BadRequest(Str), SseErr(Sse.SseErr)])
+count! : Server.Request => Try(Server.Response(_), [BadRequest(Str), SseErr(Sse.SseErr)])
 count! = |request| {
 	n =
 		match Url.query_value(request.target, "n") {

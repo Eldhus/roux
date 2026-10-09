@@ -49,7 +49,83 @@
      superseded by `templates-vm` (owner, 2026-10-08); the branch and its
      worktree deleted 2026-10-08, its head kept as the tag
      `archive/templates-comptime`, written up in
-     docs/templates-comptime.md on `templates-vm`.
+     docs/templates-comptime.md.
+
+4. **Templates as bytecode, rendered by one VM in the host: the
+   experiment against item 3.** (owner, 2026-10-08: "couldn't you
+   optimize bytecode and render() to be FAR better than the roc code-gen
+   style ... do the templates-vm on yet another worktree"; then "This
+   Walker shit all seems like a bad idea ... a single renderer that
+   compiles once"; "Remove walkers and use a constant VM in host")
+   - Where it stands (2026-10-08, branch `templates-vm`, worktree
+     `../roux-templates-vm`, on top of `templates`): the generated Roc
+     walkers are gone (they were `16f3bdf`). One VM in the host runs every
+     template, reading the boxed record at offsets `roc glue` gives
+     (DESIGN.md, Templates). A pure Roc renderer that is not generated
+     per template cannot exist (no reflection), so there was no pure
+     variant to race. The examples and every page of the dragrace site (a
+     scratch copy, ported) byte for byte the `templates` branch's. Menu:
+     15,595 instructions a request (comptime 15,085, walkers 17,184);
+     on dedicated cores (`dragrace adhoc race`, three rounds each)
+     131k requests a second against 136k (comptime, -3.1%) and 127k
+     (walkers, -6.3%). The site: 410 generated lines (was ~15,000), release build
+     39 s (78; comptime 50), a Roc edit 1.1-1.2 s (2.0; comptime 1.3).
+     The owner chose this branch (2026-10-08: "focus on the host VM,
+     obviously"); the comptime one is written up in
+     docs/templates-comptime.md. **The reread is built**: a markup edit
+     rewrites the program file and signals the running app, which swaps
+     the program in (hazard pointers), keeping its state and SSE streams:
+     1.39 ms median save to page (88-111 with link and restart), each
+     template's parse, contract and code kept between edits,
+     production unchanged but a comparison a render (docs/dev-server.md).
+     Merged into main 2026-10-09 with the Templates union (item 5), and
+     fourneau-dragrace's competitor and site with it.
+   - Decided (owner, 2026-10-08): a markup edit reloads the whole page
+     (`location.reload()`); no morphing the page in place ("i dont wannt
+     messs with morhphdin"). Scroll and focus are lost, as with any reload.
+5. **The templates' night: fixes, then nothing sacred.** (owner,
+   2026-10-09: "fix 1,2 ... 4 ok do experiments and if success if
+   verified commit and take it"; "take one more high level design pass,
+   treating NOTHING as sacred. can we do better with ergonomics or api??
+   non effectful renderer even if tons more work? ... you have ALL
+   night"). The index in `Page.roc` stays (owner: "3 sound dumbs ... do
+   not do that"); no release-strip decision now. Serial: the fixes in
+   Todo first, then experiments, each measured, written down, committed.
+   First experiment: a pure `render` (hosted functions must be
+   effectful, so `Page.render(ctx)` would return a value holding the
+   effect, run by the platform when it sends; the host might then render
+   straight into the response, no copy into a Roc list).
+   - Where it stands (2026-10-09): the fixes done and committed (DIARY,
+     2026-10-09). Design experiments, each on its own branch and
+     worktree, each written up in that branch's DIARY; `page-union` merged
+     (owner, 2026-10-09: "The union one is the one we will be merging
+     in"), the others not:
+     - `pure-render` (`../roux-pure-render`): `Page.render : Ctx ->
+       Html`, pure, rendered as the response is sent; bodies `Bytes`,
+       `Text`, `Html`. Works, every example and the site byte for byte;
+       costs +1.4% instructions (Menu) to +10% (`/about`: Roc folds a
+       constant context no more once a closure holds it).
+     - `fixed-format` (`../roux-fixed`): `{{ x | fixed "1" }}`, an F64
+       printed by the VM as Roc rounds; the site's chart dots -1.1% of
+       the race page, byte for byte. Come back to it (owner, 2026-10-09):
+       which other formatters belong in the host? (The site's `Format`:
+       thousands grouping, `compact` 59.1k, latency; dates.)
+     - `sse-frame` (`../roux-sse`): `Sse.Event.lines!` frames an event
+       in the host, `Rocstache.patch!` makes a page a Datastar patch; the
+       site's patch route -9.5%, byte for byte. Come back to it if roux
+       decides to specialize on Datastar (owner, 2026-10-09).
+     - `page-union`, merged: templates as data. roux writes the app's
+       `Templates.roc` (the union of the contracts, and the layouts'
+       identity) and each `X.template`; the host renders the value as a
+       response is sent (DESIGN.md, Templates; DIARY 2026-10-09). A
+       handler that only fills a template is pure and `roc test`
+       compares its response. Free on Menu; `/about` +10% as written
+       (Roc stops folding the context at compile time inside a tag),
+       +2.5% with the response a top-level constant. Questions for the
+       Roc team in the artifact "roux Template Shapes".
+     - Found on the way, in the site (fourneau-dragrace `f379a25`, on
+       main): log10 by bisection on `F64.pow` was a third of the race
+       page; by its series now, -33%.
 
 
 ## Plan
@@ -155,17 +231,50 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   (it moves `.roc-version` and fourneau-dragrace's pin together, refreshes
   the vendored Roc docs, re-checks the gotchas); regenerate the glue (next
   chore), build the platform and the examples, note it in the diary.
-  - Last done: 2026-10-04 (nightly-2026-10-04-130536d).
+  - Last done: 2026-10-08 on this branch only (nightly-2026-10-06-c34079d,
+    with fourneau-dragrace's `templates-vm` pin). `main`, fourneau-dragrace
+    `main` and the skill's vendored Roc docs (which follow `main`'s pin)
+    stay on 130536d until the branch merges: the nightly races `main`
+    (owner, 2026-10-08: tonight's race runs untouched). The gotchas' and
+    the known issues' re-check goes with that.
 - **Roc glue**, with each nightly: regenerate `host/roc_platform_abi.zig`
-  with `roc glue` and the matching `ZigGlue.roc` from the roc repository at
-  the nightly's commit; build and run the examples.
-  - Last done: 2026-10-06 (new hosted function and config field; the
-    spec from roc-lang/roc 130536d, src/glue/src/ZigGlue.roc).
+  with `roc glue --no-cache` (roc-lang/roc#12139) and the matching
+  `ZigGlue.roc` from the roc repository at the nightly's commit; build and
+  run the examples. roux build lays the contracts out again by itself
+  when `roc` changes. Compare Roc's keywords (src/parse/tokenize.zig,
+  `keywords`, at the nightly's commit) with tools/rocstache/parse.zig's.
+  - Last done: 2026-10-08 (c34079d: the spec unchanged, the glue
+    identical once `zig fmt` has run over it, as tidy wants).
 - **Vendored sources**, monthly and when a security release appears:
   `vendor/sqlite/` (sqlite.org/changes.html) once vendored.
   - Last done: never (not vendored yet).
 
 ## Todo
+
+From the adversarial pass over the templates' dev and prod flow
+(2026-10-09, owner: "take a serious adversarial pass ... be crazy cracked
+and check everything"). Checked and holding: a 300 KB page (runs split
+past 64 KiB, the heap growth past the shard's 256 KiB) byte for byte the
+same over three requests and between `--dev` and release builds; cycles,
+missing partials, nesting past 16, unclosed sections, bad names all
+refused naming the template's line; the hazard-pointer swap. What it
+found is done (DIARY, 2026-10-09: Roc's keywords refused; the app born
+ignoring SIGUSR1; one key for the layouts; roc while glue runs, -21% a
+contract change; failures named; the reread counter; the reload script
+by `Sec-Fetch-Dest`; new directories watched; stale docs; the compiler
+and the VM tested together), but:
+
+- [ ] A `.rocstache` in a subdirectory of the app is no template
+  (generation lists the app's directory only) and nothing says so, in
+  `roux build` or `roux dev`. Refuse it, naming the file, or say it on
+  the line. (2026-10-09)
+- Not worth doing, measured: the render is not where a request goes. The
+  host VM is 510 instructions a request behind comptime (15,595 against
+  15,085) on a page whose request is all HTTP and Roc around it; the
+  page's copy from the shard's buffer into Roc's list is one memcpy of
+  the page (its share not measured). Release builds are roc's `--opt=speed` (glue 0 ms when warm);
+  a markup edit is 1.39 ms. Superinstructions or writing straight into
+  Roc's list would win under 1% for real complexity.
 
 - [ ] The examples' spec (M4): requests and expected responses for each
   example, run over a real listener by a Zig build step. (2026-10-06)
@@ -257,14 +366,25 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 - [ ] The writer's lock is not FIFO: a waiter woken may lose to one
   arriving. Measure the spread of write waits under contention before
   doing anything (host/database.zig, WriterLock). (2026-10-06)
-- [ ] TigerStyle for `tools/rocstache-gen` (owner: TigerStyle,
-  data-oriented). Measured 2026-10-06 with tidy pointed at it: 212
-  findings, 202 lines over 100 columns, 6 hidden indirections (the
-  partial loader is `*anyopaque` plus a function pointer: make it a
-  comptime parameter), 4 functions over 70 lines; and about 3 assertions
-  in ~3,700 lines, `usize` throughout, recursion in the parser. Bring it
-  to zero, then add the tree to `host/tests.zig` so tidy keeps it there.
-  (2026-10-06)
+- [ ] A restart of an eight-shard roux right after it stopped failed
+  half the time on the laptop (`roux: shard: SystemResources`, io_uring
+  ENOMEM): the kernel frees a dead process's rings a moment after it
+  exits, and two sets of eight 4096-entry rings did not fit the 8 MiB of
+  locked memory (`ulimit -l`); four shards or fewer never failed (DIARY,
+  2026-10-07). `roux dev` runs two (`ROUX_SHARDS`). Production restarts
+  too: does the dragrace site's systemd restart hit it on the droplet?
+  Measure the rings' locked memory; then a smaller ring, a retry at
+  startup, or a higher `LimitMEMLOCK` in the unit. (2026-10-07)
+- [ ] The templates' language server, for Zed: rocstache-gen had one
+  (`rocstache-gen lsp`: diagnostics, hovers, completions) and went with
+  it. Port it onto tools/rocstache (its diagnostics are roux build's),
+  as `roux lsp`, and point the Zed extension (`../rocstache/zed`) at
+  it. (2026-10-07)
+- [ ] Recursion in tools/rocstache: the contract's walks and the
+  comptime renderer recurse over the template tree (bounded: sections
+  16 deep, partials 8). TigerStyle wants loops with explicit stacks; the
+  comptime renderer cannot have one (each level's scope has another
+  type). (2026-10-07)
 
 ## Tickler
 

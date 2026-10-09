@@ -1,0 +1,188 @@
+//! The steps of building a roux app, shared by `roux build` (all of them)
+//! and `roux dev` (only those an edit needs): the templates generated (their
+//! modules, and their bytecode's object, written directly), then roc, then
+//! the link.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+const options = @import("roux_options");
+const rocstache = @import("rocstache");
+
+pub const App = struct {
+    /// The directory holding the app's `.roc` and its templates.
+    dir: []const u8,
+    /// `main.roc`.
+    file: []const u8,
+    /// `main`: the build directory's name.
+    name: []const u8,
+    /// The binary, from the working directory.
+    output: []const u8,
+    /// The roc to build with.
+    roc: []const u8,
+
+    pub fn of(arena: Allocator, file: []const u8, output: ?[]const u8, roc: []const u8) !App {
+        assert(std.mem.endsWith(u8, file, ".roc"));
+        const dir = std.fs.path.dirname(file) orelse ".";
+        const name = std.fs.path.stem(file);
+        return .{
+            .dir = dir,
+            .file = std.fs.path.basename(file),
+            .name = name,
+            .output = output orelse try std.fs.path.join(arena, &.{ dir, name }),
+            .roc = roc,
+        };
+    }
+};
+
+pub const Mode = enum {
+    dev,
+    release,
+
+    fn roc_opt(mode: Mode) []const u8 {
+        return if (mode == .dev) "--opt=dev" else "--opt=speed";
+    }
+};
+
+/// Where a build's files go, relative to the app's directory (where roc
+/// runs) and to the working directory.
+pub const Paths = struct {
+    /// `.roux/main`, from the app's directory.
+    out: []const u8,
+    /// The same, from the working directory.
+    out_path: []const u8,
+    /// `.roux/main/app.a`, from the app's directory.
+    archive: []const u8,
+
+    pub fn of(arena: Allocator, app: App) Allocator.Error!Paths {
+        const out = try std.fmt.allocPrint(arena, ".roux/{s}", .{app.name});
+        return .{
+            .out = out,
+            .out_path = try std.fs.path.join(arena, &.{ app.dir, out }),
+            .archive = try std.fmt.allocPrint(arena, "{s}/app.a", .{out}),
+        };
+    }
+};
+
+/// Every step, timed on one line: `roux build`. roc builds the app while
+/// glue lays out the contracts (neither needs the other).
+pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer) !void {
+    const paths: Paths = try .of(arena, app);
+    const start = Io.Timestamp.now(io, .awake);
+    if (has_queries(io, app)) try query_types(arena, io, app);
+    var cache: rocstache.generate.Cache = .init(arena);
+    var generation = try begin(arena, io, paths, app, &cache, null, false, stderr);
+    const begun_at = Io.Timestamp.now(io, .awake);
+    var roc = start_roc(io, paths, app, mode) catch |err| {
+        rocstache.generate.abandon(io, &generation);
+        return err;
+    };
+    const generated = rocstache.generate.finish(arena, io, &generation, stderr) catch |err| {
+        roc.kill(io);
+        return err;
+    };
+    try wait_roc(io, &roc);
+    const compiled_at = Io.Timestamp.now(io, .awake);
+    try link(arena, io, paths, app);
+    const linked_at = Io.Timestamp.now(io, .awake);
+    const line = "roux: {d} templates ({d} ms{s}), roc and glue {d} ms, link {d} ms: ";
+    try stderr.print(line, .{
+        generated.templates,
+        milliseconds(start, begun_at),
+        if (generated.modules_changed) ", modules changed" else "",
+        milliseconds(begun_at, compiled_at),
+        milliseconds(compiled_at, linked_at),
+    });
+    try stderr.print("{s}\n", .{app.output});
+}
+
+/// Whether the app has a `db/` directory of queries for roux-db.
+fn has_queries(io: Io, app: App) bool {
+    var dir = Io.Dir.cwd().openDir(io, app.dir, .{}) catch return false;
+    defer dir.close(io);
+    dir.access(io, "db/schema.sql", .{}) catch return false;
+    return true;
+}
+
+/// `roux-db gen db` in the app's directory: the queries' typed modules.
+/// roux-db is found beside this roux (both are `zig build tools`').
+pub fn query_types(arena: Allocator, io: Io, app: App) !void {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const self_len = try Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &buffer);
+    const bin = std.fs.path.dirname(buffer[0..self_len]) orelse ".";
+    const roux_db = try std.fs.path.join(arena, &.{ bin, "roux-db" });
+    var child = try spawn(io, &.{ roux_db, "gen", "db" }, app.dir);
+    if (!(try child.wait(io)).success()) return error.ChildFailed;
+}
+
+/// The templates' modules written and glue started (generate.zig's
+/// `begin`); `rocstache.generate.finish` writes their program. `changed`:
+/// the templates whose files `roux dev` saw written (null: all may have
+/// been). `dev`: for `roux dev`, whose app reads `templates.bin` and links
+/// only for Roc.
+pub fn begin(
+    arena: Allocator,
+    io: Io,
+    paths: Paths,
+    app: App,
+    cache: *rocstache.generate.Cache,
+    changed: ?[]const []const u8,
+    dev: bool,
+    stderr: *Io.Writer,
+) !rocstache.generate.Generation {
+    return rocstache.generate.begin(arena, io, .{
+        .app = app.dir,
+        .build = paths.out_path,
+        .roc = app.roc,
+        .cache = cache,
+        .object_on_layouts_only = dev,
+        .changed = changed,
+    }, cache, stderr);
+}
+
+/// roc started on the app's archive.
+pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode) !std.process.Child {
+    var buffer: [std.fs.max_path_bytes + 16]u8 = undefined;
+    const output = try std.fmt.bufPrint(&buffer, "--output={s}", .{paths.archive});
+    return spawn(io, &.{ app.roc, "build", mode.roc_opt(), app.file, output }, app.dir);
+}
+
+pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
+    if (!(try roc.wait(io)).success()) return error.ChildFailed;
+}
+
+/// roc's archive and the templates' object, into the output: a new file
+/// renamed over the old, so a running binary is not overwritten.
+pub fn link(arena: Allocator, io: Io, paths: Paths, app: App) !void {
+    const linked = try std.fmt.allocPrint(arena, "{s}.new", .{app.output});
+    var linker = try spawn(io, &.{
+        options.zig,
+        "ld.lld",
+        "-static",
+        "-o",
+        linked,
+        try std.fs.path.join(arena, &.{ app.dir, paths.archive }),
+        try std.fs.path.join(arena, &.{ paths.out_path, rocstache.generate.object_name }),
+    }, ".");
+    if (!(try linker.wait(io)).success()) return error.ChildFailed;
+    try Io.Dir.cwd().rename(linked, Io.Dir.cwd(), app.output, io);
+}
+
+/// A tool started; one that cannot be is named, with why, as a tool that
+/// ran and failed would have said (rare: a plain unbuffered line).
+fn spawn(io: Io, argv: []const []const u8, cwd: []const u8) !std.process.Child {
+    const how: std.process.SpawnOptions = .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+    };
+    return std.process.spawn(io, how) catch |err| {
+        std.debug.print("roux: {s} could not run: {t}\n", .{ argv[0], err });
+        return error.ChildFailed;
+    };
+}
+
+pub fn milliseconds(from: Io.Timestamp, to: Io.Timestamp) i64 {
+    return @intCast(@divTrunc(from.durationTo(to).nanoseconds, std.time.ns_per_ms));
+}

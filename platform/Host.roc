@@ -72,4 +72,13 @@ Host := [].{
 	## Copies the database into a directory for the request `body` names,
 	## keeping that many copies; gives the copy's name.
 	sqlite_backup! : U64, Str, U32 => Try(Str, SqliteErr)
+
+	## The app's `Templates.Template`, boxed, rendered: the host reads which
+	## template by its tag and runs its bytecode over the tag's payload,
+	## reading the record where Roc's compiler laid its fields out, as glue
+	## laid the union out (DESIGN.md, Templates). `layouts` is the identity
+	## the value was made for (`Templates.layouts`); the host stops on any
+	## other, whose offsets are not this program's. The box comes back
+	## untouched for Roc to release: Roc knows its type.
+	template_render! : U64, Box(a) => { bytes : List(U8), template : Box(a) }
 }

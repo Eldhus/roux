@@ -1,10 +1,10 @@
 //! roux's build: the host, for `roc build`, and its checks.
 //!
 //!   zig build platform     the host as libhost.a, where roc finds it
-//!   zig build test         tidy over the host (fourneau's rules)
-//!   zig build tools        rocstache-gen, the template compiler (tools-test),
+//!   zig build test         tidy over the host and tools, the tools' tests
+//!   zig build tools        roux, which builds apps (templates included),
 //!                          and roux-db, the typed-query generator
-//!   zig build examples     the examples' templates and databases, regenerated
+//!   zig build examples     the examples' databases, regenerated
 //!   zig build sqlite-floor SQLite alone, timed (sqlite/floor.zig)
 //!
 //! fourneau (../fourneau) is a dependency: the server, our port of
@@ -65,6 +65,28 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(roux_db_tests).step);
+    // The template compiler's tests (tools/rocstache).
+    const rocstache_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/rocstache/tests.zig"),
+        .target = target,
+        .optimize = .debug,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(rocstache_tests).step);
+    // The compiler and the host's VM together, against an oracle.
+    const vm_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("host/templates_test.zig"),
+        .target = target,
+        .optimize = .debug,
+        .imports = &.{
+            .{ .name = "rocstache", .module = b.createModule(.{
+                .root_source_file = b.path("tools/rocstache/root.zig"),
+                .target = target,
+                .optimize = .debug,
+            }) },
+            .{ .name = "fourneau", .module = fourneau.module("fourneau") },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(vm_tests).step);
 
     platform_step(b, fourneau);
     tools_step(b, target);
@@ -163,42 +185,37 @@ fn add_sqlite_c(b: *std.Build, module: *std.Build.Module) void {
 
 const sqlite_options = @import("sqlite/options.zig");
 
-/// The examples' templates, each compiled to the `.roc` beside it.
-const example_templates = [_][]const u8{
-    "examples/templates/Page.rocstache",
-};
-
 /// The examples' database directories, each compiled by roux-db.
 const example_databases = [_][]const u8{
     "examples/sqlite/db",
 };
 
-/// `zig build tools`: rocstache-gen, the template compiler and its language
-/// server (zig-out/bin), and `zig build tools-test`, its tests.
+/// `zig build tools`: roux, which builds apps (zig-out/bin/roux build), and
+/// roux-db.
 fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
-    const library = b.createModule(.{
-        .root_source_file = b.path("tools/rocstache-gen/root.zig"),
+    // roux runs the pinned toolchain: the Zig building it, and the Roc
+    // nightly `.roc-version` names, where they are installed side by side.
+    const roux_options = b.addOptions();
+    roux_options.addOption([]const u8, "zig", b.graph.zig_exe);
+    roux_options.addOption([]const u8, "roc", roc_path(b));
+    const rocstache = b.createModule(.{
+        .root_source_file = b.path("tools/rocstache/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    // The built-in formatters' signatures come from the platform module that
-    // defines them, so the two cannot drift.
-    library.addAnonymousImport("builtin_formatters", .{
-        .root_source_file = b.path("platform/Rocstache.roc"),
+    const roux_module = b.createModule(.{
+        .root_source_file = b.path("tools/roux/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "rocstache", .module = rocstache },
+            .{ .name = "roux_options", .module = roux_options.createModule() },
+        },
     });
-    const generator = b.addExecutable(.{
-        .name = "rocstache-gen",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/rocstache-gen/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "rocstache_gen", .module = library }},
-        }),
-    });
-    const install = b.addInstallArtifact(generator, .{});
-    const tools = b.step("tools", "Build rocstache-gen and roux-db");
-    tools.dependOn(&install.step);
+    const roux = b.addExecutable(.{ .name = "roux", .root_module = roux_module });
+    const tools = b.step("tools", "Build roux and roux-db");
+    tools.dependOn(&b.addInstallArtifact(roux, .{}).step);
     const roux_db = b.addExecutable(.{
         .name = "roux-db",
         .root_module = b.createModule(.{
@@ -213,17 +230,9 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
         }),
     });
     tools.dependOn(&b.addInstallArtifact(roux_db, .{}).step);
-    // Every example's templates, compiled next to them (the generated .roc
-    // is committed, so `roc build` needs nothing else; this keeps it current).
-    const examples = b.step("examples", "Regenerate the examples' templates and databases");
-    for (example_templates) |template| {
-        const run = b.addRunArtifact(generator);
-        run.setCwd(b.path(std.fs.path.dirname(template).?));
-        run.addArgs(&.{ "-u", "-o" });
-        run.addArg(b.fmt("{s}.roc", .{std.fs.path.stem(template)}));
-        run.addArg(std.fs.path.basename(template));
-        examples.dependOn(&run.step);
-    }
+    // The examples' databases, compiled next to them (the generated .roc is
+    // committed; templates are roux build's).
+    const examples = b.step("examples", "Regenerate the examples' databases");
     for (example_databases) |directory| {
         const run = b.addRunArtifact(roux_db);
         run.addArgs(&.{ "gen", directory });
@@ -231,8 +240,20 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
         run.has_side_effects = true;
         examples.dependOn(&run.step);
     }
-    const tests = b.addTest(.{ .root_module = library });
-    b.step("tools-test", "Test rocstache-gen").dependOn(&b.addRunArtifact(tests).step);
+}
+
+/// The pinned Roc nightly's `roc`: `.roc-version` names it
+/// (`nightly-2026-10-06-c34079d`), installed under
+/// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
+fn roc_path(b: *std.Build) []const u8 {
+    const pin_path = b.root.joinString(b.allocator, ".roc-version") catch @panic("OOM");
+    const pin = std.Io.Dir.cwd().readFileAlloc(b.graph.io, pin_path, b.allocator, .limited(256)) catch
+        @panic("cannot read .roc-version");
+    const version = std.mem.trim(u8, pin, " \n");
+    const prefix = "nightly-";
+    if (!std.mem.startsWith(u8, version, prefix)) @panic(".roc-version is not nightly-<date>-<commit>");
+    const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is not set");
+    return b.fmt("{s}/.local/share/roc-nightly/roc_nightly-linux_x86_64-{s}/roc", .{ home, version[prefix.len..] });
 }
 
 /// `zig build platform`: the roux host as libhost.a for x86_64 Linux musl,

@@ -27,6 +27,8 @@ const abi = @import("roc_platform_abi.zig");
 const database_module = @import("database.zig");
 const backup_module = @import("backup.zig");
 const RequestsType = @import("requests.zig").RequestsType;
+const dev = @import("dev.zig");
+const templates = @import("templates.zig");
 const sqlite = @import("sqlite");
 const sqlite_vfs = sqlite.vfs;
 const fourneau = @import("fourneau");
@@ -92,6 +94,9 @@ var static_site: ?*const fourneau.site.Site = null;
 var database: ?*database_module.Database = null;
 /// Set as the shards start: `init!` is over (`Sqlite.open!` is its).
 var serving = false;
+/// The build `roux dev` is serving (`ROUX_DEV`): development mode
+/// (dev.zig). Null in production; read once, before the shards.
+var dev_build: ?[]const u8 = null;
 
 const Requests = RequestsType(Server.Request);
 /// This shard's requests in Roc, by handle (requests.zig).
@@ -163,6 +168,16 @@ export fn hosted_stdout_line(line: abi.RocStr) callconv(.c) void {
 export fn hosted_stderr_line(line: abi.RocStr) callconv(.c) void {
     write_line(2, line.asSlice());
     line.decref(host());
+}
+
+/// The app's `Templates.Template`, boxed, made for `layouts`: which
+/// template by its tag (templates.zig). The box goes back to Roc as it
+/// came, which releases it.
+export fn hosted_template_render(
+    layouts: u64,
+    template: abi.RocBox,
+) callconv(.c) abi.HostTemplate_renderRetRecord {
+    return .{ .bytes = templates.render(layouts, template, host()), .template = template };
 }
 
 /// A whole line to a standard stream. Rare (logs), so a plain blocking
@@ -666,10 +681,19 @@ const App = struct {
         /// The request's handle (requests.zig), ended at release; 0 for a
         /// static file, which never reached Roc.
         handle: u64,
+        /// Development only: the body with the reload script, freed at
+        /// release (dev.zig).
+        dev_body: ?[]u8 = null,
     };
 
     pub fn handle(app: *App, request: *Server.Request) Response {
         requests_in_flight += 1;
+        // Development: the program this page is made under, read before
+        // it is rendered (dev.zig).
+        const program = if (dev_build != null) templates.requested.load(.acquire) else 0;
+        if (dev_build) |build| {
+            if (dev.is_events(request.head.path_and_query)) return dev_events(request, build);
+        }
         if (static_site) |site| {
             if (site.respond(request.head, request.scratch)) |file| {
                 return .{
@@ -717,13 +741,91 @@ const App = struct {
         for (roc_headers[0..count], table[0..count]) |*roc_header, *header| {
             header.* = .{ .name = roc_header.name.asSlice(), .value = roc_header.value.asSlice() };
         }
-        return .{
+        var response: Response = .{
             .status = roc.status,
             .headers = table[0..count],
             .body = roc.body.items(),
             .roc = roc,
             .handle = request_handle,
         };
+        if (dev_build) |build| {
+            if (dev.wants_script(fetch_dest(request))) add_reload_script(&response, build, program);
+        }
+        return response;
+    }
+
+    /// The request's `Sec-Fetch-Dest`: what the browser will do with the
+    /// answer.
+    fn fetch_dest(request: *const Server.Request) ?[]const u8 {
+        for (request.head.headers) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "sec-fetch-dest")) return header.value;
+        }
+        return null;
+    }
+
+    /// In development, an HTML page gets the reload script (dev.zig).
+    fn add_reload_script(response: *Response, build: []const u8, program: u32) void {
+        for (response.headers) |header| {
+            if (!std.ascii.eqlIgnoreCase(header.name, "content-type")) continue;
+            if (!dev.is_html(header.value)) return;
+            var buffer: [64]u8 = undefined;
+            const made = dev.name(build, program, &buffer);
+            // Out of memory: the page goes without the script.
+            const body = dev.with_script(std.heap.smp_allocator, response.body, made) catch
+                return;
+            response.body = body;
+            response.dev_body = body;
+            return;
+        }
+    }
+
+    /// `/_dev/events`, in development: the name serving, then the name
+    /// again each time the templates' program is reread, and a comment
+    /// every `keepalive_seconds` until the client leaves (a day at most).
+    fn dev_events(request: *Server.Request, build: []const u8) Response {
+        const over: Response = .{
+            .status = fourneau.server.streamed_status,
+            .headers = &.{},
+            .body = "",
+            .roc = null,
+            .handle = 0,
+        };
+        const headers = [_]Header{
+            .{ .name = "Content-Type", .value = "text/event-stream" },
+            .{ .name = "Cache-Control", .value = "no-store" },
+        };
+        request.stream_start(200, &headers) catch return over;
+        var seen = templates.requested.load(.acquire);
+        var name_buffer: [64]u8 = undefined;
+        var buffer: [128]u8 = undefined;
+        const first = dev.event(dev.name(build, seen, &name_buffer), true, &buffer);
+        request.stream_send(first) catch return over;
+        request.stream_flush() catch return over;
+        const io = shard_io.?;
+        const keepalive: std.Io.Timeout = .{ .duration = .{
+            .raw = .fromSeconds(dev.keepalive_seconds),
+            .clock = .awake,
+        } };
+        const deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+            .raw = .fromSeconds(std.time.s_per_day),
+            .clock = .awake,
+        });
+        while (true) {
+            // Woken by a reread (SIGUSR1's futex wake), or the keepalive.
+            io.futexWaitTimeout(u32, &templates.requested.raw, seen, keepalive) catch break;
+            const now = templates.requested.load(.acquire);
+            if (now != seen) {
+                seen = now;
+                const next = dev.event(dev.name(build, seen, &name_buffer), false, &buffer);
+                request.stream_send(next) catch break;
+            } else {
+                if (deadline.compare(.lt, .now(io, .awake))) break;
+                request.stream_send(": \n\n") catch break;
+            }
+            request.stream_flush() catch break;
+        }
+        if (request.stream_state() == .streaming) request.stream_end() catch {};
+        return over;
     }
 
     /// An answer of a status alone, Roc's response released after it.
@@ -750,6 +852,7 @@ const App = struct {
 
     pub fn release(app: *App, response: *Response) void {
         _ = app;
+        if (response.dev_body) |body| std.heap.smp_allocator.free(body);
         if (response.roc) |roc| roc.decref(host());
         if (response.handle != 0) shard_requests.?.end(response.handle);
         response.* = undefined;
@@ -828,6 +931,7 @@ fn run() !void {
     init_io = startup_io;
     const shards = shard_count();
     try sqlite_setup(shards);
+    start_dev();
     const init = abi.roc_init_for_host();
     if (init.tag == .Err) {
         const code = init.payload_err();
@@ -900,6 +1004,26 @@ fn https_from_environment() fourneau.https.Options {
     };
 }
 
+/// `roux dev` names the build: development mode, decided once, before
+/// `init!` (dev.zig). It names the templates' program file too: reread on
+/// SIGUSR1, no restart (templates.zig).
+fn start_dev() void {
+    dev_build = if (environment("ROUX_DEV")) |build| (if (build.len > 0) build else null) else null;
+    if (dev_build == null) return;
+    const path = std.c.getenv("ROUX_DEV_TEMPLATES") orelse return;
+    templates.reload_from(std.mem.span(path));
+    const action: std.os.linux.Sigaction = .{
+        .handler = .{ .handler = on_reload_signal },
+        .mask = std.os.linux.sigemptyset(),
+        .flags = std.os.linux.SA.RESTART,
+    };
+    _ = std.os.linux.sigaction(.USR1, &action, null);
+}
+
+fn on_reload_signal(_: std.os.linux.SIG) callconv(.c) void {
+    templates.request_reload();
+}
+
 fn environment(name: [*:0]const u8) ?[]const u8 {
     const value = std.c.getenv(name) orelse return null;
     return std.mem.span(value);
@@ -910,7 +1034,10 @@ fn port_from(text: ?[]const u8) ?u16 {
 }
 
 /// One shard per CPU this process may run on (its affinity mask, so
-/// `taskset` decides), at most `shards_max`.
+/// `taskset` decides), at most `shards_max`, and at most `ROUX_SHARDS` when
+/// the deployment says (`roux dev` runs two: a restart right after a stop
+/// found the old process's io_uring memory not yet freed, and eight shards
+/// twice over did not fit the laptop's 8 MiB of locked memory).
 fn shard_count() u32 {
     var set: std.os.linux.cpu_set_t = @splat(0);
     const linux = std.os.linux;
@@ -919,7 +1046,8 @@ fn shard_count() u32 {
     var count: u32 = 0;
     for (set) |word| count += @popCount(word);
     assert(count >= 1); // we are running on one
-    return @min(count, shards_max);
+    const wanted = std.fmt.parseInt(u32, environment("ROUX_SHARDS") orelse "", 10) catch count;
+    return @max(1, @min(count, wanted, shards_max));
 }
 
 fn run_shard(app: *App, listen: Listen) void {

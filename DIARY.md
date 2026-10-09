@@ -823,3 +823,853 @@ roux answered the contract's checks and climbed to 2,000 requests a
 second without an error. Not checked by a test here: the host is tested
 through its examples, and none ran concurrent reads on one shard; the
 race does (TODO: a concurrent example test).
+
+## 2026-10-07: templates compiled by Zig, the prototype
+
+The owner's idea: the Roc a template generates is only its contract (the
+type and a typed `render!`), and Zig compiles the template at comptime.
+Prototyped in a scratch copy of roux (nothing committed), four
+prototypes and three experiments, before the branch `templates`
+(DESIGN, Templates, says how it works).
+
+The race's Menu page (742 bytes, byte for byte the reference), one
+render, `perf stat -e instructions:u,cycles:u` minus the n=0 run:
+
+| renderer | instructions | cycles |
+|---|---|---|
+| today's generated Roc | 29,700 | 10,900 |
+| Roc improved by hand (escape into the output, capacity 2048) | 20,600 | 7,100 |
+| Zig comptime, standalone | 3,240 | 1,115 |
+| Zig comptime in the host, ReleaseSafe | 5,610 | 1,980 |
+| Zig comptime as its own ReleaseFast library | 4,280 | 1,385 |
+
+Over HTTP (server on CPUs 0-1, oha on 2-7, interleaved A/B rounds, CPU
+from /proc/stat): Zig 188k requests a second at 2.5 µs user CPU each,
+Roc 112k at 8.9 µs (load ~1.2; the server's share of the gap not
+attributed).
+
+Learned:
+- A hosted function must be effectful, and a type variable may appear
+  only inside a `Box`: `template_render! : U64, Box(a) => Str` serves
+  every template; the id says which.
+- The box's payload is laid out by Roc's rules; `roc glue` on a
+  throwaway platform whose hosted functions take each contract
+  concretely gives the layout as `extern struct`s (0.5 s). Releasing it:
+  `decrefBoxWith` with the struct's own `decref`.
+- Reading an environment variable per render was 31% of its cost: read
+  development settings once at startup.
+- The host rebuilt is ~62 s; the templates as a separate object, ~15 s
+  ReleaseFast and 370 ms Debug. Zig's incremental `--watch` on that
+  object took 1.2 s and more per markup edit: slower than a fresh build.
+- roc's `output: Archive` (crt1.o, the host, the app, builtins and musl
+  in one `app.a`) linked with the templates object by `zig ld.lld
+  -static`: 40 ms, and it served the same bytes. So roux can own the
+  link, and a markup edit needs no roc.
+- A development interpreter rendered byte for byte as the compiled
+  renderer, but it is a second implementation: dropped (owner: "I
+  cannot accept two implementations").
+
+## 2026-10-07: templates compiled by Zig replace rocstache-gen; `roux build`
+
+The branch's first step: the old compiler (`tools/rocstache-gen`, 3,500
+lines, templates to Roc code) and the platform's Roc renderer helpers
+(`Rocstache.roc`'s escape and formatters, 188 lines) are gone, replaced
+by `tools/rocstache` (2,500 lines with tests) and `tools/roux` (190):
+
+- **parse.zig**, one parser for comptime and run time, no allocation:
+  values, `{{{ }}}`, `#`, `^`, `?`, partials, `../`, comments, the
+  `{{% %}}` block first in the file. Formatter chains are `len`,
+  `plural`, `len | plural`, or one of `upper`, `lower`, `url`: each
+  writes straight into the page, so no chain builds a string.
+- **contract.zig** infers a contract (partials read their includer's
+  scope) or **declared.zig** reads `Ctx : { … }` (built-in types spelled
+  out; `View.Row` is refused, since glue lays out the contract alone).
+  Then every tag is checked against it, so mistakes are roux build's,
+  as `Page.rocstache:12:5: `title` …`. `{{#flag}}` on a Bool opens a
+  scope, as a list's does, so `../` counts the same in inference,
+  checking and rendering.
+- **render.zig**, the comptime renderer; **out.zig**, its writers, each
+  with an exact measure: a render allocates once, exactly, and asserts
+  it filled the buffer. A test sweeps every byte at every position
+  through escape and its measure.
+- **roc.zig** writes `Page.roc` (fmt-stable, checked with `roc fmt`;
+  long contracts one field per line as fmt lays them), the throwaway
+  glue platform and the registry; **generate.zig** does an app's
+  directory; **object.zig** is the templates object's root.
+- `roux build [--dev] APP.roc`: generate, then roc (`--opt=dev` or
+  `speed`, to `.roux/APP/app.a`) and `zig build-obj` (Debug or
+  ReleaseSafe) at once, then `zig ld.lld -static`. roux runs the Zig it
+  was built with and the roc `.roc-version` names (build options).
+  ReleaseSafe, not Fast, because the host ships safe; what it costs is
+  the next step's measurement.
+- The platform: `Host.template_render! : U64, Box(a) => Str`,
+  `Rocstache.compiled_render!` over it, the target `output: Archive`.
+  The host's glue regenerated: 16 lines added, nothing else.
+- roc's `ZigGlue.roc` vendored (`vendor/roc-glue/`, sha256 ff18757f…,
+  from roc 130536d, the file the prototype fetched, copied in).
+- examples/files built its notes page by hand with `Rocstache.escape`:
+  now a template (`Notes.rocstache`), since a Roc escape beside the Zig
+  one would be two implementations.
+- An app with no templates still gets a templates object (an empty
+  registry): glue on a platform with no hosted functions works (0.6 s,
+  once).
+
+Checked: `zig build test` (tidy over `tools/` now, the new tests);
+`roux build --dev` for all five examples (hello, files, sse, sqlite,
+templates), each served; examples/templates' page byte for byte as
+main's build of it (278 bytes, cmp); roc exits 1 on a Roc error and
+roux stops. `roux build --dev examples/templates/main.roc`: templates
+1 ms, roc and the templates object 450 ms at once, link 45-80 ms.
+`zig fmt` ran over the new files (it rewrites in place).
+
+Lost for now: the language server (`rocstache-gen lsp`, Zed's), TODO.
+On the way, a mistake: a check of the old build ran it on port 8091,
+which the dragrace site in `site dev` was serving, and SO_REUSEPORT let
+both bind; only the example was stopped. Pick a port nothing listens on
+(`ss -ltn`) before starting a server.
+
+## 2026-10-07: the race's menu, main against the branch
+
+The dragrace's roux competitor ported on fourneau-dragrace's own
+`templates` branch (its Menu.rocstache declares its contract, the prices
+being U32; `Menu.render!(context.menu)`; built by `roux build
+--roc={roc}`). Its `/menu` is the workload's reference page byte for
+byte (742 bytes, cmp). Then three builds of it, all `--opt=speed`: main
+(roux main, the host rebuilt, templates in Roc by rocstache-gen), the
+branch (templates ReleaseSafe), and the branch's archive linked with a
+ReleaseFast templates object.
+
+Interleaved A/B, five rounds of each: the server on CPUs 0-1 (two
+shards), oha on 2-7 at 64 connections, 2 s warmup then 6 s measured;
+`perf stat -e instructions:u` on the server for the window, its CPUs'
+user time from /proc/stat. Load ~1.1 (a browser, an editor open).
+Medians:
+
+| build | req/s | instructions/req | user ns/req | p99 |
+|---|---|---|---|---|
+| main (Roc templates) | 109,004 | 39,030 | 9,030 | 1.03 ms |
+| branch, ReleaseSafe | 164,753 | 14,807 | 3,368 | 0.62 ms |
+| branch, ReleaseFast | 169,307 | 13,881 | 3,020 | 0.58 ms |
+
+The whole request, HTTP included: 1.51 times the throughput, 2.6 times
+fewer instructions, the tail 40% lower under load. Instructions per
+request were steady within 0.1% across rounds; throughput moved ±8%
+with the laptop. ReleaseSafe costs 926 instructions a request (6%) and
+~3% of throughput, inside the noise: production stays safe, as the host.
+(`/tmp/claude-1000/bench/ab.sh`, scratch.)
+
+Also: `roux build --roc=PATH` (the dragrace installs its pinned roc
+elsewhere; same pin), and roux writes stderr streaming: a positional
+writer wrote at offset 0 of a log file it was redirected to, over what
+roc had written.
+
+## 2026-10-07: `roux dev`
+
+`roux dev [--port=N] [--static=DIR] APP.roc` (tools/roux/dev.zig; the
+build steps moved to pipeline.zig, shared with `roux build`): one loop,
+one pass at a time. A pass hashes the app's sources by kind (`.roc`,
+`.rocstache`, `.sql`, the static directory) and runs only what changed:
+roux-db for a query, the templates' generation always (1 ms; it rewrites
+a `Page.roc` only when its contract changed), roc when Roc sources
+differ after that, the templates object when templates do, then the link
+and a restart. inotify wakes it; a pass starts once the sources are
+quiet 30 ms. The app runs with `ROUX_DEV` set to the build's number:
+the host (host/dev.zig) answers `/_dev/events` itself and appends the
+reload script to HTML, so no proxy. One line per pass: `roux dev: build
+4 ok (templates) in 419 ms`, or `failed; build 3 still serving`, or the
+app's own exit with its code.
+
+Measured on a scratch copy of examples/templates (roux dev on port 8096,
+an EventSource-like client reconnecting 50 ms after a drop), the time
+from the save (sed) to the new page answered by curl:
+
+| edit | new page | reload event | the pass |
+|---|---|---|---|
+| markup, 13 saves | 461-529 ms | +40-50 ms | 416-483 ms (templates) |
+| contract and app (a field) | 1,078 ms | | 1,056 ms (roc and templates) |
+| a field the declared contract lacks | refused, `Page.rocstache:10:17: `nope` the contract has no such field here (it has: items, title)`; the old build kept serving | | |
+
+Today's `dragrace site dev` takes 3.0 s for a template edit.
+
+Found on the way:
+- Restarts failed every other time: `roux: shard: SystemResources`, the
+  new instance's io_uring setup refused memory while the old one's
+  rings were not yet freed (eight 4096-entry rings a process; `ulimit
+  -l` 8 MiB). Back-to-back restarts, six each: 1, 2 and 4 shards never
+  failed, 8 failed 3 times. The host takes `ROUX_SHARDS` now, and roux
+  dev runs the app on two. Production restarts may meet the same
+  (TODO).
+- Stopping roux dev with SIGTERM left the app running (the defer never
+  ran). Now a SIGINT or SIGTERM handler stops the app, then roux dev; a
+  blocked signal and a signalfd would not do, since a blocked mask
+  passes to the app across exec and the app must die by SIGTERM.
+- An app without queries got roux-db run on it (the empty digest
+  differed from the initial one): roux-db runs only when there are
+  `.sql` files.
+- A save that brings the sources back to the build that serves rebuilds
+  nothing; it now says so, after a failure.
+- `roux build` and `roux dev` leaked nothing (the debug allocator found
+  a 4 KiB buffer on the first try, fixed).
+- Twice in testing, `pgrep -f`/`pkill -f` on a pattern my own shell's
+  command contained killed that shell (exit 144). Stop processes by PID
+  or by exact command name (`ps -eo pid,comm`), as the benchmarking
+  skill says.
+
+## 2026-10-07: the dragrace site on the branch; an object per template
+
+The site (fourneau-dragrace, branch `templates`), 12 templates with
+partials, built by `roux build --dev site/main.roc`. What it took:
+- Two things roux lacked. `roux build` now runs roux-db when the app
+  has `db/schema.sql` (one step, as `roux dev` does). And `Bottom` reads
+  nothing: its contract is `{}`, and glue drops a hosted function's
+  zero-sized argument (`param_types[0]` of none), so such a template's
+  module boxes a `U8` placeholder and glue never sees it.
+- The site: `render` is `render!` (and `not_found!` effectful); its view
+  records carried what no template reads (a class's tab `label`, chart
+  lines' `end_x`/`end_y` for spreading labels): the lines are drafts
+  until their labels are placed, then the contract's records, and the
+  one class shown is mapped to its contract at the page.
+- Its pages differed from main's by a byte or two: the old compiler
+  removed a line holding only a section, comment or partial tag
+  (Mustache's standalone rule), which the new parser did not. Now it
+  does, as before (a test). Then main's site build (`out/dev/dragrace-
+  site`) and the branch's, each on a copy of site.db: 17 pages and data
+  files byte for byte (`/`, `/history`, the tab fragments, the JSON).
+
+Then `roux dev` on a copy of the site (port 8099, `--static=static`):
+markup edits took 1.43-1.50 s, every edit compiling all 12 templates in
+one Debug object (1.22 s, 29 MB). Where it went:
+
+| object, Debug | compile |
+|---|---|
+| no templates, std's panic handler | 327 ms |
+| no templates, `no_panic` | 35 ms |
+| no templates, `FullPanic` over the host's `roc_crashed` | 43 ms |
+| the site's 12, std's handler / ours | 1,218 / 988 ms |
+| one template alone, ours: Top, AboutPage, RaceClasses, IndexPage | 111, 159, 272, 392 ms |
+| a Zig cache hit of one (same inputs) | ~145 ms |
+
+So: our panic handler (it reports through the host, which prints and
+aborts), and an object per template (part.zig; object.zig is the
+dispatcher, calling each part's `rocstache_measure_<id>` and
+`rocstache_render_<id>` through `@extern`; `Out` is `extern` now). roux
+compiles an object only when none exists by the hash of what it is made
+from (template, partials reached, registry, glue, renderer; Zig's own
+cache hit costs 145 ms), up to 16 at once beside roc, links them all,
+and deletes this mode's stale ones. `std.debug.simple_panic` does not
+compile on 0.17 ("error set is discarded" in debug/simple_panic.zig).
+
+Save to new page, `roux dev` on the site copy:
+
+| edit | before (one object) | now |
+|---|---|---|
+| a page's markup (AboutPage) | 1.43-1.50 s | 266-298 ms (1 object, ~220 ms) |
+| a partial in nine pages (Top) | | 927-948 ms (9 objects at once) |
+| Roc (`main.roc`) | 1.28-1.33 s | (roc, ~1.2 s) |
+| a static file | 78-82 ms | |
+| `dragrace site dev` today, any template | 3.0 s | |
+
+Every example builds in ~160 ms of compiling (`--dev`), from ~450.
+Checked again after: examples/templates byte for byte as main's, the
+site's 17 pages too; `zig build test` and tidy.
+
+The optimized build of the site, `roux build` (roc `--opt=speed`, 13
+objects ReleaseSafe beside it): 50 s, all of it roc; the dragrace DIARY
+measured 83-94 s for `roc build --opt=speed` of the site while its
+templates were Roc. Its 15 pages and data files are byte for byte
+main's (on a copy of site.db).
+
+## 2026-10-08: called partials, each compiled once
+
+The owner's ask: partials swapped in O(1), not O(n) (an edit to `Top`
+recompiled the eight pages that inline it). A partial can now be called
+with its own context: `{{> Top frame}}`. Top's contract is its own; the
+includer's field `frame` is of that type (inferred, it takes Top's
+contract; declared, it must equal it; the module writes `frame :
+Top.Ctx` and imports Top). Contracts are computed in order, a called
+partial's before its callers', and partials that call each other are
+refused by name. The renderer calls the partial's two functions by
+their symbols (symbols.zig's `Extern`, the same the dispatcher uses),
+passing the includer's field (another glue type of the same layout,
+checked at comptime); a part's hash no longer covers the partials it
+calls, only those it inlines. `{{> Top}}` still inlines.
+
+Measured on a scratch copy of the dragrace site with its eight pages
+changed to `{{> Top frame}}` (and `main.roc` passing `frame:` instead
+of three flattened fields): the 12 pages and data files are byte for
+byte main's; `roux dev`, save to new page:
+
+| an edit to Top | objects | time |
+|---|---|---|
+| inlined (`{{> Top}}`) | 9 | 927-948 ms |
+| called (`{{> Top frame}}`) | 1 | 427-574 ms |
+
+The dragrace site itself is not changed here: its pages calling Top is
+the owner's call (fourneau-dragrace, branch `templates`).
+
+## 2026-10-08: a pure render in Roc: where the instructions go (branch templates-vm)
+
+The owner challenged my guess that a bytecode VM in pure Roc could not
+beat generated Roc (20,600 instructions for Menu, I said, was Roc's
+floor; a VM 25-30k): "where are all the extra instructions coming
+from? be creative on the vm hot path." This branch (from `templates`)
+is that experiment. First, measured, not guessed.
+
+The profile of P0, the hand-optimized generated Roc (`perf record -e
+instructions:u`, 200,000 renders in `init!`): `roc_builtins_str_concat`
+50.7%, the app's code 33%, allocation 6.6%, refcounts 3.2%, memcpy 2.7%.
+Inside str_concat the hot loop is a byte at a time (movzbl, mov, dec,
+jne: ~5 instructions a byte), every one of the 742 bytes through it,
+plus the call's overhead. So the floor was Str.concat, not Roc.
+
+Microbenchmarks (a scratch app on this branch's platform, `n.txt` the
+variant and count, instructions per render = (N run - 0 run) / N, the
+page's md5 checked):
+
+| variant | instructions/render |
+|---|---|
+| P0 (Str.concat throughout) | 20,719 |
+| a List(U8) builder (List.concat, static byte constants) | 21,133 |
+| the same, not converted to Str | 19,443 |
+| 62 Str.concat of short strings, nothing else | 10,900 |
+| 62 List.append of a small tag union (parts) | 2,531 |
+
+List.concat copies in bulk (memmove) but costs ~90 instructions a call,
+and `Str.to_utf8` of a small (inline) string allocates. Appending a part
+is ~40, inlined. So: a render that builds **parts**, not text. Then a VM
+written by hand as a generator would emit it (one walker per record type
+of the contract, the bytecode a List(U32), ops in the low 3 bits; static
+text a `Text(ref)` the host resolves, values unescaped):
+
+| VM | parts | instructions/render (Roc, freeing the parts included) |
+|---|---|---|
+| one part per op | 62 | 3,375 |
+| fused: a static run and the value after it, one part | 38 | 2,345 |
+| fused and loop-rotated (a row's closing run merged into the next row's opening) | 26 | 1,928 |
+
+What remains: the walker (63%, the appends inlined) and freeing the list
+(27%: each part's Str checked). Refcounts are atomic (`lock` prefixes in
+both `rc_*` variants), so copying a heap string out of the shared
+context costs an atomic increment and decrement on a line every shard
+shares: Menu's names are inline (under 24 bytes), the site's are not.
+
+The host then writes the parts (a Zig benchmark of the same 26 parts,
+ReleaseSafe, the same page checked three ways):
+
+| serializer | instructions/page |
+|---|---|
+| a measure pass, one exact allocation (as the comptime renderer does) | 8,508 |
+| one pass into a reused buffer (a connection's), 16-byte page-safe loads for short strings | 4,869 |
+| the same, static runs and short names overcopied as 32/16-byte blocks, digits straight into place | 3,797 |
+
+So a pure render costs ~1.9k in Roc plus ~3.8k in the host: ~5.7k, near
+the comptime renderer in the host (5,610, ReleaseSafe, prototype); and
+the host's tricks apply to the comptime renderer as well (its measure
+pass and byte-at-a-time tails). My 25-30k was wrong by ~5x: the cost
+was never interpretation, it was concatenating strings.
+
+## 2026-10-08: templates as bytecode, built (branch templates-vm)
+
+The comptime renderer replaced, on this branch: `tools/rocstache`'s
+render, object, part, symbols and out go; bytecode.zig (the compiler),
+elf.zig (the object) and a new roc.zig (the walkers) come; the host's
+templates.zig writes the parts. DESIGN.md, Templates, says how it works.
+Choices made on the way, each for the hot path or the loop:
+
+- **The mode rides in the run word.** A Str value's formatting (escaped,
+  raw, upper, lower, url, and upper/lower unescaped for triple braces)
+  is the top byte of the run word the bytecode holds, so the walker
+  appends `Value(run, s0.name)` without looking at it, and the part type
+  is four tags, not eight.
+- **`../` is counted in the contract.** A walker per contract scope takes
+  its enclosing scopes as arguments (`s0`, `s1`, ...), so a selector is
+  (scopes up, field index by name), contract-only. The template's scopes
+  differ when a section opens an ancestor's field: the compiler
+  translates, and refuses a read the contract does not enclose.
+- **No compiler for markup.** roux writes the object itself, an ELF
+  relocatable of one section and one symbol (`rocstache_data`: the
+  lengths, the code, the text, 32 bytes of slack for block copies). The
+  link (`zig ld.lld`) is all a markup edit costs after the 10 ms of
+  generation; the glue for contracts and the per-template objects go.
+- **One program for all templates**, with a header of ranges: a
+  template's module names only its index, and a partial edit is the
+  same as a page edit.
+
+Checked: both examples' pages and the dragrace site's twelve pages and
+patches, byte for byte the `templates` branch's (a scratch copy of the
+site at /tmp/claude-1000/vmsite, its main.roc ported to `render(code,
+ctx)`; the competitor likewise at /tmp/claude-1000/vmcomp). Tests and
+tidy pass.
+
+Measured (`/tmp/claude-1000/bench/ab-vm.sh`, scratch: the server on CPUs
+0-1, two shards, oha on 2-7, `perf stat -e instructions:u` on the
+server, five interleaved rounds):
+
+| competitor | instructions/request |
+|---|---|
+| comptime (`templates`) | 15,180-15,253 |
+| VM (this) | 17,276-17,333 |
+
+Throughput was not measurable: load 2.2 (a browser and an editor), the
+comptime build swinging between 26k and 74k requests a second within
+the run. The VM's profile (`perf record -e instructions:u`):
+`hosted_templates_bytes` 25.5% and `digits` 5.8% (~5.4k: the
+microbenchmark's 3.8k plus the parts' release and dispatch), the walker
+16.9% (~2.9k, against 1.9k rotated in the microbenchmark: no rotation
+here, and ReleaseSafe's checks).
+
+The loop (`roux dev` on the site copy, five edits each, from the write
+to the change served; roux dev's own line in brackets):
+
+| edit | VM | `templates` branch |
+|---|---|---|
+| a page's markup | 110-140 ms (51-92) | 266-298 ms |
+| Top, a called partial in eight pages | 110-154 ms | 427-574 ms |
+| main.roc | 1,951-2,057 ms | ~1.3 s |
+
+A Roc edit costs more: 15,000 lines of walkers on the site
+(`roc check` 1.4 s; a cold `--opt=dev` 3.1 s). The site's release
+build: roc 78 s against 50 s. Learned: `roux build` without `--dev` is
+`--opt=speed`, so its 78 s is LLVM, not a slow dev backend (I first
+read it so, and timed `--no-cache` and the cache before finding it).
+Also: `**` is gone in Zig 0.17 (`@splat`, `splatByteAll`), as the zig
+skill notes say.
+
+## 2026-10-08: one VM in the host, no walkers
+
+The owner: "This Walker shit all seems like a bad idea ... a single
+renderer that compiles once", then "Remove walkers and use a constant VM
+in host". Done (`591de12`). A pure renderer written once in Roc cannot
+read a record it does not know (Roc has no reflection), so the pure
+variant would have been generated code again; there was nothing to race
+on that side.
+
+How: `Page.roc` is the contract and `render! = |ctx|
+Rocstache.render!(index, Box.box(ctx))`. The hosted function
+`template_render! : U64, Box(a) => { bytes : List(U8), context : Box(a)
+}` hands the box back, so Roc releases it and the host needs no layout
+of what it does not read. The offsets come from the compiler: roux
+writes a throwaway platform (one hosted function per contract) and runs
+`roc glue` on it with its own spec, `tools/rocstache/Layout.roc`, which
+writes `layouts.zon` (kinds, sizes, field offsets). The bytecode's reads
+became `(up, byte offset)`; a dotted path is one sum; `../` counts the
+template's scopes, since the VM keeps a stack of scope pointers.
+
+Learned: `roc glue`'s cache ran ZigGlue's script when given my spec in
+the same directory, and crashed on cut-down specs; `--no-cache` ran each
+right, 0.27 s (roc skill, gotchas). The no-shell-edits hook read a loop
+variable named `ex` as the editor.
+
+Checked: `zig build test`; both examples, and all 12 pages and patches
+of the dragrace site copy (ported: no `code` in the context,
+`render!`, `Rocstache.html`/`str` pure), byte for byte the walkers' and
+the `templates` branch's (`compare.sh`).
+
+Measured, the race's Menu over HTTP, instructions:u per request (server
+on CPUs 0-1, 200,000 requests, three interleaved rounds, within 0.1%):
+comptime 15,085, walkers 17,184, the VM 15,870; with `read_int` and
+`Sink.number` inline, 15,595. The VM's loop is 37% of the profile, flat
+(copies and escaping). On dedicated cores (`dragrace adhoc race -workloads
+templates`, three rounds, the under-driven ones rerun by the race):
+comptime 135,639 requests a second, the VM 131,374 (-3.1%), the
+walkers 127,027 (-6.3%).
+
+The site copy: generated Roc 410 lines (was ~15,000); release build
+39 s (78; comptime 50). `roux dev`: cold start 1.3-2.2 s (5.4-5.6),
+warm 1.0 s (1.9-2.1); a page's markup 88-111 ms save to page, Top's
+91-110 ms (110-154); main.roc 1.16-1.20 s (2.0; comptime 1.3).
+
+## 2026-10-08: the glue cache bug filed; nightly-2026-10-06 on this branch
+
+The glue cache: reduced to two seven-line specs from an empty cache,
+the second run writing the first's file; the same on the newest nightly
+and on upstream main 5e44ba38 (built here). Every spec that had crashed
+ran under `--no-cache` at both opt levels: one bug, not two. Filed
+roc-lang/roc#12139 (repro in ~/devel/rocbugs/glue-cache-ignores-spec).
+
+The nightly chore, on this branch only (the owner: tonight's race runs
+`main` untouched): `.roc-version` c34079d (installed copy checked
+against the release's sha256); ZigGlue.roc and the musl files
+unchanged at c34079d; the host's glue regenerated, identical once `zig
+fmt` has run (glue quotes identifiers, `.@"Ok"`, and fmt unquotes them;
+the ecb657f commit carried the unformatted file, put right after). Found and fixed while at it: roux build
+kept the old compiler's `layouts.zon`, since no contract changed; the
+roc path (and the spec) now count as glue's inputs, so a bump lays the
+contracts out again (once, ~0.25 s). Checked: `zig build test`; both
+examples, the race's Menu, and the site copy's 12 pages and patches
+byte for byte as before; the site's release build 38 s.
+
+## 2026-10-08: the comptime branch written up; the reread
+
+The owner chose the host VM and asked for the comptime branch to be
+documented in full: docs/templates-comptime.md (how it built and
+rendered, every measurement, why the VM won, how to bring it back).
+
+Then the reread (owner: "Reread is phenomenal ... Don't stop till this
+shit is fucking tight"). A markup edit no longer links or restarts:
+roux build writes the program alone too (`templates.bin`); roux dev
+starts the app with `ROUX_DEV_TEMPLATES` naming it and, on a markup
+edit, rewrites it and sends SIGUSR1. The handler bumps a counter and
+wakes the `/_dev/events` streams through the futex (they wait on
+io_uring futexes now, not a sleep); the next render swaps the program
+in under hazard pointers, so a render on another shard never reads a
+freed one. Pages carry the name they were made under, read before they
+render, so a page made mid-swap reloads once more, never once too few.
+
+Measured with a client that holds the event stream and fetches the page
+on each event, 20-40 edits each (docs/dev-server.md has the table):
+save to page 88-111 ms with the link and restart, 34-46 ms with the
+reread, 6.1 ms without roux dev's 30 ms quiet window, 4.4 ms without
+the safe build's 0xaa fill of whole trees and contracts (hundreds of
+KB each: only headers are reset now; a record's fields are kept sorted
+as added, so no sort buffer), 2.9 ms with the layouts kept parsed
+between passes, 2.2-2.5 ms without hashing sources when inotify named
+only templates, outputs' hashes kept in memory. Stamped stages: wake
+0.13-0.32 ms, generation 0.42-1.55, signal to event 0.11-0.31; they
+scale together with the laptop's clock.
+
+Checked: 300 edits ten milliseconds apart under 175k requests a second
+(two shards): 1.4 million responses, all 200, 30,858 pages read back
+whole with markers that were written; the app's memory flat over 600
+more. A broken template keeps the old program serving. Found while
+testing: after a contract change whose roc failed, a later markup edit
+would have had the old app reread a program laid out for the new
+contract, reading records at wrong offsets. Two guards now: the program
+carries its layouts' identity and the host refuses any other (shown by
+signalling the app by hand: "the templates' contracts changed: the old
+program serves until the restart"), and roux dev hashes every source
+after a failed pass. Production: the Menu at 15,649 instructions a
+request, from 15,595 at `591de12`; the new nightly and the render's one
+comparison are both in the difference, not separated.
+
+## 2026-10-08: incremental generation
+
+The owner: "fix this" (generation redid every template on every edit).
+Each template is now parsed, given its contract and compiled alone, and
+`roux dev` keeps each (tools/rocstache/cache.zig) while its key holds:
+the source for the tree; the source, the inlined partials' sources and
+the called partials' contract keys for the contract; the sources it
+compiles from, the layouts' identity (which now hashes the templates'
+names, so a call's index is covered) and its index for its code. The
+program is assembled from the chunks, each run word moved past the text
+before it (`bytecode.assemble`; a test). inotify's names go down to
+generation, which reads only those files and reuses its listing unless a
+template was created or deleted; glue's step is skipped while every
+contract key is the same; the object is written only when the layouts
+change (the app reads `templates.bin`; the object carries the identity
+the host checks rereads against, so it must follow the layouts); an
+output known to differ is written without reading the old back. What a
+generation replaces is freed once it succeeds; a failed one forgets
+every template. Also found: `noun` leaked its buffer (harmless under the
+arena, not under the cache's allocator), and the watcher's 64 KB event
+buffer was a local `undefined`, filled on every read.
+
+Measured (the browser-like client, 40 edits each): a page's markup 1.39
+ms median save to page (2.2-2.5 before), Top, inlined by nine pages, 2.0
+ms; a pass 0.1-1.7 ms. Checked: the site's 12 pages byte for byte; 300
+edits under load, 1.06 million responses all 200, 27,645 pages whole; a
+new template, a deleted one, a broken edit and its fix, a save by
+temporary file and rename; no leak reported at exit. A mistake on the
+way: a roux dev from an earlier measurement was still running, holding
+the database and the port; two measurements and a comparison ran
+against it before I saw it (`ps` before every run, as the benchmarking
+skill says).
+
+## 2026-10-09: an adversarial pass; Roc's keywords refused
+
+The owner asked for an adversarial pass over the templates' flow (TODO,
+Todo, has what it found). Checked, on a scratch copy of
+examples/templates: a page with 100 KB of static text each side of a
+value, then 150 KB (300 KB pages: runs split past 64 KiB, the growth
+past the shard's 256 KiB buffer), byte for byte over three requests and
+the same from a `--dev` build as from a release one; cycles of inlined
+and of called partials, a missing partial, 20 nested sections, an
+unclosed one, `Title` and `my-field` as names: each refused on its line.
+
+What broke: `{{ if }}` passed roux's checks, and roc refused glue's
+throwaway `Contracts.roc` (`t0! : { if : Str } => {}`, "malformed"), a
+Roc error for a template's mistake. Every one of the 34 keywords in the
+pinned compiler's tokenizer (src/parse/tokenize.zig at c34079d) fails
+`roc check` as a field, in a type, a literal and an access, so parse.zig
+now refuses all 34 in a path, and declared.zig in a declared `Ctx`:
+"`if` is a Roc keyword, which cannot name a field", on its line (tests
+in both). `when` is no keyword at this nightly, and builds.
+
+## 2026-10-09: the app born ignoring SIGUSR1
+
+From the same pass: roux dev tells the app to reread by SIGUSR1, whose
+default action kills; between the spawn and the host's `start_dev` the
+app had no handler. roux dev now ignores SIGUSR1 itself, and an ignored
+disposition survives exec where a handler does not, so the app starts
+ignoring it until the host's handler replaces that. Checked on a scratch
+copy of examples/templates: `/proc` shows roux dev with SIGUSR1 in
+`SigIgn` (0x200), the app with it in `SigCgt`, and a markup edit reread
+(`templates reread, 1`, 0.1 ms) served at once.
+
+## 2026-10-09: one key for the layouts
+
+generate.zig kept two keys for glue's step: `laid_key`, from every
+contract's key (made from template sources, so it moved on every markup
+edit and skipped nothing then), and the layouts' identity, from what
+glue reads (`Contracts.roc`'s text, the spec, the roc, the names), which
+the step computes anyway in microseconds, an unchanged file costing a
+hash. The identity is now the one key; `laid_key` and `laid_id` are gone
+(26 lines). Measured on a scratch copy of the dragrace site (the port
+from 2026-10-08, 12 templates, scratchpad `edit_latency.py`, 40 edits of
+AboutPage each, alternating): a pass 0.7 ms median before and after,
+save to page 1.94 ms before, 1.64 and 1.83 after (noise). A contract
+change (Menu's `price : U32` to `U64`) still runs glue: 407 ms, both
+files say `U64`, the page the same.
+
+Also seen: a `roux dev` whose roux-db is not beside it fails every pass
+with "build 1 failed" and no reason (the spawn's error is not printed).
+
+## 2026-10-09: roc builds while glue lays out
+
+Glue (~0.3 s) needs the contracts, roc needs the modules; neither needs
+the other, yet they ran in turn. Measured first by hand on the site
+copy: glue 279-329 ms, roc `--opt=dev` 902-919 ms, both at once 985-1006
+ms (`--opt=speed`: 35 s either way). So generation has two halves now
+(generate.zig): `begin` parses, decides contracts, writes the modules
+and glue's inputs, and spawns glue when it must run, its output to
+`glue/log` (a file: a long message cannot block it on a pipe); `finish`
+waits, parses the layouts, compiles and writes the program; `abandon`
+kills glue when the caller fails between. `roux build` and `roux dev`
+start roc between the halves (dev.zig's pass grew past 70 lines, so the
+generation and roc are its own function).
+
+Measured, old and new binaries alternating: a `roux build --dev` of the
+site with glue's output deleted, 1289-1327 ms before, 1026-1041 after
+(-21%); `roux dev` on examples/templates, Menu's `price` flipped
+U32/U64 six times, 396-446 ms a pass before, 364-408 after (roc there is
+only ~100 ms). Checked: every site page (8, 67 KB) byte for byte from a
+release build before and after; glue failing (a fake roc whose `glue`
+exits 3: "roc glue failed on the contracts: glue says no", no roc left
+running); roc failing (a broken main.roc: roc's message, glue finished).
+
+## 2026-10-09: a failure says why; the reread counter never steps back
+
+A tool that cannot start (a roux-db not beside roux, as above) is now
+named by roux, as a tool that ran and failed would have said: "roux:
+.../roux-db could not run: FileNotFound", and roux dev names any other
+failure that no compiler printed ("build 1 failed (…)"). In the host,
+`swap_in` skips a request another thread has already met or passed
+(counters compared as a wrapping distance): before, a thread waiting
+with an older request set `loaded` back and every render read the file
+once more. Checked on the site copy: 300 edits ten milliseconds apart
+under `oha -c 32` for 12 s, 1,905,863 responses all 200 (158,801 a
+second, two shards), 21,462 pages read whole, each marker one written;
+301 rereads.
+
+## 2026-10-09: the reload script only where a page is shown
+
+In development every `text/html` answer got the reload script, so an
+HTML fragment fetched by Datastar (`fetch()`) would open one more event
+stream per patch once the page morphed it in. The browser says what an
+answer is for: `Sec-Fetch-Dest` is `document` (or `iframe`) for a
+navigation and `empty` for `fetch()`. The script now goes only where it
+is `document`, `iframe` or absent (curl and agents send none, and keep
+it). Checked against examples/templates under roux dev: the script with
+no header and with `document`, none with `empty`; a test in dev.zig.
+
+## 2026-10-09: directories made while roux dev runs are watched
+
+roux dev watched the directories that were there when it started, so a
+directory made later (a `db/` for the first queries, a module folder)
+and everything in it went unseen. Each watch now knows its directory
+(by watch descriptor), and a directory created or moved in under one is
+watched with all it holds (`add_tree`, the one walk startup uses too;
+`mkdir -p a/b` is caught by the walk), and the next pass lists and
+hashes again. Checked on examples/templates: `mkdir newdir`, then
+`newdir/X.roc`: build 2 (roc); `mkdir -p deep/er`, then
+`deep/er/Y.roc`: build 3. The old binary, the same steps: build 1 only.
+
+## 2026-10-09: the compiler and the VM, tested together
+
+Nothing ran the VM over bytecode the compiler made but the examples'
+pages. host/templates_test.zig (its own test root, with the `rocstache`
+module, which now exports the parser, the bytecode compiler and the
+layouts) makes 3,000 templates from seeds over a contract laid out by
+hand from Zig `extern struct`s whose fields are the ABI's own `RocStr`
+and `RocList`: Str, U32 and I64 leaves, a list of records holding a
+list, a nested record (dotted paths), Bool sections (`#`, `^`, `?`),
+`../` up to the root, every formatter (`len`, `plural`, `upper`,
+`lower`, `url`), escaped and raw, and a partial both inlined and called
+(`Badge`). Each is compiled and assembled as roux build does, run by the
+VM's `render_from` over four random records (strings inline and on the
+heap, with every special byte), and compared with an oracle written
+there: a walk of the parse tree over the Zig values, sharing no code
+with the compiler or the VM. 12,000 renders pass. It fails at once on a
+bug planted in each: the VM dropping a number's sign (the first seed),
+the compiler swapping the plural's nouns (seed 1). On the way, the
+generator's own bug (a called partial's field without its `../`) was
+found by the compiler's refusal, which names the field.
+
+The seeds come from fourneau's `prng` (tidy refuses the standard
+library's), which the `fourneau` module now exports (fourneau, same day).
+
+## 2026-10-09: the subdirectory refusal, reverted
+
+`cfe8286` refused any `.rocstache` under the app's directory but beside
+its `.roc`. Wrong: an app's directory may hold other apps, as
+`examples/` does (`hello.roc` beside `files/` and `templates/`), and
+`roux build examples/hello.roc` was refused for `files/Notes.rocstache`.
+Found porting the examples on another branch; reverted (`c76b630`),
+hello builds again. A template in a subdirectory stays silently no
+template: which directories are the app's is not something roux can
+know from the files, so it says nothing rather than guess.
+
+## 2026-10-09: pages as a union, rendered by the host (branch page-union)
+
+The owner: "do union type method and benchmark", after the closure
+(branch pure-render) cost 1.4-10%. A page is data: a tag naming the
+template, its contract as payload. roux writes the app's `Pages.roc`
+(`Page : [AboutPage(AboutPage.Ctx), …]`); the platform takes the app's
+`Page` as it takes `Context` (`requires { [Context : context, Page :
+page] … }`); `Server.Response(page)`'s body is `Bytes`, `Text` or
+`Html(page)`, and `Server.page(AboutPage({ … }))` makes one, purely.
+`Server.to_host!` boxes the page and calls the new hosted
+`page_render!`: the host reads the discriminant where glue says, finds
+the template by its tag, and runs the VM from the payload; the box goes
+back to Roc to release. Glue lays the union out: the throwaway platform
+gains `pages! : [Name(contract), …] => {}`, and the spec writes a tag
+union's discriminant offset and size and each tag's name, discriminant
+and payload type. The payload is at the union's start, as roc's own
+ZigGlue.roc reads a one-payload tag (`payload_fields` describe only
+tuples); each page's tag must hold exactly one payload, checked. The
+program's header carries the table (bytecode.zig's `Pages`): templates
+found by name, never by position. Tags are structural, so code that
+makes a page imports only that page's module; only `main` names the
+union.
+
+Probed: `roc test` passes `expect view("/about", …) == Ok(About({ who:
+"Escoffier", since: "1870" }))`: a view's result compared as data, the
+testing the closure could not give. Glue on a two-template app: a
+56-byte union, a one-byte discriminant at 48, tags by name (About 0,
+Menu 1), payload types the contracts' records.
+
+Measured, instructions a request (release, interleaved):
+- Menu (examples/templates, its template renamed Menu: a template named
+  `Page` collides with the app's `Page` type): eager 11,224-11,256,
+  closure 11,391-11,395, union 11,226-11,260. The union is free there.
+- The site's `/about`: eager 22,828-22,833, union 25,189-25,193 (+10%,
+  as the closure). Its profile: `str_concat`, allocation and `memset`
+  that the eager build has not: `frame("About", "/about")` evaluated per
+  request. Roc folds the context at compile time when it goes straight
+  into `render!`, and not inside a union's tag (nor a closure's capture:
+  so the closure's 10% was this too, not the closure). With the response
+  a top-level constant (`about = Server.page(AboutPage({ … }))`): 23,401-
+  23,405, +2.5%, the union's own price (a 264-byte union boxed and
+  zeroed for a small page, the body matched).
+- The site's `/`: 11.27 M either way (the database).
+Every page of the site, the 404 and a patch byte for byte.
+
+Costs that are not instructions: every `Server.Response` gains its
+parameter (31 annotations in the site: `Server.Response(Page)` in main,
+`Server.Response(page)` where none is made); no template may be named
+`Page`; a hand-written `Page` not `Pages.Page` would be read by the
+wrong layout (nothing checks it); apps without templates (hello, sse,
+sqlite) would need an empty `Page`, not tried: the repository's examples
+are not ported on this branch (the measurements used scratch copies).
+The dependency graph (owner's question): `main` depends on every
+page's contract through `Pages.roc`, and only it.
+
+## 2026-10-09: can the app lose `import Pages` and `Page : Pages.Page`?
+
+The owner asked whether the union's app could import as the other two
+variants do. Tried on scratch copies (the probe app, a scratch platform):
+- `import Pages exposing [Page]` with `Page` still in the app header:
+  refused, "exposed but not defined" and "the platform expects your app
+  module to define a type named Page". A type the platform requires is
+  the app module's own, as `Context` is.
+- The platform not asking for `Page`, the page type left open
+  (`Server.Response(_page)` in `requires`, as `_err` is): compiles, and
+  the app needs neither line. But the union Roc infers is the tags the
+  app sends: an app sending only `Menu` got a one-tag union, while glue
+  laid out the whole one, and the host served About's template over
+  Menu's record ("Eldhús &lt;menu&gt; cooks since Ro", status 200).
+  Unsafe.
+- The same open platform, and each page module exporting `page : Ctx ->
+  Pages.Page` (`page = |ctx| Menu(ctx)`), with `Pages.roc` spelling the
+  contracts out rather than importing the page modules (no cycle): the
+  app is `app [Context, program]`, `import Menu` only,
+  `Server.page(Menu.page(ctx))`, annotations `Server.Response(_)`; an
+  app sending only Menu rendered it right (built and linked by hand, the
+  modules hand-edited). The constructor's type pins the whole union
+  whatever the app sends. The cost: every page module imports Pages,
+  which changes with any template's contract, so a contract change
+  touches every page module (the hub, moved from main to the pages).
+- The bare tag still compiles there (`Server.page(Menu(ctx))`), and the
+  owner asked whether anyone would write it by accident: yes (the LSP's
+  hover shows the union's tags, completion offers `Menu`, tests reach for
+  `Ok(Menu({ … }))`). Caught at compile time by having `Server.page`
+  take `{ layouts : U64, page : p }`, which only the generated `X.page`
+  builds (`{ layouts: Pages.layouts, page: Menu(ctx) }`): the bare tag is
+  "This argument has the type: [Menu(Menu.Ctx)] But the function needs
+  the first argument to be: { layouts: U64, page: p }" on its line; the
+  `Menu.page` app checks clean (type level only, the scratch platform).
+  The `layouts` field would also let the host refuse a page made for
+  other layouts (a stale build) with a 500, at a comparison a page: not
+  built. Building the record by hand with a subset union stays possible,
+  on purpose only.
+
+## 2026-10-09: Templates, not Pages; a patch takes the union too
+
+The owner: rename the union `Templates` (a fragment is no page), and
+can a Datastar patch take the union? Probed on a scratch copy of this
+branch's platform, with two pages and a fragment (Menu, About, Count),
+the program and glue's layout from this branch's roux, the Roc modules
+hand-written in the shape roux would generate: `Templates.roc` spells
+the contracts out (`Template : [About({…}), Count({…}), Menu({…})]`,
+`layouts = 0x…`, the program's own identity), each template's module
+has `template : Ctx -> Rocstache.Template(Templates.Template)`, and the
+platform's `Rocstache` takes that value: `html` (a response, rendered
+when sent), `bytes!`, `str!` and `patch!` (rendered now; the patch
+framed in Roc here). The app is `app [Context, program]` and imports
+only its templates; `respond!`'s result is `Server.Response(_)`, which
+the LSP shows as `Server.Response(Templates.Template)`. Ran: the pages
+right, `/count` a real `datastar-patch-elements` event; `roc test`
+passes `view("/about", …) == Ok(About.template({ … }))`. A bare tag is
+refused in the view ("expected … Try(Rocstache.Template(_a), …)") and
+in a patch ("needs the first argument to be: Rocstache.Template(t)").
+Completion after `Menu.` returns nothing (the experimental LSP). The
+comparison for the Roc team is an artifact (roux Page Shapes, version
+2), built from this probe's captured output.
+
+## 2026-10-09: the Templates union, built into roux
+
+The owner chose it ("The union one is the one we will be merging in").
+What the probe hand-wrote, roux now generates, and the effectful path
+is gone (no side by side):
+
+- `roux build` writes each `X.roc` with `template : Ctx ->
+  Rocstache.Template(Templates.Template)` (no index any more: a template
+  added before it in the alphabet no longer rewrites it), and the app's
+  `Templates.roc`: the contracts spelled out as tags, and `layouts`, the
+  layouts' identity. The identity hashes what glue reads, so it is known
+  before glue runs and roc still starts at once (generate.zig's
+  `begin`); Templates.roc is written only when it changes.
+- Glue's throwaway platform takes the union as `Contracts.templates!`
+  (was `pages!`); bytecode.zig's `Pages` is `Union`.
+- The platform: `Rocstache.Template(t)`, `html`, `bytes!`, `str!`,
+  `patch!`; `Server.Response(t)`, its `Html` body that record; one
+  hosted `template_render! : U64, Box(a) => { bytes, template }` (the
+  index-taking one and `page_render!` gone; the ABI regenerated, only
+  those changed). `requires` leaves the union open (`_template`).
+- The host checks `layouts` against its program's and stops on any
+  other (Templates.roc and the program from different builds: offsets
+  that are not this program's), and stops on a discriminant its program
+  lacks rather than read past the union. Both @panic: a broken build,
+  not a request's error.
+- A template named `Templates` is refused (it would be the module roux
+  writes).
+- host/templates_test.zig renders through `render_union` now, over a
+  value laid out as Roc lays a two-tag union (payload first, the byte
+  after): the 3,000 seeds pass.
+- The examples: `Server.Response(_)` everywhere (apps without templates
+  too: the parameter is unconstrained there, and roc accepts it); bodies
+  `Text(…)` instead of bytes; examples/templates' response is a pure
+  `respond` with three `expect`s (the response compared, the 404, a field
+  matched out of it). `zig build test` passes; every example builds;
+  templates and files serve their pages (200, escaped; 404); `roc test`
+  in examples/templates: 33 pass.
