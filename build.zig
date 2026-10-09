@@ -253,7 +253,7 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
 /// (`nightly-2026-10-06-c34079d`), installed under
 /// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 /// roux's version: a release's tag (`v0.1.0`) without the `v`.
-const roux_version = "0.1.0";
+const roux_version = "0.2.0";
 
 /// `.roc-version`: `nightly-2026-10-06-c34079d`.
 fn roc_version(b: *std.Build) []const u8 {
