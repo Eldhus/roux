@@ -45,8 +45,11 @@
    - Where it stands (2026-10-07): prototyped in a scratch copy (Menu:
      29,700 instructions in Roc, 4,280 in Zig; 188k against 112k req/s);
      roc's `output: Archive` linked by `zig ld.lld` in 40 ms, so a
-     markup edit needs no roc. Next: the branch `templates` (worktree
-     `../roux-templates`), step by step in its DIARY.
+     markup edit needs no roc. Built on the branch `templates`, then
+     superseded by `templates-vm` (owner, 2026-10-08); the branch and its
+     worktree deleted 2026-10-08, its head kept as the tag
+     `archive/templates-comptime`, written up in
+     docs/templates-comptime.md on `templates-vm`.
 
 
 ## Plan
