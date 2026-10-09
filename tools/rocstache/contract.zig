@@ -444,15 +444,23 @@ const Walker = struct {
             type_.kind = .list;
             return;
         }
-        return walker.fail(node.offset, switch (type_.kind) {
-            .str => "is printed elsewhere as a Str, so it cannot be used so here",
-            .int => "is a number elsewhere, so it cannot be used so here",
-            .bool => "is a Bool elsewhere, so it cannot be used so here",
-            .list => "is a list elsewhere, so it cannot be used so here",
-            .record => "is a record elsewhere, so it cannot be used so here",
-            .unknown, .other => unreachable,
-        }, node.text);
+        assert(type_.kind != .unknown and type_.kind != .other);
+        const message = conflicts[@backingInt(type_.kind)][@backingInt(kind)];
+        return walker.fail(node.offset, message, node.text);
     }
+
+    /// "is a list elsewhere, and a record here", for each pair of kinds.
+    const conflicts = blk: {
+        const count = @backingInt(Kind.other) + 1; // `other` is the last
+        const names = [count][]const u8{
+            "?", "a Str", "a number", "a Bool", "a list", "a record", "?",
+        };
+        var table: [count][count][]const u8 = undefined;
+        for (0..count) |was| for (0..count) |now| {
+            table[was][now] = "is " ++ names[was] ++ " elsewhere, and " ++ names[now] ++ " here";
+        };
+        break :blk table;
+    };
 
     // ---- checking: every tag against the contract -----------------------------
 
