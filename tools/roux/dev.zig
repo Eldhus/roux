@@ -37,6 +37,12 @@ pub const Options = struct {
     static: ?[]const u8,
 };
 
+/// What the last failed pass said, beside the program: the running app
+/// reads it on SIGUSR2 (`ROUX_DEV_ERRORS`).
+const errors_name = "dev-errors.txt";
+/// roc's messages in a pass, read back into the pass's report.
+const roc_log_name = "roc.log";
+
 const files_max = 4096;
 const directories_max = 256;
 /// Saves come in bursts (an editor writes, renames, writes again): a pass
@@ -83,10 +89,23 @@ pub fn run(
             .markup_only = changed.markup_only(),
             .written = changed.written(&names),
         };
-        state.pass(arena_state.allocator(), io, stderr, pass) catch |err| switch (err) {
+        // What the pass says (roux's lines, the generator's refusals,
+        // roc's messages) goes to the terminal, and when it failed, to
+        // the page too: the running app shows it over the page.
+        const arena = arena_state.allocator();
+        var report: Io.Writer.Allocating = .init(arena);
+        const failed = if (state.pass(arena, io, &report.writer, pass)) |_|
+            false
+        else |err| switch (err) {
             error.OutOfMemory => return err,
-            else => {},
+            else => true,
         };
+        stderr.writeAll(report.written()) catch {};
+        if (failed) {
+            state.tell_page(arena, io, report.written());
+        } else if (state.page_told) {
+            state.tell_page(arena, io, "");
+        }
         stderr.flush() catch {};
         // Until a source changes; the app exiting on its own is said, and
         // waits for an edit too.
@@ -129,6 +148,7 @@ fn stop_on_signals() void {
         .flags = 0,
     };
     _ = linux.sigaction(.USR1, &ignore, null);
+    _ = linux.sigaction(.USR2, &ignore, null); // the same, for a failure's news
 }
 
 /// What inotify said since the last pass.
@@ -154,6 +174,20 @@ const State = struct {
     child_fd: i32 = -1,
     /// The last pass failed: the next that finds nothing to build says so.
     failing: bool = false,
+    /// The running app shows a failure over its pages (`tell_page`).
+    page_told: bool = false,
+
+    /// The running app told what the last pass said (`errors_name`, then
+    /// SIGUSR2: host/dev.zig), shown over its pages; "" takes it away.
+    fn tell_page(state: *State, arena: Allocator, io: Io, text: []const u8) void {
+        const child = state.child orelse return;
+        const paths = pipeline.Paths.of(arena, state.options.app) catch return;
+        var dir = Io.Dir.cwd().openDir(io, paths.out_path, .{}) catch return;
+        defer dir.close(io);
+        dir.writeFile(io, .{ .sub_path = errors_name, .data = text }) catch return;
+        _ = linux.kill(child.id.?, .USR2);
+        state.page_told = text.len > 0;
+    }
 
     /// One pass: what changed is built, then the app restarted, or told to
     /// reread its templates.
@@ -230,8 +264,23 @@ const State = struct {
             }
         else
             before;
-        var roc: ?std.process.Child = if (now.roc != state.built.roc)
-            pipeline.start_roc(io, paths, app, .dev) catch |err| {
+        const building = now.roc != state.built.roc;
+        // roc's messages to a file, read into the report once it is done.
+        var out = Io.Dir.cwd().openDir(io, paths.out_path, .{}) catch |err| {
+            rocstache.generate.abandon(io, &generation);
+            return err;
+        };
+        defer out.close(io);
+        const log: ?Io.File = if (building)
+            out.createFile(io, roc_log_name, .{ .truncate = true }) catch |err| {
+                rocstache.generate.abandon(io, &generation);
+                return err;
+            }
+        else
+            null;
+        defer if (log) |file| file.close(io);
+        var roc: ?std.process.Child = if (building)
+            pipeline.start_roc(io, paths, app, .dev, log) catch |err| {
                 rocstache.generate.abandon(io, &generation);
                 return err;
             }
@@ -241,7 +290,12 @@ const State = struct {
             if (roc) |*child| child.kill(io);
             return err;
         };
-        if (roc) |*child| try pipeline.wait_roc(io, child);
+        if (roc) |*child| {
+            const waited = pipeline.wait_roc(io, child);
+            const said = out.readFileAlloc(io, roc_log_name, arena, .limited(1 << 20)) catch "";
+            stderr.writeAll(said) catch {};
+            try waited;
+        }
         return .{ .now = now, .program_changed = generated.program_changed };
     }
 
@@ -311,6 +365,10 @@ const State = struct {
             rocstache.generate.program_name,
         });
         try environ.put("ROUX_DEV_TEMPLATES", program);
+        const out = std.fs.path.dirname(program).?;
+        const errors = try std.fs.path.join(arena, &.{ out, errors_name });
+        try environ.put("ROUX_DEV_ERRORS", errors);
+        state.page_told = false; // a new build shows no failure
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");
         const output = state.options.app.output;

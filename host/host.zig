@@ -800,6 +800,19 @@ const App = struct {
         var buffer: [128]u8 = undefined;
         const first = dev.event(dev.name(build, seen, &name_buffer), true, &buffer);
         request.stream_send(first) catch return over;
+        // A failed build's report, read per stream (development only):
+        // the heap, not the fiber's stack.
+        const report_memory = std.heap.page_allocator.alloc(u8, dev.failure_bytes_max) catch
+            return over;
+        defer std.heap.page_allocator.free(report_memory);
+        const event_memory = std.heap.page_allocator.alloc(u8, dev.failure_bytes_max + 4096) catch
+            return over;
+        defer std.heap.page_allocator.free(event_memory);
+        var errors_seen = dev_errors_told.load(.acquire);
+        const report = dev_errors_read(report_memory);
+        if (report.len > 0) {
+            request.stream_send(dev.failure_event(report, event_memory)) catch return over;
+        }
         request.stream_flush() catch return over;
         const io = shard_io.?;
         const keepalive: std.Io.Timeout = .{ .duration = .{
@@ -814,11 +827,17 @@ const App = struct {
             // Woken by a reread (SIGUSR1's futex wake), or the keepalive.
             io.futexWaitTimeout(u32, &templates.requested.raw, seen, keepalive) catch break;
             const now = templates.requested.load(.acquire);
+            const errors_now = dev_errors_told.load(.acquire);
+            if (errors_now != errors_seen) {
+                errors_seen = errors_now;
+                const text = dev_errors_read(report_memory);
+                request.stream_send(dev.failure_event(text, event_memory)) catch break;
+            }
             if (now != seen) {
                 seen = now;
                 const next = dev.event(dev.name(build, seen, &name_buffer), false, &buffer);
                 request.stream_send(next) catch break;
-            } else {
+            } else if (errors_now == errors_seen) {
                 if (deadline.compare(.lt, .now(io, .awake))) break;
                 request.stream_send(": \n\n") catch break;
             }
@@ -1019,10 +1038,51 @@ fn start_dev() void {
         .flags = std.os.linux.SA.RESTART,
     };
     _ = std.os.linux.sigaction(.USR1, &action, null);
+    // A failed build's report: roux dev rewrites the file and sends SIGUSR2;
+    // the events streams send it to the pages, which show it.
+    const errors = std.c.getenv("ROUX_DEV_ERRORS") orelse return;
+    dev_errors_path = std.mem.span(errors);
+    var failure = action;
+    failure.handler = .{ .handler = on_failure_signal };
+    _ = std.os.linux.sigaction(.USR2, &failure, null);
 }
 
 fn on_reload_signal(_: std.os.linux.SIG) callconv(.c) void {
     templates.request_reload();
+}
+
+/// The file roux dev writes a failed build's report to (empty: none).
+var dev_errors_path: ?[:0]const u8 = null;
+/// Bumped by SIGUSR2: the report changed.
+var dev_errors_told: std.atomic.Value(u32) = .init(0);
+
+/// Async-signal-safe: an atomic, and a wake of the streams' futex (the
+/// templates' counter's word, unchanged: the streams look at both).
+fn on_failure_signal(_: std.os.linux.SIG) callconv(.c) void {
+    _ = dev_errors_told.fetchAdd(1, .release);
+    _ = std.os.linux.futex_3arg(
+        &templates.requested.raw,
+        .{ .cmd = .WAKE, .private = true },
+        std.math.maxInt(i32),
+    );
+}
+
+/// The report as the streams send it: read now, at most the most a page
+/// is shown, in `buffer`; "" for none or unreadable.
+fn dev_errors_read(buffer: []u8) []const u8 {
+    const path = dev_errors_path orelse return "";
+    const linux = std.os.linux;
+    const opened = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (linux.errno(opened) != .SUCCESS) return "";
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    var done: usize = 0;
+    while (done < buffer.len) {
+        const got = linux.read(fd, buffer[done..].ptr, buffer.len - done);
+        if (linux.errno(got) != .SUCCESS or got == 0) break;
+        done += got;
+    }
+    return buffer[0..done];
 }
 
 fn environment(name: [*:0]const u8) ?[]const u8 {

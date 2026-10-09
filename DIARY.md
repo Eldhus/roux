@@ -1799,3 +1799,19 @@ Releases (`tools/release.sh`, dist/):
   naming the platform by URL (served from dist/ on localhost): roc
   fetched the bundle, `roux build` built it, the page byte for byte the
   source build's; `roux dev` served it, a markup edit reread in 0.2 ms.
+
+## 2026-10-09: a failed build in the page
+
+For roux-tutor (the owner: "the ultimate onboarding experience"): a
+learner who breaks a contract looks at the browser, not the terminal.
+`roux dev` now collects what a pass says (its line, the generator's
+refusals, roc's messages through `.roux/APP/roc.log`) and, when the pass
+failed, writes it beside the program and sends the app SIGUSR2; the
+host's events streams send it as `build-failed`, and the page's script
+shows it over the page (docs/dev-server.md, "A failed build, in the
+page"). Checked on a copy of examples/templates: a price written
+`"120"` put both of roc's type mismatches, with their carets, on the
+stream within the pass; the fix restarted the app, the stream dropped and
+the page would reload clean. The script passes `node --check`; host/dev.zig
+tests the event (lines, CRs dropped, empty is `build-ok`, long text cut at
+a line's end). Terminal output from roc loses its colors now (a file).

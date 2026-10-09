@@ -21,6 +21,22 @@ never half written), and content decides from there, never mtimes.
 | a query (`db/*.sql`) | roux-db, then as Roc source | |
 | a static file | a restart (the host reads them at startup) | |
 
+## A failed build, in the page
+
+What a pass says (roux's line, the generator's refusals, roc's messages,
+which roc writes to `.roux/APP/roc.log` in development) goes to the
+terminal and, when the pass failed, to `.roux/APP/dev-errors.txt`; roux
+dev then sends the running app SIGUSR2. The app (`ROUX_DEV_ERRORS` names
+the file) wakes its `/_dev/events` streams, which send the text as a
+`build-failed` event, a `data:` line per line, at most 16 KB; the page's
+script shows it over the page, the last good build still serving under
+it (a click or Escape hides it). The next good pass restarts the app or
+rereads the program, and the page reloads; a pass that finds the sources
+as the serving build had them sends `build-ok`, which takes it away. A
+page loaded while a build is failing is told at once. (2026-10-09, for
+the tutor: a learner breaks a contract and sees roc's message where they
+look.)
+
 ## The reread
 
 roux build writes the templates' program to `templates.bin` and attaches

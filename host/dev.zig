@@ -58,9 +58,50 @@ pub fn is_html(content_type: []const u8) bool {
     return std.ascii.startsWithIgnoreCase(content_type, "text/html");
 }
 
+/// The most of a failure's text a page is shown (the terminal has it all).
+pub const failure_bytes_max = 16 * 1024;
+
+/// A failed build's report as an event (`build-failed`), a `data:` line
+/// per line, at most `failure_bytes_max` of it; empty text is
+/// `build-ok`, which takes the overlay away. In `buffer`.
+pub fn failure_event(text: []const u8, buffer: []u8) []const u8 {
+    assert(buffer.len >= 64);
+    const shown = std.mem.trimEnd(u8, text[0..@min(text.len, failure_bytes_max)], "\r\n");
+    if (shown.len == 0) return "event: build-ok\ndata:\n\n";
+    // The last byte is kept for the event's end; text that does not fit is
+    // cut at a line's end.
+    var writer: std.Io.Writer = .fixed(buffer[0 .. buffer.len - 1]);
+    writer.writeAll("event: build-failed\n") catch unreachable;
+    var lines = std.mem.splitScalar(u8, shown, '\n');
+    var whole = writer.end;
+    write: while (lines.next()) |line| {
+        writer.writeAll("data: ") catch break :write;
+        // A carriage return would end the line early: dropped.
+        for (line) |byte| {
+            if (byte != '\r') writer.writeByte(byte) catch break :write;
+        }
+        writer.writeAll("\n") catch break :write;
+        whole = writer.end;
+    }
+    buffer[whole] = '\n';
+    return buffer[0 .. whole + 1];
+}
+
 const script_head = "<script>(()=>{const b=\"";
-const script_tail = "\";new EventSource(\"" ++ events_path ++ "\").onmessage=" ++
-    "(m)=>{if(m.data!==b)location.reload()}})()</script>\n";
+// The overlay: what roc or roux said, over the page, until a good build
+// reloads it (the page keeps working underneath; Escape hides it).
+const script_tail = "\";const e=new EventSource(\"" ++ events_path ++ "\");" ++
+    "e.onmessage=(m)=>{if(m.data!==b)location.reload()};" ++
+    "let o;e.addEventListener(\"build-failed\",(m)=>{if(!o){o=document.createElement(\"pre\");" ++
+    "o.style.cssText=\"position:fixed;inset:auto 1rem 1rem 1rem;max-height:60vh;overflow:auto;" ++
+    "margin:0;padding:1rem 1.25rem;background:#1b1210;color:#f6e9dd;border:2px solid #e0603a;" ++
+    "border-radius:10px;font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;" ++
+    "z-index:2147483647;box-shadow:0 12px 40px #0008\";" ++
+    "o.onclick=()=>o.remove();" ++
+    "addEventListener(\"keydown\",(k)=>{if(k.key===\"Escape\")o.remove()});}" ++
+    "o.textContent=\"roux dev: the build failed; the last good one serves.\\n\\n\"+m.data;" ++
+    "document.body.append(o)});" ++
+    "e.addEventListener(\"build-ok\",()=>{if(o)o.remove()})})()</script>\n";
 
 /// The body with the script after it, naming `made` (the page's name), in
 /// `gpa`'s memory (freed at release).
@@ -92,4 +133,21 @@ test "dev: names, events, the script, html" {
     try std.testing.expect(std.mem.startsWith(u8, page, "<p>x</p><script>"));
     try std.testing.expect(std.mem.indexOf(u8, page, "const b=\"7.2\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, page, "</script>\n"));
+}
+
+test "dev: a failure as an event" {
+    var buffer: [failure_bytes_max + 4096]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "event: build-failed\ndata: main.roc:3:1: oops\ndata: \ndata: Str\n\n",
+        failure_event("main.roc:3:1: oops\r\n\nStr\n", &buffer),
+    );
+    const ok = "event: build-ok\ndata:\n\n";
+    try std.testing.expectEqualStrings(ok, failure_event("", &buffer));
+    try std.testing.expectEqualStrings(ok, failure_event("\n\n", &buffer));
+    // Long text is cut, never past the buffer, and still an event.
+    var lines: [failure_bytes_max]u8 = undefined;
+    for (0..failure_bytes_max / 2) |i| lines[2 * i ..][0..2].* = "a\n".*;
+    const cut = failure_event(&lines, &buffer);
+    try std.testing.expect(cut.len <= buffer.len);
+    try std.testing.expect(std.mem.endsWith(u8, cut, "\ndata: a\n\n"));
 }
