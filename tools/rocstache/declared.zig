@@ -118,6 +118,7 @@ const Reader = struct {
             if (name.kind != .name or !parse.is_field_name(name.text)) {
                 return reader.fail_token(name, "expected a field name");
             }
+            if (parse.is_keyword(name.text)) return reader.fail_token(name, parse.keyword_message);
             if (contract.field(index, name.text) != null) {
                 return reader.fail_token(name, "is a field twice");
             }
@@ -219,6 +220,7 @@ test "declared: what the template reads is checked against it" {
         .{ .source = "{{%\nCtx : { a : View.Row }\n%}}", .subject = "View.Row", .line = 2 },
         .{ .source = "{{%\nimport pf.X\n%}}", .subject = "import", .line = 2 },
         .{ .source = "{{% Ctx : { a : Str, a : Str } %}}", .subject = "a", .line = 1 },
+        .{ .source = "{{%\nCtx : { where : Str }\n%}}", .subject = "where", .line = 2 },
     };
     for (cases) |case| {
         var buffer: [512]u8 = undefined;

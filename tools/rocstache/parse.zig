@@ -364,6 +364,7 @@ fn path_node(written: []const u8, offset: usize, diagnostic: *Diagnostic) Error!
         if (!is_field_name(part)) {
             return fail(diagnostic, offset, "is not a field name (like `title`)", written);
         }
+        if (is_keyword(part)) return fail(diagnostic, offset, keyword_message, written);
         node.path[node.path_len] = part;
         node.path_len += 1;
     }
@@ -409,6 +410,27 @@ pub fn is_field_name(s: []const u8) bool {
     if (s.len == 0 or !(std.ascii.isLower(s[0]) or s[0] == '_')) return false;
     for (s) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
     return true;
+}
+
+/// Roc's keywords (src/parse/tokenize.zig's `keywords` at the pinned
+/// nightly, c34079d): none can name a record's field, so a contract that
+/// had one would reach roc as a syntax error in a generated file. Each
+/// checked on the pinned roc as a field in a type, a literal and an
+/// access (2026-10-09). With each nightly: compare the table.
+const keywords = [_][]const u8{
+    "and",       "app",      "as",         "crash",  "dbg",       "else",
+    "expect",    "exposes",  "exposing",   "for",    "generates", "has",
+    "hosted",    "if",       "implements", "import", "imports",   "in",
+    "interface", "match",    "module",     "or",     "package",   "packages",
+    "platform",  "provides", "requires",   "return", "targets",   "var",
+    "where",     "while",    "with",       "break",
+};
+
+pub const keyword_message = "is a Roc keyword, which cannot name a field";
+
+pub fn is_keyword(s: []const u8) bool {
+    for (keywords) |k| if (std.mem.eql(u8, k, s)) return true;
+    return false;
 }
 
 pub fn is_type_name(s: []const u8) bool {
@@ -486,6 +508,8 @@ test "parse: each mistake says where and what" {
         .{ .source = "{{ n | plural \"one\" }}", .line = 1, .subject = "plural" },
         .{ .source = "{{ n | plural \"a\" \"b\" | upper }}", .line = 1, .subject = "n" },
         .{ .source = "x\n{{% Ctx : {} %}}", .line = 2, .subject = "" },
+        .{ .source = "\n{{ if }}", .line = 2, .subject = "if" },
+        .{ .source = "{{#a.match}}{{/a.match}}", .line = 1, .subject = "a.match" },
     };
     for (cases) |case| {
         var tree: Tree = .{};

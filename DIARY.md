@@ -1374,3 +1374,23 @@ way: a roux dev from an earlier measurement was still running, holding
 the database and the port; two measurements and a comparison ran
 against it before I saw it (`ps` before every run, as the benchmarking
 skill says).
+
+## 2026-10-09: an adversarial pass; Roc's keywords refused
+
+The owner asked for an adversarial pass over the templates' flow (TODO,
+Todo, has what it found). Checked, on a scratch copy of
+examples/templates: a page with 100 KB of static text each side of a
+value, then 150 KB (300 KB pages: runs split past 64 KiB, the growth
+past the shard's 256 KiB buffer), byte for byte over three requests and
+the same from a `--dev` build as from a release one; cycles of inlined
+and of called partials, a missing partial, 20 nested sections, an
+unclosed one, `Title` and `my-field` as names: each refused on its line.
+
+What broke: `{{ if }}` passed roux's checks, and roc refused glue's
+throwaway `Contracts.roc` (`t0! : { if : Str } => {}`, "malformed"), a
+Roc error for a template's mistake. Every one of the 34 keywords in the
+pinned compiler's tokenizer (src/parse/tokenize.zig at c34079d) fails
+`roc check` as a field, in a type, a literal and an access, so parse.zig
+now refuses all 34 in a path, and declared.zig in a declared `Ctx`:
+"`if` is a Roc keyword, which cannot name a field", on its line (tests
+in both). `when` is no keyword at this nightly, and builds.
