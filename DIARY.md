@@ -1815,3 +1815,31 @@ stream within the pass; the fix restarted the app, the stream dropped and
 the page would reload clean. The script passes `node --check`; host/dev.zig
 tests the event (lines, CRs dropped, empty is `build-ok`, long text cut at
 a line's end). Terminal output from roc loses its colors now (a file).
+
+## 2026-10-09: templates/, and what roux-tutor's passes found (0.2.0, 0.2.1)
+
+Building roux-tutor (the owner: an onboarding exercise, "clone and go",
+five critical passes) found what roux needed:
+
+- **templates/.** A dozen templates and their generated modules buried
+  `main.roc`. Templates now live in `templates/` beside the app's `.roc`
+  and are imported as `templates/X`, as roux-db's are `db/X`; generated
+  modules import each other by bare name (Roc resolves an import from the
+  importing module's directory: probed). roux dev's watcher names an edit
+  in `templates/` incrementally, as it did beside the `.roc`; messages say
+  `templates/X.rocstache:L:C`. The examples, the dragrace site and the
+  competitor moved (`git mv`; the site's 22 routes and `/menu` byte for
+  byte after). An app with no `templates/` has no templates.
+- **A taken port** said `roux: shard: AddressInUse`, once per shard, after
+  a line implying it serves: now once, "port N is taken: another server
+  listens there. Stop it, or choose another port: ROUX_PORT=8081".
+- **Roc's installer gives an older nightly** (2026-09-18) than the pin: the
+  message for a missing or wrong roc now links the pinned nightly's page.
+- **The overlay** repeated roux's failure line; it shows the report alone.
+- Released 0.2.0 (templates/, the overlay) and 0.2.1 (these); the tutor
+  pins 0.2.1 by checksum.
+
+Roc's error for a record lacking a contract's field, passed straight to
+`X.template({ … })`, says "needs … `X.Ctx`" without naming the field;
+annotating the record (`hello : Hello.Ctx`) puts one error on its line
+with "Hint: This record is missing the field: city". The tutor does that.
