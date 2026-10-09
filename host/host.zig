@@ -1070,12 +1070,7 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     roc_allocations_idle = roc_allocations_live;
 
     var runtime: Evented = undefined;
-    try runtime.init(gpa, .{
-        .thread_limit = 0, // this thread only
-        // Not the default 8: with hundreds of connections the queues overflowed,
-        // costing ~3,000 kernel cycles a request (fourneau's experiment 23).
-        .log2_ring_entries = 12,
-    });
+    try runtime_init(&runtime, gpa);
     defer runtime.deinit();
 
     const io = runtime.io();
@@ -1099,6 +1094,44 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
         try group.concurrent(io, run_redirect, .{&redirect_server});
     }
     try server.run();
+}
+
+/// How long a shard waits for its ring's locked memory: 40 tries, 50 ms
+/// apart.
+const runtime_init_tries = 40;
+const runtime_init_wait_ns = 50 * std.time.ns_per_ms;
+
+/// The shard's runtime and its ring. A restart right after a stop (roux
+/// dev's) can find the old process's rings not yet freed: the kernel frees
+/// them after the process is gone, and until then their memory counts
+/// against the user's locked memory (8 MiB on the laptop, shared with every
+/// other server the user runs). So `SystemResources` is waited out, for at
+/// most two seconds, then reported.
+fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator) !void {
+    var tries: u32 = 0;
+    while (true) {
+        tries += 1;
+        runtime.init(gpa, .{
+            .thread_limit = 0, // this thread only
+            // Not the default 8: with hundreds of connections the queues
+            // overflowed, costing ~3,000 kernel cycles a request (fourneau's
+            // experiment 23).
+            .log2_ring_entries = 12,
+        }) catch |err| switch (err) {
+            error.SystemResources => {
+                if (tries == runtime_init_tries) {
+                    write_line(2, "roux: no locked memory for the shard's io_uring " ++
+                        "(other servers of this user hold it; ulimit -l)");
+                    return err;
+                }
+                const wait: std.os.linux.timespec = .{ .sec = 0, .nsec = runtime_init_wait_ns };
+                _ = std.os.linux.nanosleep(&wait, null);
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
 }
 
 /// SQLite with a heap of its own, allocated now: untouched pages until

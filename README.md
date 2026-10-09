@@ -42,10 +42,11 @@ object roux writes itself), then roc, then the link, into `APP` beside
 without it, `--opt=speed`. A bare `roc build` makes only an archive now.
 
 `roux dev APP.roc` builds fast, runs the app, and on each save rebuilds
-only what changed and restarts it; the page in the browser reloads
-itself. A markup edit is on the screen in about 0.15 s (no compiler
-runs: the bytecode is regenerated and linked), a contract or Roc change
-in about 2 s (on the dragrace site; docs/dev-server.md). It also runs roux-db when the app
+only what changed; the page in the browser reloads itself. A markup
+edit is on the screen in milliseconds (the running app rereads the
+templates' bytecode: no compiler, no link, no restart), a Roc or
+contract change in about 1.2 s on the dragrace site (roc, the link, a
+restart; docs/dev-server.md). It also runs roux-db when the app
 has `db/`, as `roux build` does.
 `--port=N`, `--static=DIR` (the app's static files, which restart it).
 
@@ -81,8 +82,8 @@ sense.
   doubt at the Roc boundary.
 - [DIARY.md](DIARY.md): what was done and learned, in order.
 - [SECURITY.md](SECURITY.md): how to report a security problem.
-- [docs/dev-server.md](docs/dev-server.md): notes toward `roux dev`, the
-  app rebuilt as it is edited (not built yet).
+- [docs/dev-server.md](docs/dev-server.md): `roux dev`, the app rebuilt
+  as it is edited: how it works and what it measures.
 
 ## License
 

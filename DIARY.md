@@ -1673,3 +1673,54 @@ is gone (no side by side):
   matched out of it). `zig build test` passes; every example builds;
   templates and files serve their pages (200, escaped; 404); `roc test`
   in examples/templates: 33 pass.
+
+## 2026-10-09: merged; then an adversarial round on templates as data
+
+Merged: `page-union` into `templates-vm`, `templates-vm` into main
+(TODO and docs/dev-server.md conflicted: main's item 3 kept, the
+branch's newer dev-server notes taken). fourneau-dragrace main took its
+port (its DIARY): the competitor's `/menu` is workloads/menu.html byte
+for byte, and the site's 22 routes byte for byte the old build's, on
+the same database.
+
+Tried, on a scratch app of five templates (a declared contract with a
+called partial, an inferred one, an empty one `Static({})`, a fragment)
+using every helper (`html`, `bytes!`, `str!`, `patch!`, a constant
+response):
+
+- Every route right: escaping, a U32 at its maximum, a long string, the
+  partial, a 404.
+- Under the checked heap (`-Dhost-heap=checked`), ~1.1 million requests
+  over all of them, SSE included: no fault, the leak count back at every
+  idle.
+- `roux dev`: a markup edit reread in 0.1 ms; a contract edit
+  (`{{ town }}` added) rewrites Templates.roc and the module, and roc's
+  error names the missing field, the old build serving; a template added
+  and removed rebuilds; `Templates.rocstache` refused.
+- Found: `patch!` sent an empty `data: elements ` line for a template
+  ending in a line break (the site's own framing did the same). Fixed:
+  the final line break is dropped (`patch_event`, two expects).
+- Found: a restart under `roux dev` sometimes died at once, `roux: shard:
+  SystemResources` (io_uring's locked memory, 8 MiB for the user, not
+  yet freed from the stopped process, and held by other servers),
+  and dev waited for the next save. The host now waits it out: ring
+  setup retried 40 times 50 ms apart, then a message naming locked
+  memory. Twenty restarts in a row afterwards: all served, roc 116-149
+  ms each. (Two servers I had left running, started as `cd … && ./main
+  &`, whose `$!` is the subshell, held memory in the first try: the
+  retry path ran and reported.)
+- Confirmed the documented hole: a value built by hand with a narrower
+  union (`{ layouts: Templates.layouts, template: Count(…) }`, no
+  constructor used anywhere) is read as the full union: the host's
+  checks panicked the process (ReleaseSafe). It takes naming
+  `Templates.layouts` on purpose; a bare tag stays a type error.
+- Left as it is: a deleted template's `X.roc` stays (unused, it is not
+  compiled; imported, its tag is not in the union and roc says so).
+
+Measured, Menu (examples/templates' markup), instructions a request,
+three interleaved rounds (`ipr.sh`: one shard, 200,000 requests, load
+~2): effectful (this morning's build) 11,216-11,259; the union with
+`respond!` matching inline 11,213-11,244 (free); examples/templates as
+committed, `respond!` calling a pure `respond(target, context)`,
+11,502-11,510: +2.4%, the call and its `Try` re-wrapped, not the union.
+The race's competitor matches inline.
