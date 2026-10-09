@@ -1507,12 +1507,3 @@ found by the compiler's refusal, which names the field.
 
 The seeds come from fourneau's `prng` (tidy refuses the standard
 library's), which the `fourneau` module now exports (fourneau, same day).
-
-## 2026-10-09: a template in a subdirectory, refused
-
-Generation lists the app's own directory, so `parts/Bit.rocstache` was no
-template, and nothing said so. When it lists (every `roux build`, and a
-`roux dev` pass after a file is created or deleted) it now also walks
-the app's subdirectories, hidden ones left out, and refuses one:
-"parts/Bit.rocstache: a template lives beside the app's .roc, not in a
-subdirectory". The site's listing with the walk: 4 ms of its build.

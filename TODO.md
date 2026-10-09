@@ -240,7 +240,12 @@ found is done (DIARY, 2026-10-09: Roc's keywords refused; the app born
 ignoring SIGUSR1; one key for the layouts; roc while glue runs, -21% a
 contract change; failures named; the reread counter; the reload script
 by `Sec-Fetch-Dest`; new directories watched; stale docs; the compiler
-and the VM tested together; a template in a subdirectory refused).
+and the VM tested together), but:
+
+- [ ] A `.rocstache` in a subdirectory of the app is no template
+  (generation lists the app's directory only) and nothing says so, in
+  `roux build` or `roux dev`. Refuse it, naming the file, or say it on
+  the line. (2026-10-09)
 - Not worth doing, measured: the render is not where a request goes. The
   host VM is 510 instructions a request behind comptime (15,595 against
   15,085) on a page whose request is all HTTP and Roc around it; the
