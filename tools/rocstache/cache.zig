@@ -38,11 +38,6 @@ pub const Cache = struct {
     retired: std.ArrayList(Retired) = .empty,
     /// The layouts' identity the object was last written for.
     object_layouts: ?u64 = null,
-    /// What glue's step was last made from (every contract's key, the
-    /// names, the roc), and the layouts' identity it gave: the same key,
-    /// with `layouts` kept, skips the step.
-    laid_key: u64 = 0,
-    laid_id: u64 = 0,
     /// The templates' names from the last listing of the app's directory,
     /// for a generation told which files changed (`changed`).
     names: std.ArrayList([]const u8) = .empty,

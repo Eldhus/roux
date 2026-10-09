@@ -1405,3 +1405,21 @@ ignoring it until the host's handler replaces that. Checked on a scratch
 copy of examples/templates: `/proc` shows roux dev with SIGUSR1 in
 `SigIgn` (0x200), the app with it in `SigCgt`, and a markup edit reread
 (`templates reread, 1`, 0.1 ms) served at once.
+
+## 2026-10-09: one key for the layouts
+
+generate.zig kept two keys for glue's step: `laid_key`, from every
+contract's key (made from template sources, so it moved on every markup
+edit and skipped nothing then), and the layouts' identity, from what
+glue reads (`Contracts.roc`'s text, the spec, the roc, the names), which
+the step computes anyway in microseconds, an unchanged file costing a
+hash. The identity is now the one key; `laid_key` and `laid_id` are gone
+(26 lines). Measured on a scratch copy of the dragrace site (the port
+from 2026-10-08, 12 templates, scratchpad `edit_latency.py`, 40 edits of
+AboutPage each, alternating): a pass 0.7 ms median before and after,
+save to page 1.94 ms before, 1.64 and 1.83 after (noise). A contract
+change (Menu's `price : U32` to `U64`) still runs glue: 407 ms, both
+files say `U64`, the page the same.
+
+Also seen: a `roux dev` whose roux-db is not beside it fails every pass
+with "build 1 failed" and no reason (the spawn's error is not printed).
