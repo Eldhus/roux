@@ -65,23 +65,33 @@ pub const Paths = struct {
     }
 };
 
-/// Every step, timed on one line: `roux build`.
+/// Every step, timed on one line: `roux build`. roc builds the app while
+/// glue lays out the contracts (neither needs the other).
 pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer) !void {
     const paths: Paths = try .of(arena, app);
     const start = Io.Timestamp.now(io, .awake);
     if (has_queries(io, app)) try query_types(arena, io, app);
-    const generated = try generate(arena, io, paths, app, .{}, stderr);
-    const generated_at = Io.Timestamp.now(io, .awake);
-    try compile(io, paths, app, mode);
+    var cache: rocstache.generate.Cache = .init(arena);
+    var generation = try begin(arena, io, paths, app, &cache, null, false, stderr);
+    const begun_at = Io.Timestamp.now(io, .awake);
+    var roc = start_roc(io, paths, app, mode) catch |err| {
+        rocstache.generate.abandon(io, &generation);
+        return err;
+    };
+    const generated = rocstache.generate.finish(arena, io, &generation, stderr) catch |err| {
+        roc.kill(io);
+        return err;
+    };
+    try wait_roc(io, &roc);
     const compiled_at = Io.Timestamp.now(io, .awake);
     try link(arena, io, paths, app);
     const linked_at = Io.Timestamp.now(io, .awake);
-    const line = "roux: {d} templates ({d} ms{s}), roc {d} ms, link {d} ms: ";
+    const line = "roux: {d} templates ({d} ms{s}), roc and glue {d} ms, link {d} ms: ";
     try stderr.print(line, .{
         generated.templates,
-        milliseconds(start, generated_at),
+        milliseconds(start, begun_at),
         if (generated.modules_changed) ", modules changed" else "",
-        milliseconds(generated_at, compiled_at),
+        milliseconds(begun_at, compiled_at),
         milliseconds(compiled_at, linked_at),
     });
     try stderr.print("{s}\n", .{app.output});
@@ -106,40 +116,40 @@ pub fn query_types(arena: Allocator, io: Io, app: App) !void {
     if (!(try child.wait(io)).success()) return error.ChildFailed;
 }
 
-/// What `roux dev` keeps between passes and knows of a pass; empty for one
-/// build.
-pub const Incremental = struct {
-    cache: ?*rocstache.generate.Cache = null,
-    /// The templates whose files were written; null: all may have been.
-    changed: ?[]const []const u8 = null,
-};
-
-/// The templates' modules, and their program.
-pub fn generate(
+/// The templates' modules written and glue started (generate.zig's
+/// `begin`); `rocstache.generate.finish` writes their program. `changed`:
+/// the templates whose files `roux dev` saw written (null: all may have
+/// been). `dev`: for `roux dev`, whose app reads `templates.bin` and links
+/// only for Roc.
+pub fn begin(
     arena: Allocator,
     io: Io,
     paths: Paths,
     app: App,
-    incremental: Incremental,
+    cache: *rocstache.generate.Cache,
+    changed: ?[]const []const u8,
+    dev: bool,
     stderr: *Io.Writer,
-) !rocstache.generate.Result {
-    return rocstache.generate.generate(arena, io, .{
+) !rocstache.generate.Generation {
+    return rocstache.generate.begin(arena, io, .{
         .app = app.dir,
         .build = paths.out_path,
         .roc = app.roc,
-        .cache = incremental.cache,
-        // roux dev's app reads templates.bin; it links only for Roc.
-        .object_on_layouts_only = incremental.cache != null,
-        .changed = incremental.changed,
-    }, stderr);
+        .cache = cache,
+        .object_on_layouts_only = dev,
+        .changed = changed,
+    }, cache, stderr);
 }
 
-/// roc builds the app's archive.
-pub fn compile(io: Io, paths: Paths, app: App, mode: Mode) !void {
+/// roc started on the app's archive.
+pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode) !std.process.Child {
     var buffer: [std.fs.max_path_bytes + 16]u8 = undefined;
     const output = try std.fmt.bufPrint(&buffer, "--output={s}", .{paths.archive});
-    var child = try spawn(io, &.{ app.roc, "build", mode.roc_opt(), app.file, output }, app.dir);
-    if (!(try child.wait(io)).success()) return error.ChildFailed;
+    return spawn(io, &.{ app.roc, "build", mode.roc_opt(), app.file, output }, app.dir);
+}
+
+pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
+    if (!(try roc.wait(io)).success()) return error.ChildFailed;
 }
 
 /// roc's archive and the templates' object, into the output: a new file

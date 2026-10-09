@@ -75,8 +75,48 @@ pub const Error = error{Invalid} || Allocator.Error || Io.Dir.ReadFileAllocError
 /// as an arena: what is kept goes in the cache's own allocator.
 pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Error!Result {
     var alone: Cache = .init(gpa);
-    const cache = options.cache orelse &alone;
-    const result = generate_with(gpa, io, options, cache, errors) catch |err| {
+    var generation = try begin(gpa, io, options, options.cache orelse &alone, errors);
+    return finish(gpa, io, &generation, errors);
+}
+
+/// A generation in two halves, so a caller can build the app's Roc while
+/// glue lays the contracts out (neither needs the other): `begin` writes
+/// the modules and starts glue, when it must run; `finish` waits for it
+/// and writes the program. Between them, `modules_changed` says whether
+/// the Roc must be built. Every `begin` that returns is followed by
+/// `finish` or `abandon`.
+pub const Generation = struct {
+    options: Options,
+    cache: *Cache,
+    kept: []const *Kept,
+    templates: []const contract_.Template,
+    build: Io.Dir,
+    glue: Glue,
+    templates_count: u32,
+    modules_changed: bool,
+};
+
+/// Parses the templates, decides their contracts, writes their modules and
+/// glue's inputs, and starts glue when the layouts must be made again.
+pub fn begin(
+    gpa: Allocator,
+    io: Io,
+    options: Options,
+    cache: *Cache,
+    errors: *Io.Writer,
+) Error!Generation {
+    return begin_with(gpa, io, options, cache, errors) catch |err| {
+        cache.forget();
+        return err;
+    };
+}
+
+/// Waits for glue, compiles every template whose code changed, and writes
+/// the program.
+pub fn finish(gpa: Allocator, io: Io, generation: *Generation, errors: *Io.Writer) Error!Result {
+    defer generation.build.close(io);
+    const cache = generation.cache;
+    const result = finish_with(gpa, io, generation, errors) catch |err| {
         cache.forget();
         return err;
     };
@@ -84,13 +124,25 @@ pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Er
     return result;
 }
 
-fn generate_with(
+/// A generation not finished (the caller failed between the halves): glue
+/// stopped, and nothing it made kept.
+pub fn abandon(io: Io, generation: *Generation) void {
+    defer generation.build.close(io);
+    if (generation.glue == .running) {
+        var child = generation.glue.running.child;
+        child.kill(io);
+        glue_again(io, generation.build, generation.cache);
+    }
+    generation.cache.forget();
+}
+
+fn begin_with(
     gpa: Allocator,
     io: Io,
     options: Options,
     cache: *Cache,
     errors: *Io.Writer,
-) Error!Result {
+) Error!Generation {
     const cwd = Io.Dir.cwd();
     var app = try cwd.openDir(io, options.app, .{ .iterate = true });
     defer app.close(io);
@@ -108,30 +160,43 @@ fn generate_with(
         }
         t.* = .{ .name = k.*.name, .source = k.*.source, .tree = k.*.tree.? };
     }
-    var result: Result = .{
-        .templates = @intCast(names.len),
-        .modules_changed = false,
-        .program_changed = false,
-    };
     try compute_contracts(gpa, cache, kept, templates, errors);
+    var modules_changed = false;
     const contracts = try gpa.alloc(layout.Contract, names.len);
     for (kept, contracts, 0..) |k, *c, index| {
         c.* = .{ .index = @intCast(index), .contract = k.contract.? };
         const changed = try write_module(gpa, io, app, cache, k, @intCast(index));
-        if (changed) result.modules_changed = true;
+        if (changed) modules_changed = true;
     }
     try cwd.createDirPath(io, options.build);
     var build = try cwd.openDir(io, options.build, .{});
-    defer build.close(io);
-    const laid = try glue(gpa, io, build, options, cache, kept, contracts, errors);
-    const chunks = try compile(gpa, cache, kept, templates, &laid, errors);
+    errdefer build.close(io);
+    return .{
+        .options = options,
+        .cache = cache,
+        .kept = kept,
+        .templates = templates,
+        .build = build,
+        .glue = try glue_start(gpa, io, build, options, cache, kept, contracts, errors),
+        .templates_count = @intCast(names.len),
+        .modules_changed = modules_changed,
+    };
+}
+
+fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error!Result {
+    const laid = try glue_finish(gpa, io, g.build, g.options, g.cache, &g.glue, errors);
+    const chunks = try compile(gpa, g.cache, g.kept, g.templates, &laid, errors);
     const program = try bytecode.assemble(gpa, chunks);
-    result.program_changed = try write_program(gpa, io, build, options, cache, .{
+    const program_changed = try write_program(gpa, io, g.build, g.options, g.cache, .{
         .code = program.code,
         .text = program.text,
         .layouts = laid.id,
     });
-    return result;
+    return .{
+        .templates = g.templates_count,
+        .modules_changed = g.modules_changed,
+        .program_changed = program_changed,
+    };
 }
 
 /// The program as the file roux dev has a running app reread, and as the
@@ -493,13 +558,22 @@ fn report(
     try errors.print("{s}\n", .{problem.message});
 }
 
+/// Where glue's step stands between `begin` and `finish`: the kept
+/// layouts serve; `layouts.zon` is to be parsed (glue ran before, the
+/// cache has none); or glue runs, its output going to `glue/log`.
+const Glue = union(enum) {
+    kept: Laid,
+    parse: u64,
+    running: struct { child: std.process.Child, id: u64 },
+};
+
 /// The contracts' layouts: the throwaway platform written, and `roc glue`
-/// run on it with layout.zig's spec when what it lays out changed (or its
-/// output is missing); else the kept layouts. What glue reads is written
-/// on every generation (microseconds; an unchanged file costs a hash), so
-/// its identity is the one key. `--no-cache`: glue's cache runs whichever
-/// spec it compiled first (roc-lang/roc#12139).
-fn glue(
+/// started on it with layout.zig's spec when what it lays out changed (or
+/// its output is missing); else the kept layouts. What glue reads is
+/// written on every generation (microseconds; an unchanged file costs a
+/// hash), so its identity is the one key. `--no-cache`: glue's cache runs
+/// whichever spec it compiled first (roc-lang/roc#12139).
+fn glue_start(
     gpa: Allocator,
     io: Io,
     build: Io.Dir,
@@ -508,7 +582,7 @@ fn glue(
     kept: []const *Kept,
     contracts: []const layout.Contract,
     errors: *Io.Writer,
-) Error!Laid {
+) Error!Glue {
     try build.createDirPath(io, "glue");
     var platform: Io.Writer.Allocating = .init(gpa);
     try layout.write_platform(contracts, &platform.writer);
@@ -530,12 +604,39 @@ fn glue(
     const contracts_changed =
         try write_output(c, gpa, io, build, "build", "glue/Contracts.roc", declared.written());
     const changed = spec_changed or roc_changed or contracts_changed;
-    const zon = "glue/layouts.zon";
     if (!changed) {
-        if (cache.layouts) |layouts| return .{ .layouts = layouts, .id = id };
+        if (cache.layouts) |layouts| return .{ .kept = .{ .layouts = layouts, .id = id } };
     }
     const present = if (build.access(io, zon, .{})) true else |_| false;
-    if (changed or !present) try run_glue(gpa, io, build, options, cache, errors);
+    if (!changed and present) return .{ .parse = id };
+    return .{ .running = .{
+        .child = try spawn_glue(gpa, io, build, options, cache, errors),
+        .id = id,
+    } };
+}
+
+const zon = "glue/layouts.zon";
+
+/// The layouts, once glue's step is done: waited for, its output checked
+/// and parsed, unless they were kept.
+fn glue_finish(
+    gpa: Allocator,
+    io: Io,
+    build: Io.Dir,
+    options: Options,
+    cache: *Cache,
+    step: *Glue,
+    errors: *Io.Writer,
+) Error!Laid {
+    const id = switch (step.*) {
+        .kept => |laid| return laid,
+        .parse => |id| id,
+        .running => |*running| blk: {
+            defer step.* = .{ .parse = running.id };
+            try wait_glue(gpa, io, build, options, cache, &running.child, errors);
+            break :blk running.id;
+        },
+    };
     // Parsed into the cache's memory, to keep.
     cache.layouts = null;
     _ = cache.arena.reset(.retain_capacity);
@@ -570,32 +671,52 @@ fn glue_again(io: Io, build: Io.Dir, cache: *Cache) void {
     if (cache.written.fetchRemove("build/glue/Contracts.roc")) |entry| cache.gpa.free(entry.key);
 }
 
-/// `roc glue` with roux's spec on the throwaway platform: `layouts.zon`.
-fn run_glue(
+/// `roc glue` with roux's spec on the throwaway platform, started: it
+/// writes `glue/out/layouts.zon`, and what it says goes to `glue/log`
+/// (a file, so a long message can never block it on a full pipe).
+fn spawn_glue(
     gpa: Allocator,
     io: Io,
     build: Io.Dir,
     options: Options,
     cache: *Cache,
     errors: *Io.Writer,
-) Error!void {
+) Error!std.process.Child {
     const spec = try std.fmt.allocPrint(gpa, "{s}/glue/Layout.roc", .{options.build});
     const output = try std.fmt.allocPrint(gpa, "{s}/glue/out", .{options.build});
     const main = try std.fmt.allocPrint(gpa, "{s}/glue/main.roc", .{options.build});
-    const result = std.process.run(gpa, io, .{
+    const log = try build.createFile(io, "glue/log", .{});
+    defer log.close(io);
+    return std.process.spawn(io, .{
         .argv = &.{ options.roc, "glue", "--no-cache", spec, output, main },
-        .stdout_limit = .limited(1 << 20),
-        .stderr_limit = .limited(1 << 20),
+        .stdin = .ignore,
+        .stdout = .{ .file = log },
+        .stderr = .{ .file = log },
     }) catch |err| {
         try errors.print("roc glue ({s}) could not run: {t}\n", .{ options.roc, err });
         glue_again(io, build, cache);
         return error.Invalid;
     };
-    if (!result.term.success()) {
-        try errors.print("roc glue failed on the contracts:\n{s}{s}", .{
-            result.stdout,
-            result.stderr,
-        });
+}
+
+/// Glue waited for; its `layouts.zon` moved in, written only if changed.
+fn wait_glue(
+    gpa: Allocator,
+    io: Io,
+    build: Io.Dir,
+    options: Options,
+    cache: *Cache,
+    child: *std.process.Child,
+    errors: *Io.Writer,
+) Error!void {
+    const term = child.wait(io) catch |err| {
+        try errors.print("roc glue ({s}) could not be waited for: {t}\n", .{ options.roc, err });
+        glue_again(io, build, cache);
+        return error.Invalid;
+    };
+    if (!term.success()) {
+        const said = build.readFileAlloc(io, "glue/log", gpa, .limited(1 << 20)) catch "";
+        try errors.print("roc glue failed on the contracts:\n{s}", .{said});
         glue_again(io, build, cache);
         return error.Invalid;
     }
