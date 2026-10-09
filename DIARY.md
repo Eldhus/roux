@@ -1573,3 +1573,29 @@ sqlite) would need an empty `Page`, not tried: the repository's examples
 are not ported on this branch (the measurements used scratch copies).
 The dependency graph (owner's question): `main` depends on every
 page's contract through `Pages.roc`, and only it.
+
+## 2026-10-09: can the app lose `import Pages` and `Page : Pages.Page`?
+
+The owner asked whether the union's app could import as the other two
+variants do. Tried on scratch copies (the probe app, a scratch platform):
+- `import Pages exposing [Page]` with `Page` still in the app header:
+  refused, "exposed but not defined" and "the platform expects your app
+  module to define a type named Page". A type the platform requires is
+  the app module's own, as `Context` is.
+- The platform not asking for `Page`, the page type left open
+  (`Server.Response(_page)` in `requires`, as `_err` is): compiles, and
+  the app needs neither line. But the union Roc infers is the tags the
+  app sends: an app sending only `Menu` got a one-tag union, while glue
+  laid out the whole one, and the host served About's template over
+  Menu's record ("Eldhús &lt;menu&gt; cooks since Ro", status 200).
+  Unsafe.
+- The same open platform, and each page module exporting `page : Ctx ->
+  Pages.Page` (`page = |ctx| Menu(ctx)`), with `Pages.roc` spelling the
+  contracts out rather than importing the page modules (no cycle): the
+  app is `app [Context, program]`, `import Menu` only,
+  `Server.page(Menu.page(ctx))`, annotations `Server.Response(_)`; an
+  app sending only Menu rendered it right (built and linked by hand, the
+  modules hand-edited). The constructor's type pins the whole union
+  whatever the app sends. The cost: every page module imports Pages,
+  which changes with any template's contract, so a contract change
+  touches every page module (the hub, moved from main to the pages).
