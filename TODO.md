@@ -113,10 +113,17 @@
        constant context no more once a closure holds it).
      - `fixed-format` (`../roux-fixed`): `{{ x | fixed "1" }}`, an F64
        printed by the VM as Roc rounds; the site's chart dots -1.1% of
-       the race page, byte for byte.
+       the race page, byte for byte. Come back to it (owner, 2026-10-09):
+       which other formatters belong in the host? (The site's `Format`:
+       thousands grouping, `compact` 59.1k, latency; dates.)
      - `sse-frame` (`../roux-sse`): `Sse.Event.lines!` frames an event
        in the host, `Rocstache.patch!` makes a page a Datastar patch; the
-       site's patch route -9.5%, byte for byte.
+       site's patch route -9.5%, byte for byte. Come back to it if roux
+       decides to specialize on Datastar (owner, 2026-10-09).
+     - `page-union` (`../roux-page-union`): pages as a generated union
+       of their contracts, data the host renders as the response is
+       sent; comparable in `roc test`. Being built (owner, 2026-10-09:
+       "do union type method and benchmark").
      - Found on the way, in the site (fourneau-dragrace `f379a25`, on
        main): log10 by bisection on `F64.pow` was a third of the race
        page; by its series now, -33%.
