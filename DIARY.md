@@ -1612,3 +1612,26 @@ variants do. Tried on scratch copies (the probe app, a scratch platform):
   other layouts (a stale build) with a 500, at a comparison a page: not
   built. Building the record by hand with a subset union stays possible,
   on purpose only.
+
+## 2026-10-09: Templates, not Pages; a patch takes the union too
+
+The owner: rename the union `Templates` (a fragment is no page), and
+can a Datastar patch take the union? Probed on a scratch copy of this
+branch's platform, with two pages and a fragment (Menu, About, Count),
+the program and glue's layout from this branch's roux, the Roc modules
+hand-written in the shape roux would generate: `Templates.roc` spells
+the contracts out (`Template : [About({…}), Count({…}), Menu({…})]`,
+`layouts = 0x…`, the program's own identity), each template's module
+has `template : Ctx -> Rocstache.Template(Templates.Template)`, and the
+platform's `Rocstache` takes that value: `html` (a response, rendered
+when sent), `bytes!`, `str!` and `patch!` (rendered now; the patch
+framed in Roc here). The app is `app [Context, program]` and imports
+only its templates; `respond!`'s result is `Server.Response(_)`, which
+the LSP shows as `Server.Response(Templates.Template)`. Ran: the pages
+right, `/count` a real `datastar-patch-elements` event; `roc test`
+passes `view("/about", …) == Ok(About.template({ … }))`. A bare tag is
+refused in the view ("expected … Try(Rocstache.Template(_a), …)") and
+in a patch ("needs the first argument to be: Rocstache.Template(t)").
+Completion after `Menu.` returns nothing (the experimental LSP). The
+comparison for the Roc team is an artifact (roux Page Shapes, version
+2), built from this probe's captured output.
