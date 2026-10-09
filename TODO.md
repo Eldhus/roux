@@ -102,7 +102,8 @@
    effectful, so `Page.render(ctx)` would return a value holding the
    effect, run by the platform when it sends; the host might then render
    straight into the response, no copy into a Roc list).
-   - Where it stands (2026-10-09): starting the fixes.
+   - Where it stands (2026-10-09): the fixes done and committed (DIARY,
+     2026-10-09); next, the design pass, starting with a pure render.
 
 
 ## Plan
@@ -218,7 +219,8 @@ Read the diary, keep the tests, delete what did not pay, write it again.
   with `roc glue --no-cache` (roc-lang/roc#12139) and the matching
   `ZigGlue.roc` from the roc repository at the nightly's commit; build and
   run the examples. roux build lays the contracts out again by itself
-  when `roc` changes.
+  when `roc` changes. Compare Roc's keywords (src/parse/tokenize.zig,
+  `keywords`, at the nightly's commit) with tools/rocstache/parse.zig's.
   - Last done: 2026-10-08 (c34079d: the spec unchanged, the glue
     identical once `zig fmt` has run over it, as tidy wants).
 - **Vendored sources**, monthly and when a security release appears:
@@ -233,54 +235,17 @@ and check everything"). Checked and holding: a 300 KB page (runs split
 past 64 KiB, the heap growth past the shard's 256 KiB) byte for byte the
 same over three requests and between `--dev` and release builds; cycles,
 missing partials, nesting past 16, unclosed sections, bad names all
-refused naming the template's line; the hazard-pointer swap. Found, most
-worth it first:
+refused naming the template's line; the hazard-pointer swap. What it
+found is done (DIARY, 2026-10-09: Roc's keywords refused; the app born
+ignoring SIGUSR1; one key for the layouts; roc while glue runs, -21% a
+contract change; failures named; the reread counter; the reload script
+by `Sec-Fetch-Dest`; new directories watched; stale docs; the compiler
+and the VM tested together), but:
 
-- [ ] Bug: a field named a Roc keyword (`{{ if }}`, inferred) passes
-  roux's checks and fails in glue as a Roc syntax error in the
-  throwaway `Contracts.roc`, against DESIGN's "never a Roc type error".
-  parse.zig's `is_field_name` refuses Roc's keywords (the list from the
-  roc skill's vendored langref), naming the line. Same for a declared
-  `Ctx`'s fields (declared.zig).
-- [ ] Bug, a small window: `roux dev` sends SIGUSR1 to an app that may not
-  have reached `start_dev` yet, whose default action kills it. roux dev
-  ignores SIGUSR1 itself (SIG_IGN survives exec, a handler does not), so
-  the child is born ignoring it until the host's handler goes in; an edit
-  in that window is not lost (`reload_from` reads the file at start).
-- [ ] Faster contract edits: glue (~0.3-0.6 s) and roc both start from
-  the written modules and contracts, and neither needs the other, yet
-  they run in turn. Run them together, then compile the bytecode and
-  link: a contract edit in `roux dev`, and a cold `roux build`, shorter by
-  glue's time. Measure before and after.
-- [ ] Simpler: generate.zig keeps two keys for the layouts, `laid_key`
-  (from the contracts' source-based keys, so it moves on every markup
-  edit) and the identity `id` (from `Contracts.roc`'s text, the spec,
-  the roc, the names). Writing `Contracts.roc` is microseconds: key on
-  `id` alone, drop `laid_key` and `laid_id`.
-- [ ] Test: nothing runs the VM over bytecode the compiler made, except
-  the examples' pages. A deterministic test in `zig build test`: random
-  templates (a seed, bounded) over a hand-laid `Layouts` matching a Zig
-  `extern struct`, rendered by the VM and by a plain walk of the parse
-  tree in the test, the bytes compared. (The layouts are hand-laid only
-  in the test; the app's are always glue's.)
-- [ ] Minor: `swap_in` can set `loaded` backwards (a thread waiting with
-  an older `want` rereads after a newer swap), costing one more read of
-  the file. Compare as wrapping counters: skip when `loaded` is at or
-  past `want`.
-- [ ] Minor: in development every `text/html` answer gets the reload
-  script, an HTML fragment too (a Datastar fragment sent as `text/html`
-  would open one more EventSource per patch). The site sends patches as
-  SSE today, so nothing breaks yet.
-- [ ] Minor: `roux dev` watches the directories that existed at its
-  start; a directory made later is not watched, and a `.rocstache` in a
-  subdirectory starts a pass that generation (the app's directory only)
-  ignores. Say so on the line, or refuse it.
-- [ ] Docs gone stale with the comptime branch: tools/roux/main.zig's
-  header (Zig compiles the templates object, ReleaseSafe), tools/roux
-  dev.zig's header (the object and "the link and a restart" for markup),
-  TESTING.md's template-compiler line (the writers' measures, the
-  renderer on hand-laid contracts). And contract.zig's message "cannot be
-  used so here".
+- [ ] A `.rocstache` in a subdirectory of the app is no template
+  (generation lists the app's directory only) and nothing says so, in
+  `roux build` or `roux dev`. Refuse it, naming the file, or say it on
+  the line. (2026-10-09)
 - Not worth doing, measured: the render is not where a request goes. The
   host VM is 510 instructions a request behind comptime (15,595 against
   15,085) on a page whose request is all HTTP and Roc around it; the
