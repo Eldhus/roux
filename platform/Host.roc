@@ -80,4 +80,9 @@ Host := [].{
 	## template. The box comes back untouched for Roc to release: Roc
 	## knows its type.
 	template_render! : U64, Box(a) => { bytes : List(U8), context : Box(a) }
+
+	## The app's `Page`, boxed: the host reads which template by its tag and
+	## renders it from the tag's payload, as glue laid the union out
+	## (`Pages.roc`, generated). The box comes back for Roc to release.
+	page_render! : Box(a) => { bytes : List(U8), page : Box(a) }
 }

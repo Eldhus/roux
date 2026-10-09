@@ -16,11 +16,16 @@ Server := [].{
 		body : U64,
 	}
 
-	Response : {
+	## `page` is the app's `Page`: the union of its templates' pages, each
+	## tag a template and its contract (`AboutPage({ … })`), which the host
+	## renders as the response is sent.
+	Response(page) : {
 		status : U16,
 		headers : List(Header),
-		body : List(U8),
+		body : Body(page),
 	}
+
+	Body(page) : [Bytes(List(U8)), Text(Str), Html(page)]
 
 	## `BodyAfterStream`: read after `Sse.start!`, when it no longer can be.
 	## `BodyDuringWrite`: read while the request holds the database's
@@ -31,8 +36,18 @@ Server := [].{
 	from_host : Host.RequestFromHost -> Request
 	from_host = |request| request
 
-	to_host : Response -> Host.ResponseToHost
-	to_host = |response| response
+	## The response as the host takes it: a page is rendered now, from the
+	## union as Roc laid it out (the box goes back to Roc to release).
+	to_host! : Response(page) => Host.ResponseToHost
+	to_host! = |{ status, headers, body }| {
+		status,
+		headers,
+		body: match body {
+			Bytes(bytes) => bytes
+			Text(text) => Str.to_utf8(text)
+			Html(page) => Host.page_render!(Box.box(page)).bytes
+		},
+	}
 
 	## The request body, up to `limit_bytes` (413 beyond it is the app's
 	## to answer). Read from the network only when called.
@@ -52,26 +67,27 @@ Server := [].{
 		}
 	}
 
-	text : Str -> Response
+	text : Str -> Response(page)
 	text = |body| {
 		status: 200,
 		headers: [{ name: "Content-Type", value: "text/plain; charset=utf-8" }],
-		body: Str.to_utf8(body),
+		body: Text(body),
 	}
 
-	html : Str -> Response
-	html = |body| {
+	## A page of the app's: 200, HTML, rendered by the host as it is sent.
+	page : page -> Response(page)
+	page = |p| {
 		status: 200,
 		headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }],
-		body: Str.to_utf8(body),
+		body: Html(p),
 	}
 
-	status_response : U16 -> Response
-	status_response = |status| { status, headers: [], body: [] }
+	status_response : U16 -> Response(page)
+	status_response = |status| { status, headers: [], body: Bytes([]) }
 
 	## What `respond!` returns after a stream (`Sse.end!` gives it): the
 	## response is on its way already. Returned without a stream, the host
 	## answers 500: status 0 is no status.
-	streamed : Response
-	streamed = { status: 0, headers: [], body: [] }
+	streamed : Response(page)
+	streamed = { status: 0, headers: [], body: Bytes([]) }
 }

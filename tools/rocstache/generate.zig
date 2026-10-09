@@ -164,9 +164,16 @@ fn begin_with(
     var modules_changed = false;
     const contracts = try gpa.alloc(layout.Contract, names.len);
     for (kept, contracts, 0..) |k, *c, index| {
-        c.* = .{ .index = @intCast(index), .contract = k.contract.? };
+        c.* = .{ .index = @intCast(index), .name = k.name, .contract = k.contract.? };
         const changed = try write_module(gpa, io, app, cache, k, @intCast(index));
         if (changed) modules_changed = true;
+    }
+    if (names.len > 0) {
+        var pages: Io.Writer.Allocating = .init(gpa);
+        try roc.write_pages(names, &pages.writer);
+        if (try write_output(cache, gpa, io, app, "app", "Pages.roc", pages.written())) {
+            modules_changed = true;
+        }
     }
     try cwd.createDirPath(io, options.build);
     var build = try cwd.openDir(io, options.build, .{});
@@ -186,7 +193,8 @@ fn begin_with(
 fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error!Result {
     const laid = try glue_finish(gpa, io, g.build, g.options, g.cache, &g.glue, errors);
     const chunks = try compile(gpa, g.cache, g.kept, g.templates, &laid, errors);
-    const program = try bytecode.assemble(gpa, chunks);
+    const pages = try page_table(gpa, g.kept, &laid.layouts, errors);
+    const program = try bytecode.assemble(gpa, chunks, pages);
     const program_changed = try write_program(gpa, io, g.build, g.options, g.cache, .{
         .code = program.code,
         .text = program.text,
@@ -196,6 +204,42 @@ fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error
         .templates = g.templates_count,
         .modules_changed = g.modules_changed,
         .program_changed = program_changed,
+    };
+}
+
+/// Each template's tag in the app's pages, as glue laid the union out:
+/// found by name, never by position.
+fn page_table(
+    gpa: Allocator,
+    kept: []const *Kept,
+    layouts: *const layout.Layouts,
+    errors: *Io.Writer,
+) Error!bytecode.Pages {
+    if (kept.len == 0) return .{};
+    const pages = layouts.pages() orelse {
+        try errors.writeAll("glue laid out no pages union\n");
+        return error.Invalid;
+    };
+    const tags = try gpa.alloc(bytecode.PageTag, kept.len);
+    for (kept, tags) |k, *tag| {
+        const found = for (pages.tags) |t| {
+            if (std.mem.eql(u8, t.name, k.name)) break t;
+        } else {
+            try errors.print("{s}: no tag in glue's pages union\n", .{k.name});
+            return error.Invalid;
+        };
+        if (found.payload_count != 1) {
+            try errors.print("{s}: its tag in glue's pages union holds {d} payloads\n", .{
+                k.name, found.payload_count,
+            });
+            return error.Invalid;
+        }
+        tag.* = .{ .discriminant = found.discriminant, .payload_offset = found.payload_offset };
+    }
+    return .{
+        .discriminant_offset = pages.discriminant_offset,
+        .discriminant_size = pages.discriminant_size,
+        .tags = tags,
     };
 }
 

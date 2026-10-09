@@ -45,7 +45,23 @@ type_line = |info| {
 				)
 		_ => []
 	}
-	"        .{ .kind = .${kind(info)}, .size = ${info.layout.size64.to_str()}, .element = ${element(info).to_str()}, .fields = .{ ${Str.join_with(fields, ", ")} } },\n"
+	union = match info.layout.details {
+		AbiTagUnion(u) => {
+			# A page's tag holds one payload, its contract: at the union's
+			# start, as roc's ZigGlue.roc reads a one-payload tag (its
+			# `payload` field first; `payload_fields` describe only tuples).
+			# Its type from the tag's own `payload`.
+			tags = u.tags.map(
+				|t| {
+					type_id = List.first(t.payload) ?? 0
+					".{ .name = \"${t.name}\", .discriminant = ${t.discriminant.to_str()}, .payload_offset = 0, .payload_count = ${List.len(t.payload).to_str()}, .type = ${type_id.to_str()} }"
+				},
+			)
+			", .tag_union = .{ .discriminant_offset = ${u.discriminant_offset64.to_str()}, .discriminant_size = ${u.discriminant_size.to_str()}, .tags = .{ ${Str.join_with(tags, ", ")} } }"
+		}
+		_ => ""
+	}
+	"        .{ .kind = .${kind(info)}, .size = ${info.layout.size64.to_str()}, .element = ${element(info).to_str()}, .fields = .{ ${Str.join_with(fields, ", ")} }${union} },\n"
 }
 
 kind : TypeInfo -> Str
@@ -63,6 +79,7 @@ kind = |info|
 		RocI64 => "i64"
 		RocList(_) => "list"
 		RocRecord(_) => "record"
+		RocTagUnion(_) => "tag_union"
 		_ => "other"
 	}
 

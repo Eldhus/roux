@@ -542,7 +542,12 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
             return err;
         };
     }
-    const program = try bytecode.assemble(arena, &chunks);
+    // Rendered by index here: the pages' tags are only placeholders.
+    const tags = [_]bytecode.PageTag{
+        .{ .discriminant = 0, .payload_offset = 0 },
+        .{ .discriminant = 1, .payload_offset = 0 },
+    };
+    const program = try bytecode.assemble(arena, &chunks, .{ .tags = &tags });
     const text = try arena.alloc(u8, program.text.len + templates.slack);
     @memcpy(text[0..program.text.len], program.text);
     const data: templates.Data = .{
