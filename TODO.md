@@ -79,18 +79,14 @@
      docs/templates-comptime.md. **The reread is built**: a markup edit
      rewrites the program file and signals the running app, which swaps
      the program in (hazard pointers), keeping its state and SSE streams:
-     2.2-2.5 ms median save to page (88-111 with link and restart),
+     1.39 ms median save to page (88-111 with link and restart), each
+     template's parse, contract and code kept between edits,
      production unchanged but a comparison a render (docs/dev-server.md).
      The competitor is ported on fourneau-dragrace's branch `templates-vm`
      (`51b803a`). Nothing merges yet (owner, 2026-10-08: tonight's race
-     runs `main` as it is, to see the runner work). Next: the site on
-     fourneau-dragrace's branch; then the merge, with the nightly and the
-     skill's vendored docs.
-   - Todo: generation reparses and rechecks all templates on every edit
-     (~1 ms of the 2.2 on the site): keep trees and contracts by content
-     between passes, recompute only the edited template and what inlines
-     it. Worth it on a site with hundreds of templates, not this one.
-     (2026-10-08)
+     runs `main` as it is, to see the runner work; the merge tomorrow,
+     2026-10-09, with the nightly and the skill's vendored docs, and the
+     site on fourneau-dragrace's branch).
    - Todo: a markup edit reloads the whole page (`location.reload()`):
      scroll and focus are lost, as with any reload. Swapping the body in
      place (a morph) would keep them. (2026-10-08)

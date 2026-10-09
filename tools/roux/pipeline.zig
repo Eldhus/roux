@@ -70,7 +70,7 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     const paths: Paths = try .of(arena, app);
     const start = Io.Timestamp.now(io, .awake);
     if (has_queries(io, app)) try query_types(arena, io, app);
-    const generated = try generate(arena, io, paths, app, null, stderr);
+    const generated = try generate(arena, io, paths, app, .{}, stderr);
     const generated_at = Io.Timestamp.now(io, .awake);
     try compile(io, paths, app, mode);
     const compiled_at = Io.Timestamp.now(io, .awake);
@@ -106,21 +106,31 @@ pub fn query_types(arena: Allocator, io: Io, app: App) !void {
     if (!(try child.wait(io)).success()) return error.ChildFailed;
 }
 
-/// The templates' modules, and their bytecode's object. `cache`: what
-/// `roux dev` keeps between passes (null for one build).
+/// What `roux dev` keeps between passes and knows of a pass; empty for one
+/// build.
+pub const Incremental = struct {
+    cache: ?*rocstache.generate.Cache = null,
+    /// The templates whose files were written; null: all may have been.
+    changed: ?[]const []const u8 = null,
+};
+
+/// The templates' modules, and their program.
 pub fn generate(
     arena: Allocator,
     io: Io,
     paths: Paths,
     app: App,
-    cache: ?*rocstache.generate.Cache,
+    incremental: Incremental,
     stderr: *Io.Writer,
 ) !rocstache.generate.Result {
     return rocstache.generate.generate(arena, io, .{
         .app = app.dir,
         .build = paths.out_path,
         .roc = app.roc,
-        .cache = cache,
+        .cache = incremental.cache,
+        // roux dev's app reads templates.bin; it links only for Roc.
+        .object_on_layouts_only = incremental.cache != null,
+        .changed = incremental.changed,
     }, stderr);
 }
 

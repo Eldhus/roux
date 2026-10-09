@@ -1341,3 +1341,36 @@ program serves until the restart"), and roux dev hashes every source
 after a failed pass. Production: the Menu at 15,649 instructions a
 request, from 15,595 at `591de12`; the new nightly and the render's one
 comparison are both in the difference, not separated.
+
+## 2026-10-08: incremental generation
+
+The owner: "fix this" (generation redid every template on every edit).
+Each template is now parsed, given its contract and compiled alone, and
+`roux dev` keeps each (tools/rocstache/cache.zig) while its key holds:
+the source for the tree; the source, the inlined partials' sources and
+the called partials' contract keys for the contract; the sources it
+compiles from, the layouts' identity (which now hashes the templates'
+names, so a call's index is covered) and its index for its code. The
+program is assembled from the chunks, each run word moved past the text
+before it (`bytecode.assemble`; a test). inotify's names go down to
+generation, which reads only those files and reuses its listing unless a
+template was created or deleted; glue's step is skipped while every
+contract key is the same; the object is written only when the layouts
+change (the app reads `templates.bin`; the object carries the identity
+the host checks rereads against, so it must follow the layouts); an
+output known to differ is written without reading the old back. What a
+generation replaces is freed once it succeeds; a failed one forgets
+every template. Also found: `noun` leaked its buffer (harmless under the
+arena, not under the cache's allocator), and the watcher's 64 KB event
+buffer was a local `undefined`, filled on every read.
+
+Measured (the browser-like client, 40 edits each): a page's markup 1.39
+ms median save to page (2.2-2.5 before), Top, inlined by nine pages, 2.0
+ms; a pass 0.1-1.7 ms. Checked: the site's 12 pages byte for byte; 300
+edits under load, 1.06 million responses all 200, 27,645 pages whole; a
+new template, a deleted one, a broken edit and its fix, a save by
+temporary file and rename; no leak reported at exit. A mistake on the
+way: a roux dev from an earlier measurement was still running, holding
+the database and the port; two measurements and a comparison ran
+against it before I saw it (`ps` before every run, as the benchmarking
+skill says).

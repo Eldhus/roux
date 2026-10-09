@@ -15,7 +15,7 @@ never half written), and content decides from there, never mtimes.
 
 | edit | what runs | save to page (the dragrace site, 2026-10-08) |
 |---|---|---|
-| a template's markup, a page's or a partial's | the generation (~1 ms), then SIGUSR1: the running app rereads the program. No link, no restart, no compiler; the app's state kept | 0.7-2.2 ms to the browser's event, ~0.4 ms more to the page; 2.2-2.5 ms median from a client |
+| a template's markup, a page's or a partial's | the generation of what the edit touched (0.1-1.7 ms), then SIGUSR1: the running app rereads the program. No link, no restart, no compiler; the app's state kept | 1.39 ms median from a client for a page, 2.0 ms for a partial nine pages inline |
 | a template's contract (a field added, a type) | its `Page.roc` rewritten, glue (~0.3 s), `roc build --opt=dev`, the link, a restart | a Roc edit's and glue's (not measured end to end) |
 | Roc source | `roc build --opt=dev`, the link, a restart | 1.1-1.2 s |
 | a query (`db/*.sql`) | roux-db, then as Roc source | |
@@ -76,11 +76,21 @@ the dragrace site copy, 2026-10-08:
 | the parsed layouts kept between passes while glue's inputs are unchanged (parsing the ZON was a quarter of generation) | 2.9 ms |
 | no hashing of sources when inotify named only templates | 2.2-2.5 ms |
 | outputs' hashes kept in memory: an unchanged one is neither read back nor written | 2.2-2.5 ms (generation ~0.8 ms) |
+| incremental generation (tools/rocstache/cache.zig): each template parsed, given its contract and compiled alone, each kept while its key holds (its source; the partials it inlines; the contracts of those it calls; the layouts); the program assembled from the chunks, their text runs moved; only the files inotify named are read; glue's step skipped while no contract key moved; the object written only when the layouts change (the app reads `templates.bin`) | 1.39 ms a page, 2.0 ms Top (inlined by nine pages: nine contracts and chunks really change); a pass 0.1-1.7 ms |
 
-Where it goes now (stamps on the monotonic clock): the save to roux dev
-awake 0.13-0.32 ms; generation 0.42-1.55 ms (12 templates parsed,
-contracts, bytecode, two files); the signal to the stream's event
-0.11-0.31 ms. The three move together with the laptop's clock speed.
+Where it went before incremental generation (stamps on the monotonic
+clock): the save to roux dev awake 0.13-0.32 ms; generation 0.42-1.55 ms
+(12 templates parsed, contracts, bytecode, two files); the signal to the
+stream's event 0.11-0.31 ms. The three move together with the laptop's
+clock speed. A page edit's pass is now 0.1-0.7 ms: reading the one file,
+parsing and checking it, compiling it, assembling, writing
+`templates.bin`.
+
+Checked again with incremental generation: the site's 12 pages byte for
+byte; 300 edits under load (1.06 million responses, all 200, 27,645
+pages whole); a new template (roc, link, restart, then its edits
+reread), a deleted one (restart), a broken edit and its fix, an editor's
+save by temporary file and rename.
 
 ## Integration points
 

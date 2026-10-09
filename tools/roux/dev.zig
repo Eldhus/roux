@@ -74,9 +74,14 @@ pub fn run(
     // Until SIGINT or SIGTERM: roux dev runs as long as it is wanted.
     while (!stopping.load(.monotonic)) {
         _ = arena_state.reset(.retain_capacity);
-        const markup_only = watch.changed.markup_only();
-        watch.changed = .{};
-        state.pass(arena_state.allocator(), io, stderr, markup_only) catch |err| switch (err) {
+        const changed = watch.changed;
+        watch.changed.reset();
+        var names: [16][]const u8 = undefined;
+        const pass: Pass = .{
+            .markup_only = changed.markup_only(),
+            .written = changed.written(&names),
+        };
+        state.pass(arena_state.allocator(), io, stderr, pass) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {},
         };
@@ -112,6 +117,15 @@ fn stop_on_signals() void {
     _ = linux.sigaction(.TERM, &action, null);
 }
 
+/// What inotify said since the last pass.
+const Pass = struct {
+    /// Only templates changed, so no other source did and hashing them is
+    /// skipped.
+    markup_only: bool,
+    /// The templates whose files were written, by name; null: all may have.
+    written: ?[]const []const u8,
+};
+
 const State = struct {
     options: Options,
     environ: *const std.process.Environ.Map,
@@ -128,14 +142,13 @@ const State = struct {
     failing: bool = false,
 
     /// One pass: what changed is built, then the app restarted, or told to
-    /// reread its templates. `markup_only`: inotify named only templates,
-    /// so no other source changed and hashing them is skipped.
-    fn pass(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer, markup_only: bool) !void {
+    /// reread its templates.
+    fn pass(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer, p: Pass) !void {
         const app = state.options.app;
         const start = Io.Timestamp.now(io, .awake);
         // After a failure the sources may hold Roc the app was not built
         // from (a contract that changed, roc that failed): hash them all.
-        const before = if (markup_only and state.child != null and !state.failing)
+        const before = if (p.markup_only and state.child != null and !state.failing)
             state.built
         else
             try digests(arena, io, state.options);
@@ -143,8 +156,10 @@ const State = struct {
             pipeline.query_types(arena, io, app) catch |err| return state.failed(stderr, err);
         }
         const paths: pipeline.Paths = try .of(arena, app);
-        const generated = pipeline.generate(arena, io, paths, app, &state.cache, stderr) catch |err|
-            return state.failed(stderr, err);
+        const generated = pipeline.generate(arena, io, paths, app, .{
+            .cache = &state.cache,
+            .changed = p.written,
+        }, stderr) catch |err| return state.failed(stderr, err);
         // A contract that changed rewrote its Page.roc: hash the Roc again.
         const now = if (generated.modules_changed)
             try digests(arena, io, state.options)
@@ -152,7 +167,7 @@ const State = struct {
             before;
         const roc = now.roc != state.built.roc;
         const static = now.static != state.built.static;
-        const templates = generated.object_changed;
+        const templates = generated.program_changed;
         // Only markup changed, and the app runs: it rereads the program
         // (`templates.bin`), no link and no restart, its state kept.
         if (!roc and !static and state.child != null) {
@@ -337,14 +352,63 @@ const Watch = struct {
     static: std.AutoHashMapUnmanaged(i32, void) = .empty,
     /// What the events named since the last pass.
     changed: Changed = .{},
+    /// The app's directory's watch: templates are its files.
+    root: i32 = -1,
+    /// Where events are read (a field: a safe build fills a local
+    /// `undefined` buffer on every read).
+    buffer: [64 * 1024]u8 align(@alignOf(linux.inotify_event)) = undefined,
 
     const Changed = struct {
         templates: bool = false,
         /// Roc, SQL, static files, or events lost (the queue overflowed).
         other: bool = false,
+        /// A template created or deleted, one outside the app's own
+        /// directory, or more than `names` holds: generation lists the
+        /// directory and reads every template.
+        listing: bool = false,
+        /// The templates whose files were written, by name: offsets into
+        /// `bytes` (not slices, so the struct can be copied).
+        names: [16][2]u16 = undefined,
+        names_len: u8 = 0,
+        bytes: [2048]u8 = undefined,
+        bytes_len: u16 = 0,
 
         fn markup_only(changed: Changed) bool {
             return changed.templates and !changed.other;
+        }
+
+        fn reset(changed: *Changed) void {
+            changed.templates = false;
+            changed.other = false;
+            changed.listing = false;
+            changed.names_len = 0;
+            changed.bytes_len = 0;
+        }
+
+        /// A template's file written: `name` is its stem.
+        fn note(changed: *Changed, name: []const u8) void {
+            for (changed.names[0..changed.names_len]) |n| {
+                if (std.mem.eql(u8, changed.bytes[n[0]..][0..n[1]], name)) return;
+            }
+            const full = changed.names_len == changed.names.len or
+                changed.bytes_len + name.len > changed.bytes.len;
+            if (full) {
+                changed.listing = true;
+                return;
+            }
+            @memcpy(changed.bytes[changed.bytes_len..][0..name.len], name);
+            changed.names[changed.names_len] = .{ changed.bytes_len, @intCast(name.len) };
+            changed.names_len += 1;
+            changed.bytes_len += @intCast(name.len);
+        }
+
+        /// The templates written, for generation; null for all.
+        fn written(changed: *const Changed, out: *[16][]const u8) ?[]const []const u8 {
+            if (changed.listing) return null;
+            for (changed.names[0..changed.names_len], out[0..changed.names_len]) |n, *o| {
+                o.* = changed.bytes[n[0]..][0..n[1]];
+            }
+            return out[0..changed.names_len];
         }
     };
 
@@ -353,7 +417,7 @@ const Watch = struct {
         var watch: Watch = .{ .fd = fd };
         errdefer watch.deinit(gpa);
         const mask = linux.IN.CLOSE_WRITE | linux.IN.MOVED_TO | linux.IN.CREATE | linux.IN.DELETE;
-        try watch.add(gpa, options.app.dir, mask, false);
+        watch.root = try watch.add(gpa, options.app.dir, mask, false);
         var dir = try Io.Dir.cwd().openDir(io, options.app.dir, .{ .iterate = true });
         defer dir.close(io);
         var walker = try dir.walkSelectively(gpa);
@@ -365,7 +429,7 @@ const Watch = struct {
             if (count > directories_max) return error.TooManyDirectories;
             const path = try std.fs.path.join(gpa, &.{ options.app.dir, entry.path });
             defer gpa.free(path);
-            try watch.add(gpa, path, mask, in_static(options, entry.path));
+            _ = try watch.add(gpa, path, mask, in_static(options, entry.path));
             try walker.enter(io, entry);
         }
         return watch;
@@ -377,11 +441,12 @@ const Watch = struct {
         watch.* = undefined;
     }
 
-    fn add(watch: *Watch, gpa: Allocator, path: []const u8, mask: u32, static: bool) !void {
+    fn add(watch: *Watch, gpa: Allocator, path: []const u8, mask: u32, static: bool) !i32 {
         const path_z = try gpa.dupeSentinel(u8, path, 0);
         defer gpa.free(path_z);
         const wd: i32 = @intCast(try syscall(linux.inotify_add_watch(watch.fd, path_z, mask)));
         if (static) try watch.static.put(gpa, wd, {});
+        return wd;
     }
 
     const Woken = enum { source, exited, stopping };
@@ -412,8 +477,8 @@ const Watch = struct {
         if (try syscall(linux.poll(&fds, fds.len, timeout)) == 0) return .quiet;
         if (fds[1].revents & linux.POLL.IN != 0) return .exited;
         if (fds[0].revents & linux.POLL.IN == 0) return .quiet;
-        var buffer: [64 * 1024]u8 align(@alignOf(linux.inotify_event)) = undefined;
-        const len = try syscall(linux.read(watch.fd, &buffer, buffer.len));
+        const buffer = &watch.buffer;
+        const len = try syscall(linux.read(watch.fd, buffer, buffer.len));
         var at: usize = 0;
         var source = false;
         while (at < len) {
@@ -422,6 +487,7 @@ const Watch = struct {
             const name = std.mem.sliceTo(name_bytes, 0);
             if (event.mask & linux.IN.Q_OVERFLOW != 0) {
                 watch.changed.other = true;
+                watch.changed.listing = true;
                 source = true;
             } else if (watch.static.contains(event.wd)) {
                 watch.changed.other = true;
@@ -429,6 +495,12 @@ const Watch = struct {
             } else switch (kind_of(name)) {
                 .templates => {
                     watch.changed.templates = true;
+                    const appeared = event.mask & (linux.IN.CREATE | linux.IN.DELETE) != 0;
+                    if (appeared or event.wd != watch.root) {
+                        watch.changed.listing = true;
+                    } else {
+                        watch.changed.note(name[0 .. name.len - ".rocstache".len]);
+                    }
                     source = true;
                 },
                 .roc, .sql, .static => {

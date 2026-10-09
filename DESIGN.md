@@ -266,7 +266,9 @@ The same source and the same bytecode; only roc's optimization differs
 is the generation and a reread: `roux dev` rewrites the program file and
 signals the running app, which swaps the program in at its next render
 (no link, no restart, its state and SSE streams kept) and tells the
-browser. 2.2-2.5 ms median from the save to the page on the dragrace
+browser; `roux dev` keeps each template's parse, contract and code
+between edits and redoes only what an edit touched. 1.39 ms median from
+the save to the page on the dragrace
 site (against 88-111 ms with a link and restart, 0.27-0.57 s on the
 `templates` branch, 3.0 s when templates were Roc). The host rereads
 only a program made for the layouts it was built with. Editing Roc is
