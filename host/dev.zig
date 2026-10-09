@@ -43,6 +43,16 @@ pub fn is_events(target: []const u8) bool {
     return std.mem.eql(u8, target[0..end], events_path);
 }
 
+/// Whether the answer will be a page the browser shows, by the request's
+/// `Sec-Fetch-Dest`: a navigation's `document` (or `iframe`), not a
+/// `fetch()`'s `empty` (a Datastar fragment sent as HTML), which would
+/// gain one more event stream per patch. A client that sends none (curl,
+/// an agent) gets the script, as before.
+pub fn wants_script(fetch_dest: ?[]const u8) bool {
+    const dest = fetch_dest orelse return true;
+    return std.ascii.eqlIgnoreCase(dest, "document") or std.ascii.eqlIgnoreCase(dest, "iframe");
+}
+
 /// Whether an answer is a page the script belongs in.
 pub fn is_html(content_type: []const u8) bool {
     return std.ascii.startsWithIgnoreCase(content_type, "text/html");
@@ -74,6 +84,9 @@ test "dev: names, events, the script, html" {
     try std.testing.expect(!is_events("/_dev/eventsx"));
     try std.testing.expect(is_html("text/html; charset=utf-8"));
     try std.testing.expect(!is_html("text/event-stream"));
+    try std.testing.expect(wants_script(null));
+    try std.testing.expect(wants_script("document"));
+    try std.testing.expect(!wants_script("empty"));
     const page = try with_script(std.testing.allocator, "<p>x</p>", "7.2");
     defer std.testing.allocator.free(page);
     try std.testing.expect(std.mem.startsWith(u8, page, "<p>x</p><script>"));

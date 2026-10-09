@@ -1460,3 +1460,14 @@ once more. Checked on the site copy: 300 edits ten milliseconds apart
 under `oha -c 32` for 12 s, 1,905,863 responses all 200 (158,801 a
 second, two shards), 21,462 pages read whole, each marker one written;
 301 rereads.
+
+## 2026-10-09: the reload script only where a page is shown
+
+In development every `text/html` answer got the reload script, so an
+HTML fragment fetched by Datastar (`fetch()`) would open one more event
+stream per patch once the page morphed it in. The browser says what an
+answer is for: `Sec-Fetch-Dest` is `document` (or `iframe`) for a
+navigation and `empty` for `fetch()`. The script now goes only where it
+is `document`, `iframe` or absent (curl and agents send none, and keep
+it). Checked against examples/templates under roux dev: the script with
+no header and with `document`, none with `empty`; a test in dev.zig.

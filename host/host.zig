@@ -747,8 +747,19 @@ const App = struct {
             .roc = roc,
             .handle = request_handle,
         };
-        if (dev_build) |build| add_reload_script(&response, build, program);
+        if (dev_build) |build| {
+            if (dev.wants_script(fetch_dest(request))) add_reload_script(&response, build, program);
+        }
         return response;
+    }
+
+    /// The request's `Sec-Fetch-Dest`: what the browser will do with the
+    /// answer.
+    fn fetch_dest(request: *const Server.Request) ?[]const u8 {
+        for (request.head.headers) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "sec-fetch-dest")) return header.value;
+        }
+        return null;
     }
 
     /// In development, an HTML page gets the reload script (dev.zig).
