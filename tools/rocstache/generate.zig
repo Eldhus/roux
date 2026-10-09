@@ -494,37 +494,12 @@ fn report(
 }
 
 /// The contracts' layouts: the throwaway platform written, and `roc glue`
-/// run on it with layout.zig's spec when a contract changed (or its
-/// output is missing). `--no-cache`: glue's cache runs whichever spec it
-/// compiled first (roc-lang/roc#12139).
+/// run on it with layout.zig's spec when what it lays out changed (or its
+/// output is missing); else the kept layouts. What glue reads is written
+/// on every generation (microseconds; an unchanged file costs a hash), so
+/// its identity is the one key. `--no-cache`: glue's cache runs whichever
+/// spec it compiled first (roc-lang/roc#12139).
 fn glue(
-    gpa: Allocator,
-    io: Io,
-    build: Io.Dir,
-    options: Options,
-    cache: *Cache,
-    kept: []const *Kept,
-    contracts: []const layout.Contract,
-    errors: *Io.Writer,
-) Error!Laid {
-    // Every contract's key the same as last time: so are the layouts.
-    var inputs = std.hash.Wyhash.init(0);
-    inputs.update(options.roc);
-    for (kept) |k| {
-        inputs.update(k.name);
-        inputs.update(std.mem.asBytes(&k.contract_key));
-    }
-    const laid_key = inputs.final();
-    if (cache.layouts) |layouts| {
-        if (cache.laid_key == laid_key) return .{ .layouts = layouts, .id = cache.laid_id };
-    }
-    const laid = try lay_out(gpa, io, build, options, cache, kept, contracts, errors);
-    cache.laid_key = laid_key;
-    cache.laid_id = laid.id;
-    return laid;
-}
-
-fn lay_out(
     gpa: Allocator,
     io: Io,
     build: Io.Dir,
