@@ -16,9 +16,42 @@ const contract_ = @import("contract.zig");
 /// The glue spec, written beside the throwaway platform.
 pub const spec = @embedFile("Layout.roc");
 
-pub const Kind = enum { other, record, list, str, bool, u8, u16, u32, u64, i8, i16, i32, i64 };
+pub const Kind = enum {
+    other,
+    record,
+    list,
+    str,
+    bool,
+    u8,
+    u16,
+    u32,
+    u64,
+    i8,
+    i16,
+    i32,
+    i64,
+    tag_union,
+};
 
 pub const Field = struct { name: []const u8, offset: u32, type: u32 };
+
+/// A tag of a union: the app's `Page`, each tag a template and its
+/// contract.
+pub const Tag = struct {
+    name: []const u8,
+    discriminant: u32,
+    payload_offset: u32,
+    /// How many payloads the tag holds: a page's holds one, its contract.
+    payload_count: u32,
+    type: u32,
+};
+
+pub const TagUnion = struct {
+    discriminant_offset: u32,
+    /// 0: no discriminant (one tag).
+    discriminant_size: u32,
+    tags: []const Tag,
+};
 
 pub const Type = struct {
     kind: Kind,
@@ -27,6 +60,8 @@ pub const Type = struct {
     element: u32,
     /// record: its fields, padding left out.
     fields: []const Field,
+    /// tag_union: its discriminant and tags.
+    tag_union: ?TagUnion = null,
 };
 
 /// A hosted function of the throwaway platform: `Contracts.t3!`, and its
@@ -57,13 +92,26 @@ pub const Layouts = struct {
         return null;
     }
 
-    /// Whether every type's fields and elements are within the table.
+    /// The app's pages: the union `Contracts.pages!` takes, or null (no
+    /// templates).
+    pub fn pages(layouts: *const Layouts) ?TagUnion {
+        for (layouts.contracts) |c| {
+            if (std.mem.eql(u8, c.name, "Contracts.pages!")) return layouts.get(c.type).tag_union;
+        }
+        return null;
+    }
+
+    /// Whether every type's fields, elements and tags are within the table.
     pub fn valid(layouts: *const Layouts) bool {
         const len = layouts.types.len;
         for (layouts.contracts) |c| if (c.type >= len) return false;
         for (layouts.types) |t| {
             if (t.kind == .list and t.element >= len) return false;
             for (t.fields) |f| if (f.type >= len or f.offset >= t.size) return false;
+            if (t.kind == .tag_union and t.tag_union == null) return false;
+            const u = t.tag_union orelse continue;
+            if (u.discriminant_size > 8) return false;
+            for (u.tags) |tag| if (tag.type >= len) return false;
         }
         return true;
     }
@@ -88,6 +136,8 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) error{ OutOfMemory, Invalid }
 pub const Contract = struct {
     /// The template's index among the app's, sorted by name.
     index: u32,
+    /// Its name: its tag in the app's pages.
+    name: []const u8,
     contract: *const contract_.Contract,
 
     fn empty(c: Contract) bool {
@@ -106,6 +156,17 @@ pub fn write_contracts(contracts: []const Contract, writer: *Writer) Writer.Erro
         try contract_.write_line(c.contract, c.contract.root, writer);
         try writer.writeAll(" => {}\n");
     }
+    // The app's pages, as Pages.roc spells them: a tag a template.
+    if (contracts.len > 0) {
+        try writer.writeAll("\tpages! : [");
+        for (contracts, 0..) |c, k| {
+            if (k > 0) try writer.writeAll(", ");
+            try writer.print("{s}(", .{c.name});
+            try contract_.write_line(c.contract, c.contract.root, writer);
+            try writer.writeAll(")");
+        }
+        try writer.writeAll("] => {}\n");
+    }
     try writer.writeAll("}\n");
 }
 
@@ -120,6 +181,7 @@ pub fn write_platform(contracts: []const Contract, writer: *Writer) Writer.Error
         if (c.empty()) continue;
         try writer.print("\t\t\"contract_t{d}\": Contracts.t{d}!,\n", .{ c.index, c.index });
     }
+    if (contracts.len > 0) try writer.writeAll("\t\t\"contract_pages\": Contracts.pages!,\n");
     try writer.writeAll("\t}\n" ++
         "\ttargets: { inputs_dir: \"targets/\", x64musl: { inputs: [app] } }\n\n" ++
         "import Contracts\n\nmain_for_host! : () => {}\nmain_for_host! = || main!()\n");

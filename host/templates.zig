@@ -97,6 +97,47 @@ pub fn render(index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
     return render_from(program.data, index, context, roc_host);
 }
 
+/// The app's `Page` at `page` (a box's payload) rendered: which template by
+/// the union's discriminant, from its tag's payload, as glue laid the union
+/// out (the program's header: bytecode.zig's `Pages`). The page is only
+/// read.
+pub fn render_page(page: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+    if (reload_path == null) return render_page_from(data_linked(), page, roc_host);
+    const program = acquire();
+    defer release();
+    return render_page_from(program.data, page, roc_host);
+}
+
+pub fn render_page_from(data: Data, page: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+    const code = data.code;
+    const count: usize = @intCast(code[0]);
+    assert(count > 0);
+    const union_word = code[1 + 2 * count];
+    const offset: usize = @intCast(union_word & 0xffff_ffff);
+    const size: usize = @intCast(union_word >> 32);
+    const base = @intFromPtr(page);
+    const discriminant: u64 = switch (size) {
+        0 => 0,
+        1 => @as(*const u8, @ptrFromInt(base + offset)).*,
+        2 => @as(*const u16, @ptrFromInt(base + offset)).*,
+        4 => @as(*const u32, @ptrFromInt(base + offset)).*,
+        8 => @as(*const u64, @ptrFromInt(base + offset)).*,
+        else => unreachable,
+    };
+    const tags = code[2 + 2 * count ..][0..count];
+    // Roc numbers tags by name, as templates are: the template is usually
+    // the discriminant's own index; else found.
+    const index: usize = blk: {
+        if (discriminant < count and tags[@intCast(discriminant)] >> 32 == discriminant) {
+            break :blk @intCast(discriminant);
+        }
+        for (tags, 0..) |tag, i| if (tag >> 32 == discriminant) break :blk i;
+        unreachable; // a discriminant glue did not give
+    };
+    const payload: usize = @intCast(tags[index] & 0xffff_ffff);
+    return render_from(data, index, @ptrFromInt(base + payload), roc_host);
+}
+
 pub fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.RocHost) Bytes {
     const buffer = scratch orelse blk: {
         const fresh = std.heap.page_allocator.alloc(u8, scratch_bytes) catch

@@ -179,6 +179,13 @@ export fn hosted_template_render(
     return .{ .bytes = templates.render(index, context, host()), .context = context };
 }
 
+/// The app's `Page`, boxed, rendered as the response is sent: which
+/// template by its tag (templates.zig). The box goes back to Roc as it
+/// came, which releases it.
+export fn hosted_page_render(page: abi.RocBox) callconv(.c) abi.HostPage_render {
+    return .{ .bytes = templates.render_page(page, host()), .page = page };
+}
+
 /// A whole line to a standard stream. Rare (logs), so a plain blocking
 /// write: it holds the thread for microseconds.
 fn write_line(fd: i32, bytes: []const u8) void {

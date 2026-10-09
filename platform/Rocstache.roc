@@ -22,11 +22,11 @@ Rocstache :: [].{
 	str : Html -> Str
 	str = |html| Str.from_utf8_lossy(html)
 
-	## The page as a response: 200, HTML.
-	html : Html -> Server.Response
+	## Rendered bytes as a response: 200, HTML.
+	html : Html -> Server.Response(page)
 	html = |bytes| {
 		status: 200,
 		headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }],
-		body: bytes,
+		body: Bytes(bytes),
 	}
 }

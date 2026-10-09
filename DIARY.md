@@ -1518,3 +1518,58 @@ Found porting the examples on another branch; reverted (`c76b630`),
 hello builds again. A template in a subdirectory stays silently no
 template: which directories are the app's is not something roux can
 know from the files, so it says nothing rather than guess.
+
+## 2026-10-09: pages as a union, rendered by the host (branch page-union)
+
+The owner: "do union type method and benchmark", after the closure
+(branch pure-render) cost 1.4-10%. A page is data: a tag naming the
+template, its contract as payload. roux writes the app's `Pages.roc`
+(`Page : [AboutPage(AboutPage.Ctx), …]`); the platform takes the app's
+`Page` as it takes `Context` (`requires { [Context : context, Page :
+page] … }`); `Server.Response(page)`'s body is `Bytes`, `Text` or
+`Html(page)`, and `Server.page(AboutPage({ … }))` makes one, purely.
+`Server.to_host!` boxes the page and calls the new hosted
+`page_render!`: the host reads the discriminant where glue says, finds
+the template by its tag, and runs the VM from the payload; the box goes
+back to Roc to release. Glue lays the union out: the throwaway platform
+gains `pages! : [Name(contract), …] => {}`, and the spec writes a tag
+union's discriminant offset and size and each tag's name, discriminant
+and payload type. The payload is at the union's start, as roc's own
+ZigGlue.roc reads a one-payload tag (`payload_fields` describe only
+tuples); each page's tag must hold exactly one payload, checked. The
+program's header carries the table (bytecode.zig's `Pages`): templates
+found by name, never by position. Tags are structural, so code that
+makes a page imports only that page's module; only `main` names the
+union.
+
+Probed: `roc test` passes `expect view("/about", …) == Ok(About({ who:
+"Escoffier", since: "1870" }))`: a view's result compared as data, the
+testing the closure could not give. Glue on a two-template app: a
+56-byte union, a one-byte discriminant at 48, tags by name (About 0,
+Menu 1), payload types the contracts' records.
+
+Measured, instructions a request (release, interleaved):
+- Menu (examples/templates, its template renamed Menu: a template named
+  `Page` collides with the app's `Page` type): eager 11,224-11,256,
+  closure 11,391-11,395, union 11,226-11,260. The union is free there.
+- The site's `/about`: eager 22,828-22,833, union 25,189-25,193 (+10%,
+  as the closure). Its profile: `str_concat`, allocation and `memset`
+  that the eager build has not: `frame("About", "/about")` evaluated per
+  request. Roc folds the context at compile time when it goes straight
+  into `render!`, and not inside a union's tag (nor a closure's capture:
+  so the closure's 10% was this too, not the closure). With the response
+  a top-level constant (`about = Server.page(AboutPage({ … }))`): 23,401-
+  23,405, +2.5%, the union's own price (a 264-byte union boxed and
+  zeroed for a small page, the body matched).
+- The site's `/`: 11.27 M either way (the database).
+Every page of the site, the 404 and a patch byte for byte.
+
+Costs that are not instructions: every `Server.Response` gains its
+parameter (31 annotations in the site: `Server.Response(Page)` in main,
+`Server.Response(page)` where none is made); no template may be named
+`Page`; a hand-written `Page` not `Pages.Page` would be read by the
+wrong layout (nothing checks it); apps without templates (hello, sse,
+sqlite) would need an empty `Page`, not tried: the repository's examples
+are not ported on this branch (the measurements used scratch copies).
+The dependency graph (owner's question): `main` depends on every
+page's contract through `Pages.roc`, and only it.
