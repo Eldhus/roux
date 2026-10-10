@@ -145,8 +145,10 @@
      to a served page in 2.3 s from GitHub in a clean environment. Its
      notes live here (it keeps its own markdown to the README on
      purpose). A new roux release means: bump `roux_version`, release,
-     then the tutor's `roux` (version, sha256) and `main.roc`'s platform
-     URL, and walk its lessons in a fresh clone.
+     then the tutor's `roux` (roux's version, URL, sha256; and the Roc
+     nightly's, which it fetches too, so its README names no install) and
+     `main.roc`'s platform URL, and walk its lessons in a fresh clone with
+     no `roc` on PATH.
 
 
 ## Plan
