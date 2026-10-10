@@ -1448,15 +1448,8 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     shard_requests = requests;
     roc_allocations_idle = roc_allocations_live;
 
-    const config: fourneau.server.Config = .{
-        .connections_max = connections_per_shard,
-        .tls = listen.tls,
-    };
-    // The shard's fibers, all mapped now: its server's, and the redirect's.
-    const fibers_max = config.fibers_max() +
-        if (listen.https.redirect_port != null) Redirect.fibers_max else 0;
     var runtime: Evented = undefined;
-    try runtime_init(&runtime, gpa, fibers_max);
+    try runtime_init(&runtime, gpa);
     defer runtime.deinit();
 
     const io = runtime.io();
@@ -1466,7 +1459,10 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     if (database) |opened| try open_shard_database(gpa, opened);
     const address = try std.Io.net.IpAddress.parse(listen_address(), listen.port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
-    var server = try Server.init(gpa, io, app, listener, config);
+    var server = try Server.init(gpa, io, app, listener, .{
+        .connections_max = connections_per_shard,
+        .tls = listen.tls,
+    });
     var group: std.Io.Group = .init;
     var redirect: Redirect = undefined;
     var redirect_server: Redirect.Server = undefined;
@@ -1490,7 +1486,7 @@ const runtime_init_wait_ns = 50 * std.time.ns_per_ms;
 /// against the user's locked memory (8 MiB on the laptop, shared with every
 /// other server the user runs). So `SystemResources` is waited out, for at
 /// most two seconds, then reported.
-fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator, fibers_max: u32) !void {
+fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator) !void {
     var tries: u32 = 0;
     while (true) {
         tries += 1;
@@ -1500,7 +1496,6 @@ fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator, fibers_max: u32) !voi
             // overflowed, costing ~3,000 kernel cycles a request (fourneau's
             // experiment 23).
             .log2_ring_entries = 12,
-            .fibers_max = fibers_max,
         }) catch |err| switch (err) {
             error.SystemResources => {
                 if (tries == runtime_init_tries) {

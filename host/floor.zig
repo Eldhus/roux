@@ -296,13 +296,8 @@ fn run_shard(port: u16, shards: u32) void {
 
 fn run_shard_or_fail(port: u16, shards: u32) !void {
     const gpa = std.heap.page_allocator;
-    const config: fourneau.server.Config = .{ .connections_max = @max(1, 1024 / shards) };
     var runtime: Evented = undefined;
-    try runtime.init(gpa, .{
-        .thread_limit = 0,
-        .log2_ring_entries = 12,
-        .fibers_max = config.fibers_max(),
-    });
+    try runtime.init(gpa, .{ .thread_limit = 0, .log2_ring_entries = 12 });
     defer runtime.deinit();
     const io = runtime.io();
     shard_io = io;
@@ -315,6 +310,7 @@ fn run_shard_or_fail(port: u16, shards: u32) !void {
     const address = try Io.net.IpAddress.parse("127.0.0.1", port);
     const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
     var app: App = .{};
-    var server = try Server.init(gpa, io, &app, listener, config);
+    const connections_max = @max(1, 1024 / shards);
+    var server = try Server.init(gpa, io, &app, listener, .{ .connections_max = connections_max });
     try server.run();
 }
