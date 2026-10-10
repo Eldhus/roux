@@ -2006,3 +2006,14 @@ Chromium, the browser 108k-179k events/s against roux-load's 300k-425k,
 ×2-3. Requests are 200-500 times quicker from outside the browser;
 events, only 2-3 times. Laptop at load ~4: proportions, not measurements.
 `zig build test` passes.
+
+Released as v0.2.5 (owner: "you can push, if you don't mess up the
+races"; the dragrace runs none of fourneau-load, roux-load or
+`/_dev/race`, and nothing else was unpushed). The tutor on it (tutor
+`bd00b9b`), after the owner's look: no "×N faster" badge ("cool metric,
+but meaningless"), no notes on the scales ("obvious"), bars wider (the
+chart into the card's padding, narrower labels), each sub-line's two
+lines reserved so a result arriving does not move the row, "no app" for
+the static file (the host serves it; no `Server-Timing`). A fresh clone
+with no `roc` on PATH: 0.2.5 fetched, an events race 391,794 events/s,
+`roc test` passes.
