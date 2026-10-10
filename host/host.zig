@@ -1340,6 +1340,8 @@ fn https_from_environment() fourneau.https.Options {
         .acme_state = environment("ROUX_ACME_STATE"),
         .acme_profile = environment("ROUX_ACME_PROFILE"),
         .acme_http_port = port_from(environment("ROUX_ACME_HTTP_PORT")) orelse 80,
+        // systemd's port-80 socket, when it holds one: ACME answers there.
+        .acme_http_listener = fourneau.listen.inherited(activation(), "http"),
         .acme_ca = environment("ROUX_ACME_CA"),
         .redirect_port = port_from(environment("ROUX_REDIRECT_PORT")),
         .https_host = environment("ROUX_HTTPS_HOST"),
@@ -1538,13 +1540,17 @@ fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator, fibers_max: u32) !voi
 /// listen.zig: held across a restart, so none is refused); else one bound
 /// now.
 fn listen_on(io: std.Io, name: []const u8, address: std.Io.net.IpAddress) !std.Io.net.Server {
-    const activation: fourneau.listen.Activation = .{
+    if (fourneau.listen.inherited(activation(), name)) |fd| return fourneau.listen.server_from(fd);
+    return address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
+}
+
+/// What systemd says it passed this process, if it did.
+fn activation() fourneau.listen.Activation {
+    return .{
         .pid = environment("LISTEN_PID"),
         .fds = environment("LISTEN_FDS"),
         .names = environment("LISTEN_FDNAMES"),
     };
-    if (fourneau.listen.inherited(activation, name)) |fd| return fourneau.listen.server_from(fd);
-    return address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
 }
 
 /// SQLite with a heap of its own, allocated now: untouched pages until
