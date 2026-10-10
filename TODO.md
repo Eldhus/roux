@@ -274,6 +274,17 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+- **SSE events cost 7x fourneau-zig's.** (2026-10-10) The dragrace's
+  sse: roux 49,720 a second against fourneau-zig's 130,188 (dedicated-2,
+  race 2026-10-10T171748Z-cloud), where templates are within 7%.
+  Measured locally (`perf stat` over oha, 256 connections): 117,000 user
+  instructions a request against 15,700; the kernel's the same (~12k).
+  `perf record`: `mem.findPos` 19% (`split_on("\r\n")`: std's
+  Boyer-Moore table built every call), `str_concat` 15%, the allocator
+  ~25%, `str_split` and `join_with` 10%: `data_lines` in `Sse.roc`
+  splits and joins three times and interpolates every line, ten events
+  a request. Lead: one pass building the event's bytes (or a fast path
+  when the data has no CR), then measure again.
 - **`roux build --output` on another filesystem fails: `AttachFailed`.**
   (2026-10-10, building the dragrace's competitor to /tmp, a tmpfs) The
   attach copies roc's executable with `copy_file_range`, which the kernel
