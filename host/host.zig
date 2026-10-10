@@ -1493,7 +1493,10 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     sqlite_vfs.thread_io = io;
     if (database) |opened| try open_shard_database(gpa, opened);
     const address = try std.Io.net.IpAddress.parse(listen_address(), listen.port);
-    const listener = try address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
+    // Named as fourneau-static names them: `https` for the app over TLS,
+    // `http` for it plain or for the redirect.
+    const name = if (listen.tls != null) "https" else "http";
+    const listener = try listen_on(io, name, address);
     var server = try Server.init(gpa, io, app, listener, config);
     var group: std.Io.Group = .init;
     var redirect: Redirect = undefined;
@@ -1501,50 +1504,47 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     if (listen.https.redirect_port) |port| {
         assert(listen.tls != null); // redirecting to HTTPS
         redirect = .{ .host = listen.https.https_host.? };
-        redirect_server = try redirect.listen(gpa, io, listen_address(), port, listen.stop);
+        const plain = try std.Io.net.IpAddress.parse(listen_address(), port);
+        const redirect_listener = try listen_on(io, "http", plain);
+        redirect_server = try redirect.server_on(gpa, io, redirect_listener, listen.stop);
         try group.concurrent(io, run_redirect, .{&redirect_server});
     }
     try server.run();
     try group.await(io); // the redirect drains too
 }
 
-/// How long a shard waits for its ring's locked memory: 40 tries, 50 ms
-/// apart.
-const runtime_init_tries = 40;
-const runtime_init_wait_ns = 50 * std.time.ns_per_ms;
-
-/// The shard's runtime and its ring. A restart right after a stop (roux
-/// dev's) can find the old process's rings not yet freed: the kernel frees
-/// them after the process is gone, and until then their memory counts
-/// against the user's locked memory (8 MiB on the laptop, shared with every
-/// other server the user runs). So `SystemResources` is waited out, for at
-/// most two seconds, then reported.
+/// The shard's runtime and its ring: fourneau's `listen.runtime_init`
+/// waits out a restart's locked memory (the old process's rings not yet
+/// freed), two seconds at most; past that, said plainly.
 fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator, fibers_max: u32) !void {
-    var tries: u32 = 0;
-    while (true) {
-        tries += 1;
-        runtime.init(gpa, .{
-            .thread_limit = 0, // this thread only
-            // Not the default 8: with hundreds of connections the queues
-            // overflowed, costing ~3,000 kernel cycles a request (fourneau's
-            // experiment 23).
-            .log2_ring_entries = 12,
-            .fibers_max = fibers_max,
-        }) catch |err| switch (err) {
-            error.SystemResources => {
-                if (tries == runtime_init_tries) {
-                    write_line(2, "roux: no locked memory for the shard's io_uring " ++
-                        "(other servers of this user hold it; ulimit -l)");
-                    return err;
-                }
-                const wait: std.os.linux.timespec = .{ .sec = 0, .nsec = runtime_init_wait_ns };
-                _ = std.os.linux.nanosleep(&wait, null);
-                continue;
-            },
-            else => return err,
-        };
-        return;
-    }
+    fourneau.listen.runtime_init(Evented, runtime, gpa, .{
+        .thread_limit = 0, // this thread only
+        // Not the default 8: with hundreds of connections the queues
+        // overflowed, costing ~3,000 kernel cycles a request (fourneau's
+        // experiment 23).
+        .log2_ring_entries = 12,
+        .fibers_max = fibers_max,
+    }) catch |err| {
+        switch (err) {
+            error.SystemResources => write_line(2, "roux: no locked memory for the " ++
+                "shard's io_uring (other servers of this user hold it; ulimit -l)"),
+            else => {},
+        }
+        return err;
+    };
+}
+
+/// systemd's socket of that name, the shard's own copy (fourneau's
+/// listen.zig: held across a restart, so none is refused); else one bound
+/// now.
+fn listen_on(io: std.Io, name: []const u8, address: std.Io.net.IpAddress) !std.Io.net.Server {
+    const activation: fourneau.listen.Activation = .{
+        .pid = environment("LISTEN_PID"),
+        .fds = environment("LISTEN_FDS"),
+        .names = environment("LISTEN_FDNAMES"),
+    };
+    if (fourneau.listen.inherited(activation, name)) |fd| return fourneau.listen.server_from(fd);
+    return address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
 }
 
 /// SQLite with a heap of its own, allocated now: untouched pages until
