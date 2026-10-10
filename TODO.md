@@ -149,6 +149,24 @@
      nightly's, which it fetches too, so its README names no install) and
      `main.roc`'s platform URL, and walk its lessons in a fresh clone with
      no `roc` on PATH.
+7. **The tutor's drag race: layout, and SSE as messages a second.**
+   (owner, 2026-10-10, from a screenshot: "formatting layout issues. also
+   sse can't tested locally? maybe it should be measured like this
+   instead: messages per second. browser with four streams open, and
+   roux-load with 64. then pump as many test messages as possible for
+   each. you can also drop the roc text case.")
+   - Where it stands (2026-10-10): (1) done, tutor `301afe6` (a finished
+     lane's class `done` was the Start page's boxed card's; sub-lines on
+     two lines; no Roc text lane). Found on the way: the tutor's
+     `./roux dev main.roc` passes no `--static`, so an edit to
+     `static/` (style.css, speed.js) is not served until a Roc edit
+     restarts the app; a learner editing the CSS sees nothing. roux dev
+     could take the directory from the app's `static_dir`, or the tutor's
+     README name the flag: to decide. Next:
+     (2) fourneau-load: a stream mode, events counted from the chunked
+     body, parsed, not searched for; (3) a roux release with it and a
+     `/_dev/race` stream lane; (4) the tutor's Datastar lane in messages
+     a second, four EventSource-like streams in the browser.
 
 
 ## Plan

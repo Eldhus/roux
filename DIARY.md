@@ -1974,3 +1974,17 @@ request, three `systemctl --user restart`s in 6 s: 100% answered, twice,
 the slowest 313-316 ms (a client that waited in the socket's queue
 through a restart). fourneau-hello bound by itself refused 4,771 in the
 same test (fourneau DIARY).
+
+## 2026-10-10: the tutor's drag race, laid out (tutor 301afe6)
+
+The owner's screenshot showed the race's lanes as boxed cards
+overlapping one another, and the p50/p99 lines cut off. The cause: a
+lane that finished was given the class `done`, which is also the class of
+the Start page's boxed card (padding, border, radius). It is `raced`
+now. The figures' sub-lines are two short lines instead of one that
+needed an ellipsis. The Roc text lane is gone (owner: "so close to the
+other it doesn't matter"). Checked by a race in headless Chromium against
+a copy of the tutor on another port: four lanes, rows flat, nothing cut.
+
+Found on the way: the tutor runs `roux dev` without `--static`, so its
+`static/` edits wait for a restart (TODO, item 7).
