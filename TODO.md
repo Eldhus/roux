@@ -274,6 +274,12 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+- `roux build --output` on another filesystem than the app (the
+  scratchpad's /tmp, tmpfs): `AttachFailed`. `pipeline.attach` copies
+  roc's executable with `copy_file_range`, which fails across
+  filesystems (EXDEV) on many; fall back to read and write on EXDEV.
+  Found 2026-10-10 building the dragrace's roux into /tmp.
+
 From the adversarial pass over the templates' dev and prod flow
 (2026-10-09, owner: "take a serious adversarial pass ... be crazy cracked
 and check everything"). Checked and holding: a 300 KB page (runs split

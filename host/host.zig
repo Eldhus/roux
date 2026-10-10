@@ -1467,16 +1467,19 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     assert(serving);
     const gpa = std.heap.page_allocator;
     const connections_per_shard: u32 = @max(1, connections_max / listen.shards);
-    const requests = try gpa.create(Requests);
-    requests.* = try .init(gpa, connections_per_shard);
-    shard_requests = requests;
-    roc_allocations_idle = roc_allocations_live;
-
     const config: fourneau.server.Config = .{
         .connections_max = connections_per_shard,
         .tls = listen.tls,
         .stop = listen.stop,
+        // Browsers: one connection, every request and event stream on it
+        // (HTTP/2 by ALPN on HTTPS, by its preface on plain HTTP).
+        .http2 = .{},
     };
+    // A handle for every handler the server may run at once.
+    const requests = try gpa.create(Requests);
+    requests.* = try .init(gpa, config.handlers_max());
+    shard_requests = requests;
+    roc_allocations_idle = roc_allocations_live;
     // The shard's fibers, all mapped now: its server's, and the redirect's.
     const fibers_max = config.fibers_max() +
         if (listen.https.redirect_port != null) Redirect.fibers_max else 0;

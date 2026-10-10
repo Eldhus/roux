@@ -1939,3 +1939,20 @@ lines). The shard's fibers come from fourneau's pool, sized from its
 server and redirect (333e773 carried that half). Measured, examples/hello
 on 8 shards under 400 connections of fourneau-load: exit 0 in 208-214 ms
 after SIGTERM, three runs; with `ROUX_DEV` set, killed in 1 ms.
+
+## 2026-10-10: HTTP/2 (branch `http2`)
+
+fourneau speaks HTTP/2 (its DIARY, 2026-10-10: HPACK to ALPN, h2spec);
+the host turns it on (`Config.http2`): by ALPN on HTTPS, by its preface
+on plain HTTP. Handlers then run on a stream's fiber as well as a
+connection's, so the request handles are sized by fourneau's
+`Config.handlers_max` (a connection's and a stream slot's each), not by
+connections: the table must never be full.
+
+Checked with the dragrace's roux competitor over h2c (curl 8.22):
+`/plaintext`, a Datastar `/sse` stream, the `/menu` template; HTTP/1.1
+alike. `zig build test` passes. On a branch: roux main may be pushed for
+the 05:00 race, which should not change tonight.
+
+Found on the way: `roux build --output` into /tmp fails (`AttachFailed`,
+`copy_file_range` across filesystems): TODO.
