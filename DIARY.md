@@ -1956,3 +1956,21 @@ the 05:00 race, which should not change tonight.
 
 Found on the way: `roux build --output` into /tmp fails (`AttachFailed`,
 `copy_file_range` across filesystems): TODO.
+
+## 2026-10-10: a restart refuses no one (systemd's sockets)
+
+The host takes the listening sockets systemd holds across a restart,
+when it is socket-activated (fourneau's listen.zig): `https` for the app
+over TLS, `http` for it plain or for the redirect, as fourneau-static
+names them; without systemd it binds as before. Its wait for io_uring's
+locked memory is fourneau's now (`listen.runtime_init`), the message
+kept. Branch `after-race` (was `http2`): the work that waits for
+tonight's race to pass.
+
+Measured with a transient socket unit (`systemd-run --user
+--socket-property=ListenStream=... FileDescriptorName=http`): the
+dragrace's roux competitor, 2 shards, oha with a new connection per
+request, three `systemctl --user restart`s in 6 s: 100% answered, twice,
+the slowest 313-316 ms (a client that waited in the socket's queue
+through a restart). fourneau-hello bound by itself refused 4,771 in the
+same test (fourneau DIARY).
