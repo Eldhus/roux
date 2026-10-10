@@ -69,7 +69,7 @@ pub const Paths = struct {
 pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer) !void {
     const paths: Paths = try .of(arena, app);
     const start = Io.Timestamp.now(io, .awake);
-    if (has_queries(io, app)) try query_types(arena, io, app);
+    if (has_queries(io, app)) try query_types(arena, io, app, null);
     var cache: rocstache.generate.Cache = .init(arena);
     var generation = try begin(arena, io, paths, app, &cache, null, stderr);
     const begun_at = Io.Timestamp.now(io, .awake);
@@ -106,12 +106,15 @@ fn has_queries(io: Io, app: App) bool {
 
 /// `roux-db gen db` in the app's directory: the queries' typed modules.
 /// roux-db is found beside this roux (both are `zig build tools`').
-pub fn query_types(arena: Allocator, io: Io, app: App) !void {
+/// `log`: where roux-db's messages go (`roux dev` shows them in the page
+/// too); null for the terminal.
+pub fn query_types(arena: Allocator, io: Io, app: App, log: ?Io.File) !void {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const self_len = try Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &buffer);
     const bin = std.fs.path.dirname(buffer[0..self_len]) orelse ".";
     const roux_db = try std.fs.path.join(arena, &.{ bin, "roux-db" });
-    var child = try spawn(io, &.{ roux_db, "gen", "db" }, app.dir);
+    const to: std.process.SpawnOptions.StdIo = if (log) |file| .{ .file = file } else .inherit;
+    var child = try spawn_to(io, &.{ roux_db, "gen", "db" }, app.dir, to);
     if (!(try child.wait(io)).success()) return error.ChildFailed;
 }
 

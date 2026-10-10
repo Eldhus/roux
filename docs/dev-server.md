@@ -18,7 +18,8 @@ never half written), and content decides from there, never mtimes.
 | a template's markup, a page's or a partial's | the generation of what the edit touched (0.1-1.7 ms), then SIGUSR1: the running app rereads the program. No link, no restart, no compiler; the app's state kept | 1.39 ms median from a client for a page, 2.0 ms for a partial nine pages inline |
 | a template's contract (a field added, a type) | its `Page.roc` and `Templates.roc` rewritten, glue (~0.3 s), `roc build --opt=dev` (roc links), the program attached, a restart | a Roc edit's and glue's (not measured end to end) |
 | Roc source | `roc build --opt=dev` (roc links), the program attached, a restart | 1.1-1.2 s; 1.03 s with roc linking (2026-10-09, roc-link) |
-| a query (`db/*.sql`) | roux-db, then as Roc source | |
+| a query (`db/*.sql`) | roux-db (its refusals over the page, `db/X.sql:L:C`), then as Roc source | |
+| the schema (`db/schema.sql`) | as a query; the restarted app refuses the old database, and in development stays up to say so (below) | |
 | a static file | a restart (the host reads them at startup) | |
 
 ## A failed build, in the page
@@ -36,6 +37,19 @@ as the serving build had them sends `build-ok`, which takes it away. A
 page loaded while a build is failing is told at once. (2026-10-09, for
 the tutor: a learner breaks a contract and sees roc's message where they
 look.)
+
+## When `init!` fails
+
+In development a failed `init!` does not end the app: it stays up and
+answers every request with a 500 page holding what `init!` wrote to stderr
+(the platform's `ERROR init!: …`), which the events stream sends as
+`build-failed` too. The common case is a changed `schema.sql`: there are
+no migrations yet, so the database must be made anew, and the message says
+which file to delete. The page's **Start it again** button posts to
+`/_dev/restart`; the app exits with code 75, which roux dev takes as
+"start me again" (without waiting for an edit), and the page reloads when
+it answers. In production a failed `init!` still ends the process with its
+code.
 
 ## The reread
 

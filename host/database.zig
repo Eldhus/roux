@@ -239,7 +239,7 @@ pub fn open(
         report,
     );
     errdefer close_connection(gpa, writer);
-    try ensure_schema(writer.db, description.schema, report);
+    try ensure_schema(writer.db, description.schema, description.path, report);
     try prepare_statements(writer, statements, report);
     const database = gpa.create(Database) catch return out_of_memory(report);
     database.* = .{
@@ -658,7 +658,12 @@ fn prepare_own(db: *c.Db, sql: []const u8, report: *Report) error{Failed}!*c.Stm
 
 /// A new database (nothing in `sqlite_schema`) gets `schema`; an existing
 /// one must already be exactly what `schema` makes.
-fn ensure_schema(db: *c.Db, schema: []const u8, report: *Report) error{Failed}!void {
+fn ensure_schema(
+    db: *c.Db,
+    schema: []const u8,
+    path: []const u8,
+    report: *Report,
+) error{Failed}!void {
     const objects = try pragma_integer(db, "SELECT count(*) FROM sqlite_schema", report);
     if (objects == 0) return create_schema(db, schema, report);
     var expected: ?*c.Db = null;
@@ -670,7 +675,7 @@ fn ensure_schema(db: *c.Db, schema: []const u8, report: *Report) error{Failed}!v
     defer _ = c.sqlite3_close_v2(expected);
     sqlite.exec(expected.?, schema) catch
         return report.fail(.failed, "schema.sql: {s}", .{c.sqlite3_errmsg(expected.?)});
-    return compare_schemas(db, expected.?, report);
+    return compare_schemas(db, expected.?, path, report);
 }
 
 fn create_schema(db: *c.Db, schema: []const u8, report: *Report) error{Failed}!void {
@@ -696,7 +701,12 @@ fn create_schema(db: *c.Db, schema: []const u8, report: *Report) error{Failed}!v
 
 /// `sqlite_schema` row by row: SQLite keeps each CREATE as it was written,
 /// so two databases made by the same `schema.sql` hold the same rows.
-fn compare_schemas(db: *c.Db, expected: *c.Db, report: *Report) error{Failed}!void {
+fn compare_schemas(
+    db: *c.Db,
+    expected: *c.Db,
+    path: []const u8,
+    report: *Report,
+) error{Failed}!void {
     const sql = "SELECT type, name, tbl_name, coalesce(sql, '') FROM sqlite_schema " ++
         "ORDER BY type, name";
     const actual_rows = try prepare_own(db, sql, report);
@@ -708,13 +718,13 @@ fn compare_schemas(db: *c.Db, expected: *c.Db, report: *Report) error{Failed}!vo
         const expected_step = c.sqlite3_step(expected_rows);
         if (actual_step == c.done and expected_step == c.done) return;
         if (actual_step != c.row or expected_step != c.row) {
-            return schema_differs(expected_rows, actual_rows, report);
+            return schema_differs(expected_rows, actual_rows, path, report);
         }
         for (0..4) |column| {
             const actual = column_text(actual_rows, @intCast(column));
             const wanted = column_text(expected_rows, @intCast(column));
             if (!std.mem.eql(u8, actual, wanted)) {
-                return schema_differs(expected_rows, actual_rows, report);
+                return schema_differs(expected_rows, actual_rows, path, report);
             }
         }
     } else return report.fail(.failed, "more than {d} schema objects", .{
@@ -722,12 +732,24 @@ fn compare_schemas(db: *c.Db, expected: *c.Db, report: *Report) error{Failed}!vo
     });
 }
 
-fn schema_differs(expected: *c.Stmt, actual: *c.Stmt, report: *Report) error{Failed} {
+/// What differs, and the way out: there are no migrations yet, so a new
+/// database (its rows go).
+fn schema_differs(
+    expected: *c.Stmt,
+    actual: *c.Stmt,
+    path: []const u8,
+    report: *Report,
+) error{Failed} {
     const expected_name = name_of_row(expected);
     const actual_name = name_of_row(actual);
-    return report.fail(.failed, "the database's schema is not schema.sql's (first difference: " ++
-        "{s} in schema.sql, {s} in the database). No migrations yet: a schema " ++
-        "change needs a new database", .{ expected_name, actual_name });
+    const way_out = " There are no migrations yet: delete {s} (its rows go) and the app " ++
+        "makes it anew from schema.sql.";
+    if (std.mem.eql(u8, expected_name, actual_name)) {
+        return report.fail(.failed, "{s} is not as schema.sql makes it: `{s}` differs." ++
+            way_out, .{ path, expected_name, path });
+    }
+    return report.fail(.failed, "{s} is not as schema.sql makes it: `{s}` in schema.sql, " ++
+        "`{s}` in the database." ++ way_out, .{ path, expected_name, actual_name, path });
 }
 
 /// The `name` column of the row a schema listing is on, if any.

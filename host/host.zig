@@ -167,7 +167,26 @@ export fn hosted_stdout_line(line: abi.RocStr) callconv(.c) void {
 
 export fn hosted_stderr_line(line: abi.RocStr) callconv(.c) void {
     write_line(2, line.asSlice());
+    // During `init!`, kept: a development app whose `init!` fails shows it.
+    if (init_io != null) init_said_add(line.asSlice());
     line.decref(host());
+}
+
+/// What `init!` wrote to stderr (the platform's `ERROR init!: …`), at most
+/// this much; a development app shows it when `init!` fails.
+var init_said: [8 * 1024]u8 = undefined;
+var init_said_len: usize = 0;
+/// Development: `init!` failed, and this is why. Every request is answered
+/// with it, over the page, until roux dev restarts the app.
+var init_failure: ?[]const u8 = null;
+
+fn init_said_add(bytes: []const u8) void {
+    const room = init_said.len - init_said_len;
+    const take = @min(room, bytes.len + 1);
+    if (take == 0) return;
+    @memcpy(init_said[init_said_len..][0 .. take - 1], bytes[0 .. take - 1]);
+    init_said[init_said_len + take - 1] = '\n';
+    init_said_len += take;
 }
 
 /// The app's `Templates.Template`, boxed, made for `layouts`: which
@@ -694,6 +713,11 @@ const App = struct {
         if (dev_build) |build| {
             if (dev.is_events(request.head.path_and_query)) return dev_events(request, build);
             if (dev.is_stats(request.head.path_and_query)) return dev_stats();
+            if (dev.is_restart(request.head.path_and_query) and request.head.method == .post) {
+                // roux dev starts it again (its database closed by the exit).
+                std.process.exit(dev.restart_code);
+            }
+            if (init_failure) |text| return init_failure_page(text, build, program);
         }
         if (static_site) |site| {
             if (site.respond(request.head, request.scratch)) |file| {
@@ -810,6 +834,33 @@ const App = struct {
         }
     }
 
+    /// Development, `init!` failed: every request answered 500 with why,
+    /// a page with the reload script, so it goes when the fixed build runs.
+    fn init_failure_page(text: []const u8, build: []const u8, program: u32) Response {
+        const headers = comptime [_]Header{
+            .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+            .{ .name = "Cache-Control", .value = "no-store" },
+        };
+        const plain: Response = .{
+            .status = 500,
+            .headers = &headers,
+            .body = "init! failed",
+            .roc = null,
+            .handle = 0,
+        };
+        var name_buffer: [64]u8 = undefined;
+        const made = dev.name(build, program, &name_buffer);
+        const page = dev.failure_page(std.heap.smp_allocator, text, made) catch return plain;
+        return .{
+            .status = 500,
+            .headers = &headers,
+            .body = page,
+            .roc = null,
+            .handle = 0,
+            .dev_body = page,
+        };
+    }
+
     /// `/_dev/stats`, in development: roux dev's last good pass, as it
     /// wrote it (`ROUX_DEV_STATS`, JSON: what it built and how long it
     /// took, from noticing the save to the app told); `{}` before one.
@@ -871,7 +922,7 @@ const App = struct {
             return over;
         defer std.heap.page_allocator.free(event_memory);
         var errors_seen = dev_errors_told.load(.acquire);
-        const report = dev_errors_read(report_memory);
+        const report = init_failure orelse dev_errors_read(report_memory);
         if (report.len > 0) {
             request.stream_send(dev.failure_event(report, event_memory)) catch return over;
         }
@@ -989,6 +1040,26 @@ export fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     return 0;
 }
 
+/// The app's `init!`. A failure ends the process, unless in development:
+/// there the app stays up and answers with why (`init_failure`), so the page
+/// says it and reloads when roux dev starts the fixed build.
+fn init_app() InitResult {
+    const init = abi.roc_init_for_host();
+    if (init.tag == .Ok) return init.payload_ok();
+    if (dev_build == null) {
+        const code = init.payload_err();
+        std.process.exit(@intCast(@max(0, @min(code, 255))));
+    }
+    init_failure = if (init_said_len > 0) init_said[0..init_said_len] else "init! failed\n";
+    return .{
+        .port = 0,
+        .static_dir = .empty(),
+        .context = undefined, // never read: every request is the failure
+    };
+}
+
+const InitResult = @TypeOf(abi.roc_init_for_host().payload_ok());
+
 fn run() !void {
     if (build_options.heap_checked) {
         roc_heap_checked = .init(std.heap.page_allocator, .{
@@ -1014,13 +1085,8 @@ fn run() !void {
     try sqlite_setup(shards);
     templates.load_attached();
     start_dev();
-    const init = abi.roc_init_for_host();
-    if (init.tag == .Err) {
-        const code = init.payload_err();
-        std.process.exit(@intCast(@max(0, @min(code, 255))));
-    }
+    const started = init_app();
     init_io = null;
-    const started = init.payload_ok();
     // The app names its port; the deployment may say otherwise (ROUX_PORT),
     // as it says the address: a local run of an app that asks for 443.
     const app_port = if (started.port == 0) port_default else started.port;

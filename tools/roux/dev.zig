@@ -42,10 +42,16 @@ pub const Options = struct {
 const errors_name = "dev-errors.txt";
 /// roc's messages in a pass, read back into the pass's report.
 const roc_log_name = "roc.log";
+/// roux-db's, likewise.
+const roux_db_log_name = "roux-db.log";
 /// The last good pass, which the app serves at `/_dev/stats`
 /// (`ROUX_DEV_STATS`): what was built, and the microseconds from the save
 /// noticed to the app told (a reread) or started again (a restart).
 const stats_name = "dev-stats.json";
+
+/// The exit code of an app asking roux dev to start it again (the host's
+/// `/_dev/restart`; host/dev.zig's `restart_code`, the same).
+const restart_code = 75;
 
 const files_max = 4096;
 const directories_max = 256;
@@ -112,11 +118,20 @@ pub fn run(
         }
         stderr.flush() catch {};
         // Until a source changes; the app exiting on its own is said, and
-        // waits for an edit too.
+        // waits for an edit too, unless it asked to be started again.
         while (true) {
             switch (try watch.wait(state.child_fd)) {
                 .source, .stopping => break,
-                .exited => state.exited(io, stderr),
+                .exited => if (state.exited(io, stderr)) {
+                    const paths: pipeline.Paths = try .of(arena, options.app);
+                    state.restart(arena, io, paths) catch |err| {
+                        stderr.print("roux dev: build {d} would not start again ({t})\n", .{
+                            state.build,
+                            err,
+                        }) catch {};
+                    };
+                    stderr.print("roux dev: build {d} started again\n", .{state.build}) catch {};
+                },
             }
             stderr.flush() catch {};
         }
@@ -218,10 +233,10 @@ const State = struct {
             state.built
         else
             try digests(arena, io, state.options);
-        if (before.sql_files > 0 and before.sql != state.built.sql) {
-            pipeline.query_types(arena, io, app) catch |err| return state.failed(stderr, err);
-        }
         const paths: pipeline.Paths = try .of(arena, app);
+        if (before.sql_files > 0 and before.sql != state.built.sql) {
+            queries(arena, io, paths, app, stderr) catch |err| return state.failed(stderr, err);
+        }
         const built = state.generate_and_roc(arena, io, paths, before, p, stderr) catch |err|
             return state.failed(stderr, err);
         const now = built.now;
@@ -348,17 +363,22 @@ const State = struct {
 
     /// The app exited on its own (a crash, a refused start): said, and
     /// collected; the next save starts it again.
-    fn exited(state: *State, io: Io, stderr: *Io.Writer) void {
-        var child = state.child orelse return;
+    /// Says whether the app asked to be started again (`restart_code`: its
+    /// `/_dev/restart`, from the page of an `init!` that failed).
+    fn exited(state: *State, io: Io, stderr: *Io.Writer) bool {
+        var child = state.child orelse return false;
         _ = linux.close(state.child_fd);
         state.child_fd = -1;
         state.child = null;
-        const term = child.wait(io) catch return;
+        const term = child.wait(io) catch return false;
         switch (term) {
-            .exited => |code| stderr.print("roux dev: build {d} exited, code {d}\n", .{
-                state.build,
-                code,
-            }) catch {},
+            .exited => |code| {
+                if (code == restart_code) return true;
+                stderr.print("roux dev: build {d} exited, code {d}\n", .{
+                    state.build,
+                    code,
+                }) catch {};
+            },
             .signal => |signal| stderr.print("roux dev: build {d} killed by signal {t}\n", .{
                 state.build,
                 signal,
@@ -367,6 +387,7 @@ const State = struct {
                 stderr.print("roux dev: build {d} stopped\n", .{state.build}) catch {};
             },
         }
+        return false;
     }
 
     /// The last good build keeps serving. A compiler's failure was printed
@@ -423,6 +444,26 @@ const State = struct {
         state.child = null;
     }
 };
+
+/// roux-db on the app's queries, its messages into the pass's report (and
+/// so over the page when it refuses one), as roc's are.
+fn queries(
+    arena: Allocator,
+    io: Io,
+    paths: pipeline.Paths,
+    app: pipeline.App,
+    report: *Io.Writer,
+) !void {
+    try Io.Dir.cwd().createDirPath(io, paths.out_path);
+    var out = try Io.Dir.cwd().openDir(io, paths.out_path, .{});
+    defer out.close(io);
+    const log = try out.createFile(io, roux_db_log_name, .{ .truncate = true });
+    defer log.close(io);
+    const ran = pipeline.query_types(arena, io, app, log);
+    const said = out.readFileAlloc(io, roux_db_log_name, arena, .limited(1 << 20)) catch "";
+    report.writeAll(said) catch {};
+    return ran;
+}
 
 /// What a pass built, for its line.
 fn built_what(roc: bool, templates: bool) []const u8 {

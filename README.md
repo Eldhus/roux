@@ -22,7 +22,7 @@ With roc on PATH at the nightly the release names, and the release's
 [roux-tutor](https://github.com/Eldhus/roux-tutor):
 
 ```roc
-app [Context, program] { pf: platform "https://github.com/Eldhus/roux/releases/download/v0.2.2/54QkBtgQh6dMAUA6reFeFnkdBj2yiZLB7iKfSywDMZjQ.tar.zst" }
+app [Context, program] { pf: platform "https://github.com/Eldhus/roux/releases/download/v0.2.3/cxK5z1GNVjsvVsbPn5VwXEsuY53DKCm2F98s2kKzQmB.tar.zst" }
 ```
 
 `tools/release.sh` makes one (`dist/`: the platform's `HASH.tar.zst`,

@@ -1865,3 +1865,34 @@ The tutor's Speed page, in headless Chromium: a markup save timed as roux
 laptop); a race of five lanes at ~1,000-1,200 requests a second (six
 connections, the browser's cap), the server's share 0.01-0.02 ms of each
 ~5 ms round trip; the menu template 0.054 ms by its header.
+
+The 184 ms the owner questioned was headless Chromium's first paint, not
+a slip: the reloaded page's HTML was back at 2.7 ms, parsed with its
+assets by 18.5 ms, painted at 108 ms (no GPU). The page shows the phases
+now (roux, page back, ready, painted).
+
+## 2026-10-09: queries and the schema, one flow with the rest (0.2.3)
+
+The owner asked for SQL edits to work "cohesively" with the rest of
+`roux dev`. They did already rebuild (roux-db, then roc, a restart), but:
+
+- roux-db's refusals reached only the terminal. Its output now goes
+  through `.roux/APP/roux-db.log` into the pass's report, as roc's does:
+  `db/Dishes.sql:30:8: no such column: nope` over the page, the last good
+  build serving.
+- A changed `schema.sql` killed the restarted app (the database no longer
+  matches; no migrations), the browser lost its connection, and the
+  message said "first difference: dish in schema.sql, dish in the
+  database". Now: the message names the file and the way out ("dishes.db
+  is not as schema.sql makes it: `dish` differs. There are no migrations
+  yet: delete dishes.db (its rows go) and the app makes it anew from
+  schema.sql."); in development a failed `init!` keeps the app up,
+  answering every request with a 500 page of what `init!` wrote (and the
+  stream's `build-failed`); its **Start it again** button posts to
+  `/_dev/restart`, the app exits 75, roux dev starts it again at once.
+  Production is unchanged: a failed `init!` ends the process.
+
+Checked on a copy of examples/sqlite under `roux dev`: a query with an
+unknown column refused over the page with its line; a column added to
+`schema.sql` gave the page above (500, the message, the event); the
+database deleted and the restart posted, "build 1 started again", 200.

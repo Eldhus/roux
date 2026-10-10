@@ -39,6 +39,17 @@ pub fn event(current: []const u8, first: bool, buffer: []u8) []const u8 {
 
 pub const stats_path = "/_dev/stats";
 
+/// `POST /_dev/restart`: the app exits with `restart_code`, which roux dev
+/// takes as "start me again" (tools/roux/dev.zig): the button on the page
+/// of an `init!` that failed, once its cause is gone (a database deleted).
+pub const restart_path = "/_dev/restart";
+pub const restart_code = 75;
+
+pub fn is_restart(target: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+    return std.mem.eql(u8, target[0..end], restart_path);
+}
+
 /// The most of roux dev's stats file the host serves.
 pub const stats_bytes_max = 4096;
 
@@ -114,6 +125,47 @@ const script_tail = "\";const e=new EventSource(\"" ++ events_path ++ "\");" ++
     "document.body.append(o)});" ++
     "e.addEventListener(\"build-ok\",()=>{if(o)o.remove()})})()</script>\n";
 
+/// The page a development app answers with when its `init!` failed: what it
+/// said, escaped, and the script, which reloads it when the next build
+/// serves. In `gpa`'s memory (freed at release).
+pub fn failure_page(
+    gpa: std.mem.Allocator,
+    text: []const u8,
+    made: []const u8,
+) error{OutOfMemory}![]u8 {
+    var page: std.Io.Writer.Allocating = .init(gpa);
+    defer page.deinit();
+    const writer = &page.writer;
+    writer.writeAll("<!doctype html><meta charset=\"utf-8\">" ++
+        "<title>roux dev: init! failed</title>" ++
+        "<body style=\"margin:0;padding:2rem;background:#15100e;color:#f3e8dc;" ++
+        "font:15px/1.6 system-ui,sans-serif\"><h1 style=\"font-size:1.3rem;color:#ec7a41\">" ++
+        "The app's <code>init!</code> failed</h1><p>The build compiled, but would not start. " ++
+        "This page reloads when the next build runs.</p><pre style=\"white-space:pre-wrap;" ++
+        "padding:1rem;background:#241a16;border:1px solid #3a2c25;border-radius:8px;" ++
+        "font:13px/1.5 ui-monospace,monospace\">") catch return error.OutOfMemory;
+    for (text) |byte| {
+        const escaped: []const u8 = switch (byte) {
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '&' => "&amp;",
+            '"' => "&quot;",
+            else => &.{byte},
+        };
+        writer.writeAll(escaped) catch return error.OutOfMemory;
+    }
+    // Once the cause is gone (a file deleted, a secret written), the app is
+    // started again, and the page reloads when it answers.
+    writer.writeAll("</pre><button style=\"font:600 15px system-ui;padding:.6rem 1.1rem;" ++
+        "border:0;border-radius:8px;background:#ec7a41;color:#1b0f09;cursor:pointer\" " ++
+        "onclick=\"this.disabled=true;this.textContent='Starting…';" ++
+        "fetch('" ++ restart_path ++ "',{method:'POST'}).catch(()=>{});" ++
+        "const t=setInterval(()=>fetch('/',{cache:'no-store'}).then(()=>{clearInterval(t);" ++
+        "location.reload()}).catch(()=>{}),300)\">Start it again</button>") catch
+        return error.OutOfMemory;
+    return with_script(gpa, page.written(), made);
+}
+
 /// The body with the script after it, naming `made` (the page's name), in
 /// `gpa`'s memory (freed at release).
 pub fn with_script(
@@ -144,6 +196,14 @@ test "dev: names, events, the script, html" {
     try std.testing.expect(std.mem.startsWith(u8, page, "<p>x</p><script>"));
     try std.testing.expect(std.mem.indexOf(u8, page, "const b=\"7.2\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, page, "</script>\n"));
+}
+
+test "dev: init!'s failure as a page, escaped" {
+    const page = try failure_page(std.testing.allocator, "ERROR init!: <db> & \"x\"\n", "3.0");
+    defer std.testing.allocator.free(page);
+    const escaped = "ERROR init!: &lt;db&gt; &amp; &quot;x&quot;";
+    try std.testing.expect(std.mem.indexOf(u8, page, escaped) != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "const b=\"3.0\"") != null);
 }
 
 test "dev: a failure as an event" {
