@@ -1280,19 +1280,37 @@ fn run() !void {
     var app: App = .{ .context = started.context };
     // `init!` is over: the database is open, or there is none.
     serving = true;
-    const listen: Listen = .{ .port = port, .shards = shards, .tls = tls, .https = https_options };
+    var stop: fourneau.stop.Stop = .{};
+    try serve(&app, .{
+        .port = port,
+        .shards = shards,
+        .tls = tls,
+        .https = https_options,
+        .stop = &stop.requested,
+    }, &stop);
+}
+
+/// The shards, until a stop has drained them all. In production a stop is
+/// SIGTERM or SIGINT (fourneau's stop.zig); in development SIGTERM kills
+/// at once, as it always did: `roux dev` restarts the app on every edit,
+/// and a drain would wait on the page's event stream.
+fn serve(app: *App, listen: Listen, stop: *fourneau.stop.Stop) !void {
+    assert(listen.stop == &stop.requested);
+    if (dev_build == null) try stop.watch(); // before any shard's thread
     var threads: [shards_max]std.Thread = undefined;
-    for (threads[1..shards]) |*thread| {
-        thread.* = try std.Thread.spawn(.{}, run_shard, .{ &app, listen });
+    for (threads[1..listen.shards]) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, run_shard, .{ app, listen });
     }
     var banner: [128]u8 = undefined;
     write_line(1, std.fmt.bufPrint(&banner, "roux on {s}://{s}:{d} ({d} shards)", .{
-        if (tls != null) "https" else "http",
+        if (listen.tls != null) "https" else "http",
         listen_address(),
-        port,
-        shards,
+        listen.port,
+        listen.shards,
     }) catch "");
-    run_shard(&app, listen);
+    run_shard(app, listen);
+    for (threads[1..listen.shards]) |thread| thread.join();
+    write_line(1, "roux: stopped");
 }
 
 /// What every shard listens with, read-only.
@@ -1301,6 +1319,8 @@ const Listen = struct {
     shards: u32,
     tls: ?*const fourneau.tls.Context,
     https: fourneau.https.Options,
+    /// Set by SIGTERM or SIGINT in production: every shard drains.
+    stop: *const std.atomic.Value(bool),
 };
 
 /// The deployment's HTTPS, from `ROUX_TLS_CERT` and `ROUX_TLS_KEY`, or
@@ -1451,6 +1471,7 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     const config: fourneau.server.Config = .{
         .connections_max = connections_per_shard,
         .tls = listen.tls,
+        .stop = listen.stop,
     };
     // The shard's fibers, all mapped now: its server's, and the redirect's.
     const fibers_max = config.fibers_max() +
@@ -1473,10 +1494,11 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     if (listen.https.redirect_port) |port| {
         assert(listen.tls != null); // redirecting to HTTPS
         redirect = .{ .host = listen.https.https_host.? };
-        redirect_server = try redirect.listen(gpa, io, listen_address(), port);
+        redirect_server = try redirect.listen(gpa, io, listen_address(), port, listen.stop);
         try group.concurrent(io, run_redirect, .{&redirect_server});
     }
     try server.run();
+    try group.await(io); // the redirect drains too
 }
 
 /// How long a shard waits for its ring's locked memory: 40 tries, 50 ms
