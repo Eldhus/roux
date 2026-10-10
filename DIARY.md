@@ -2017,3 +2017,17 @@ lines reserved so a result arriving does not move the row, "no app" for
 the static file (the host serves it; no `Server-Timing`). A fresh clone
 with no `roc` on PATH: 0.2.5 fetched, an events race 391,794 events/s,
 `roc test` passes.
+
+## 2026-10-10: the tutor, calmer (tutor 5f15093)
+
+The owner on the race's start lights: "a little middle-school meets
+macromedia flash"; on its closing note: "verbose ... too large and too
+dark ... literal definition of fineprint". All seven pages looked at in
+headless Chromium. Gone: the start lights (the button says "Racing…"),
+every glow (the kicker, the rule under each lede, roux-load's heading,
+numbers and bars, the save clock), the striped bar of the lane being
+raced (it breathes now, still under reduced motion), the Speed cards'
+deep shadows. The note is three lines of fine print (what "app" is, two
+cores under roux dev, the nightly races); a problem the race meets
+still shows above it. The Templates page's tag table gives its terms at
+most half the width. Left as is: long lines in code blocks scroll.

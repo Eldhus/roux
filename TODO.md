@@ -166,7 +166,14 @@
      (3) done here: `/_dev/race?…&mode=events`, released as v0.2.5.
      (4) done: the tutor on 0.2.5, its Datastar lane in events a second
      (owner after: no "×N" badge, "meaningless"; no scale notes; wider
-     bars). Left: the tutor's `static/` not watched (above). Was:
+     bars). Left: the tutor's `static/` not watched (above).
+   - Then (2026-10-10), owner: "another ui/ux pass over whole
+     roux-tutor": the start lights "look a little middle-school meets
+     macromedia flash"; the race's note "a bit verbose ... font too
+     large and too dark ... literal definition of fineprint". Done,
+     tutor `5f15093` (see DIARY): every page looked at in headless Chromium.
+     Seen, not changed: long lines in the lessons' code blocks scroll
+     sideways (Routes, Database). Was:
      (2) fourneau-load: a stream mode, events counted from the chunked
      body, parsed, not searched for; (3) a roux release with it and a
      `/_dev/race` stream lane; (4) the tutor's Datastar lane in messages
