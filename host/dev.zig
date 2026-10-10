@@ -47,6 +47,7 @@ pub const restart_code = 75;
 
 /// `/_dev/race`: roux-load against this app. `POST /_dev/race?paths=/a,/b`
 /// starts it (a lane a path, `race_seconds` each, one after another);
+/// `&mode=events` races server-sent event streams, in events a second;
 /// `GET` says where it is, as JSON.
 pub const race_path = "/_dev/race";
 pub const race_lanes_max = 8;
@@ -65,8 +66,9 @@ pub fn race_paths(target: []const u8, out: *[race_lanes_max][]const u8) ?[]const
     const query_at = std.mem.indexOfScalar(u8, target, '?') orelse return null;
     const query = target[query_at + 1 ..];
     if (!std.mem.startsWith(u8, query, "paths=")) return null;
+    const end = std.mem.indexOfScalar(u8, query, '&') orelse query.len;
     var count: usize = 0;
-    var paths = std.mem.splitScalar(u8, query["paths=".len..], ',');
+    var paths = std.mem.splitScalar(u8, query["paths=".len..end], ',');
     while (paths.next()) |path| {
         if (count == race_lanes_max) return null;
         if (path.len < 1 or path.len > race_path_bytes_max or path[0] != '/') return null;
@@ -78,6 +80,32 @@ pub fn race_paths(target: []const u8, out: *[race_lanes_max][]const u8) ?[]const
         count += 1;
     }
     return if (count == 0) null else out[0..count];
+}
+
+/// What roux-load measures: answers a second, or server-sent events a
+/// second (roux-load's `--mode`).
+pub const RaceMode = enum { requests, events };
+
+/// The race's mode: after the paths, nothing (requests) or `&mode=` and
+/// a mode; null for anything else.
+pub fn race_mode(target: []const u8) ?RaceMode {
+    const query_at = std.mem.indexOfScalar(u8, target, '?') orelse return null;
+    const query = target[query_at + 1 ..];
+    const end = std.mem.indexOfScalar(u8, query, '&') orelse return .requests;
+    const rest = query[end + 1 ..];
+    if (!std.mem.startsWith(u8, rest, "mode=")) return null;
+    return std.meta.stringToEnum(RaceMode, rest["mode=".len..]);
+}
+
+test "dev: a race's mode" {
+    try std.testing.expectEqual(RaceMode.requests, race_mode("/_dev/race?paths=/a").?);
+    try std.testing.expectEqual(RaceMode.events, race_mode("/_dev/race?paths=/a&mode=events").?);
+    try std.testing.expect(race_mode("/_dev/race?paths=/a&mode=stream") == null);
+    try std.testing.expect(race_mode("/_dev/race?paths=/a&x=1") == null);
+    try std.testing.expect(race_mode("/_dev/race?paths=/a&mode=events&x=1") == null);
+    var out: [race_lanes_max][]const u8 = undefined;
+    const paths = race_paths("/_dev/race?paths=/race/stream&mode=events", &out).?;
+    try std.testing.expectEqualStrings("/race/stream", paths[0]);
 }
 
 test "dev: a race's paths" {
