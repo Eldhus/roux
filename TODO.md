@@ -274,6 +274,22 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+- **The failure overlay can stay after the fix.** (owner, 2026-10-10,
+  playing with roux-tutor under `roux dev`, roux 0.2.4) A template broken
+  by a changed curly brace showed its error over the page, as it should
+  (the message itself was poor; the owner does not mind that); fixing the
+  template did not take the overlay away. Not reproduced yet. A likely
+  cause, from the code: on a good pass roux dev signals the app first
+  (SIGUSR1 for a reread, or the restart) and only then empties
+  `dev-errors.txt` and sends SIGUSR2 (`tell_page("")` in dev.zig's loop,
+  after `pass` returns). The page reloads at once on the reread; its new
+  `/_dev/events` stream reads the errors file at connect, which may still
+  hold the failure, and the SIGUSR2's `build-ok` may already have gone to
+  the old page's stream. If so, the fix is ordering: empty the file (and
+  wake the streams) before the reread or restart. Check: break a
+  template, fix it, see whether the overlay stays; then whether a reload
+  clears it.
+
 - **The generated `Templates.roc`'s `layouts` key hashes roc's path**
   (`generate.zig`, `glue_start`: `identity.update(options.roc)`), so the
   same app generates different files on two machines: the laptop's
