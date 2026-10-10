@@ -1273,7 +1273,11 @@ fn run() !void {
     if (static_dir.len > 0) {
         const site = try std.heap.page_allocator.create(fourneau.site.Site);
         const gpa = std.heap.page_allocator;
-        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, "");
+        // Brotli copies in production; in development none: roux dev
+        // restarts the app on every edit, and compressing costs ~0.1 s
+        // a large file.
+        const options: fourneau.site.LoadOptions = .{ .brotli = dev_build == null };
+        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, "", options);
         static_site = site;
     }
 
