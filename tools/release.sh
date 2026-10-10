@@ -1,7 +1,7 @@
 #!/bin/sh
 # A roux release in dist/: the platform as roc's URL package
 # (HASH.tar.zst, from `roc bundle`) and the tools, static, as
-# roux-VERSION-x86_64-linux.tar.gz (roux, roux-db). Then
+# roux-VERSION-x86_64-linux.tar.gz (roux, roux-db, roux-load). Then
 #   gh release create vVERSION dist/* --title ... --notes ...
 # An app names the platform by the release's URL:
 #   https://github.com/Eldhus/roux/releases/download/vVERSION/HASH.tar.zst
@@ -37,7 +37,7 @@ strip --strip-debug -o dist/stage/platform/targets/x64musl/libc.a \
 (cd dist/stage/platform && "$roc" bundle --output-dir ../.. --compression 19 \
 	main.roc $(ls *.roc | grep -v '^main\.roc$') targets/x64musl/*)
 
-tar -C dist/tools/bin -czf "dist/roux-$version-x86_64-linux.tar.gz" roux roux-db
+tar -C dist/tools/bin -czf "dist/roux-$version-x86_64-linux.tar.gz" roux roux-db roux-load
 rm -rf dist/stage dist/tools
 echo "roux $version, for roc $roc_version:"
 ls -l dist

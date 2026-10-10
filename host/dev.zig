@@ -45,6 +45,52 @@ pub const stats_path = "/_dev/stats";
 pub const restart_path = "/_dev/restart";
 pub const restart_code = 75;
 
+/// `/_dev/race`: roux-load against this app. `POST /_dev/race?paths=/a,/b`
+/// starts it (a lane a path, `race_seconds` each, one after another);
+/// `GET` says where it is, as JSON.
+pub const race_path = "/_dev/race";
+pub const race_lanes_max = 8;
+pub const race_path_bytes_max = 120;
+pub const race_seconds = 2;
+
+pub fn is_race(target: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+    return std.mem.eql(u8, target[0..end], race_path);
+}
+
+/// The lanes' paths in a race request's `paths=`, comma-separated: each an
+/// absolute path of plain characters (no query, nothing to escape); null if
+/// any is not, or there are none or too many.
+pub fn race_paths(target: []const u8, out: *[race_lanes_max][]const u8) ?[]const []const u8 {
+    const query_at = std.mem.indexOfScalar(u8, target, '?') orelse return null;
+    const query = target[query_at + 1 ..];
+    if (!std.mem.startsWith(u8, query, "paths=")) return null;
+    var count: usize = 0;
+    var paths = std.mem.splitScalar(u8, query["paths=".len..], ',');
+    while (paths.next()) |path| {
+        if (count == race_lanes_max) return null;
+        if (path.len < 1 or path.len > race_path_bytes_max or path[0] != '/') return null;
+        for (path) |byte| switch (byte) {
+            'a'...'z', 'A'...'Z', '0'...'9', '/', '.', '_', '-' => {},
+            else => return null,
+        };
+        out[count] = path;
+        count += 1;
+    }
+    return if (count == 0) null else out[0..count];
+}
+
+test "dev: a race's paths" {
+    var out: [race_lanes_max][]const u8 = undefined;
+    const two = race_paths("/_dev/race?paths=/race/text,/favicon.svg", &out).?;
+    try std.testing.expectEqual(@as(usize, 2), two.len);
+    try std.testing.expectEqualStrings("/favicon.svg", two[1]);
+    try std.testing.expect(race_paths("/_dev/race", &out) == null);
+    try std.testing.expect(race_paths("/_dev/race?paths=race", &out) == null);
+    try std.testing.expect(race_paths("/_dev/race?paths=/a b", &out) == null);
+    try std.testing.expect(race_paths("/_dev/race?paths=/a?x=1", &out) == null);
+}
+
 pub fn is_restart(target: []const u8) bool {
     const end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
     return std.mem.eql(u8, target[0..end], restart_path);
