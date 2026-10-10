@@ -137,7 +137,10 @@
      the others in ~/devel/eldhus): "our recommended onboarding exercise
      for the world", the tutorial being the app, clone and go, markdown
      minimal, five critical passes, "make roc devs and core team proud".
-     Built and published: ten lessons, each an edit the page shows; a
+     Built and published: seven pages (owner: most people give it two
+     minutes): Start, the whole loop in three edits; Speed, live numbers
+     (save to screen from `/_dev/stats`, a browser drag race with
+     `Server-Timing`); then a "Go deeper" tier of five. A
      `./roux` launcher that fetches the pinned release by checksum; clone
      to a served page in 2.3 s from GitHub in a clean environment. Its
      notes live here (it keeps its own markdown to the README on
