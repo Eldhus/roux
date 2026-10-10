@@ -269,7 +269,7 @@ fn tools_step(
 /// (`nightly-2026-10-06-c34079d`), installed under
 /// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 /// roux's version: a release's tag (`v0.1.0`) without the `v`.
-const roux_version = "0.2.4";
+const roux_version = "0.2.5";
 
 /// `.roc-version`: `nightly-2026-10-06-c34079d`.
 fn roc_version(b: *std.Build) []const u8 {

@@ -163,11 +163,10 @@
      restarts the app; a learner editing the CSS sees nothing. roux dev
      could take the directory from the app's `static_dir`, or the tutor's
      README name the flag: to decide. (2) done, fourneau `fed68fa`.
-     (3) done here: `/_dev/race?…&mode=events`. (4) written in the
-     tutor's working tree, not committed: it needs a roux release with
-     (3) (on 0.2.4, `&mode=events` is a bad path, 400). Next: the owner
-     says yes to v0.2.5, then the release and the tutor's bump together.
-     Was:
+     (3) done here: `/_dev/race?…&mode=events`, released as v0.2.5.
+     (4) done: the tutor on 0.2.5, its Datastar lane in events a second
+     (owner after: no "×N" badge, "meaningless"; no scale notes; wider
+     bars). Left: the tutor's `static/` not watched (above). Was:
      (2) fourneau-load: a stream mode, events counted from the chunked
      body, parsed, not searched for; (3) a roux release with it and a
      `/_dev/race` stream lane; (4) the tutor's Datastar lane in messages
