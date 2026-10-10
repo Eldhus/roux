@@ -1988,3 +1988,21 @@ a copy of the tutor on another port: four lanes, rows flat, nothing cut.
 
 Found on the way: the tutor runs `roux dev` without `--static`, so its
 `static/` edits wait for a restart (TODO, item 7).
+
+## 2026-10-10: the race's events lane (`/_dev/race?…&mode=events`)
+
+roux-load is fourneau-load, which counts server-sent events now (fourneau
+`fed68fa`, `--mode events`). `POST /_dev/race?paths=/x&mode=events` runs
+the race in that mode; any other `&…` after the paths is a 400. The
+result is roux-load's JSON as before, with `events_per_second` and
+`streams` in place of requests.
+
+The tutor's Datastar lane is now a route sending 1,000 patches a stream
+(`/race/stream`); the browser holds four streams, roux-load 64, and each
+asks again when one ends. Run against a copy of the tutor on this roux
+(platform by path, roux dev from `zig-out`): through `/_dev/race`,
+511,506 events/s over 1,013 streams, no errors; the page in headless
+Chromium, the browser 108k-179k events/s against roux-load's 300k-425k,
+×2-3. Requests are 200-500 times quicker from outside the browser;
+events, only 2-3 times. Laptop at load ~4: proportions, not measurements.
+`zig build test` passes.

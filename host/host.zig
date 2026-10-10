@@ -187,6 +187,7 @@ var dev_port: u16 = 0;
 /// a thread of its own, a lane at a time; the shards only read it.
 const Race = struct {
     running: bool = false,
+    mode: dev.RaceMode = .requests,
     count: usize = 0,
     /// The lane roux-load is on now.
     current: usize = 0,
@@ -211,11 +212,11 @@ fn race_let_go() void {
 }
 
 /// Starts a race of `paths` unless one runs; says whether it started.
-fn race_start(paths: []const []const u8) bool {
+fn race_start(paths: []const []const u8, mode: dev.RaceMode) bool {
     race_hold();
     defer race_let_go();
     if (race.running) return false;
-    race = .{ .running = true, .count = paths.len };
+    race = .{ .running = true, .mode = mode, .count = paths.len };
     for (paths, 0..) |path, i| {
         @memcpy(race.paths[i][0..path.len], path);
         race.path_lens[i] = path.len;
@@ -249,6 +250,7 @@ fn race_run() void {
         var path_buffer: [dev.race_path_bytes_max]u8 = undefined;
         const path = path_buffer[0..race.path_lens[lane]];
         @memcpy(path, race.paths[lane][0..path.len]);
+        const mode = race.mode;
         race_let_go();
         var port_buffer: [8]u8 = undefined;
         const port = std.fmt.bufPrint(&port_buffer, "{d}", .{dev_port}) catch unreachable;
@@ -268,6 +270,8 @@ fn race_run() void {
                 seconds,
                 "--format",
                 "json",
+                "--mode",
+                @tagName(mode),
             },
             .stdout_limit = .limited(1024),
             .stderr_limit = .limited(1024),
@@ -998,8 +1002,9 @@ const App = struct {
         };
     }
 
-    /// `/_dev/race`, in development: `POST ?paths=…` starts roux-load on
-    /// those lanes (409 while one runs, 400 for bad paths); `GET` is where
+    /// `/_dev/race`, in development: `POST ?paths=…[&mode=events]` starts
+    /// roux-load on those lanes (409 while one runs, 400 for bad paths or
+    /// mode); `GET` is where
     /// it is, as JSON.
     fn dev_race(request: *Server.Request) Response {
         const headers = comptime [_]Header{
@@ -1021,7 +1026,11 @@ const App = struct {
             var out: [dev.race_lanes_max][]const u8 = undefined;
             const paths = dev.race_paths(request.head.path_and_query, &out) orelse
                 return answer(400, "{\"started\":false,\"why\":\"paths\"}");
-            if (!race_start(paths)) return answer(409, "{\"started\":false,\"why\":\"running\"}");
+            const mode = dev.race_mode(request.head.path_and_query) orelse
+                return answer(400, "{\"started\":false,\"why\":\"mode\"}");
+            if (!race_start(paths, mode)) {
+                return answer(409, "{\"started\":false,\"why\":\"running\"}");
+            }
             return answer(202, "{\"started\":true}");
         }
         const json = race_json(std.heap.smp_allocator) catch return answer(500, "{}");

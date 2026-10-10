@@ -32,6 +32,7 @@ const usage =
     \\usage: roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
     \\       roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
     \\       roux load --port N [--path /] [--connections N] [--threads N] [--seconds N]
+    \\                 [--mode requests|events]
     \\       roux version
     \\
 ;
