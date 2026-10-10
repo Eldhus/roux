@@ -6,7 +6,8 @@
 //! nothing, and the effect refuses.
 //!
 //! One table per shard (requests of one shard run on its thread only):
-//! fixed at the shard's start, a slot per connection.
+//! fixed at the shard's start, a slot per handler the server may run at
+//! once (`Config.handlers_max`: a connection's, or an HTTP/2 stream's).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -38,8 +39,8 @@ pub fn RequestsType(comptime Request: type) type {
             return .{ .entries = entries, .free = free, .free_count = slots };
         }
 
-        /// A handle for `request`, until `end`. Every connection has one
-        /// request at a time and a slot of its own: the table is never full.
+        /// A handle for `request`, until `end`. Every handler the server
+        /// runs has a slot of its own: the table is never full.
         pub fn begin(requests: *Requests, request: *Request) u64 {
             assert(requests.free_count > 0);
             requests.free_count -= 1;
