@@ -1939,3 +1939,38 @@ lines). The shard's fibers come from fourneau's pool, sized from its
 server and redirect (333e773 carried that half). Measured, examples/hello
 on 8 shards under 400 connections of fourneau-load: exit 0 in 208-214 ms
 after SIGTERM, three runs; with `ROUX_DEV` set, killed in 1 ms.
+
+## 2026-10-10: HTTP/2 (branch `http2`)
+
+fourneau speaks HTTP/2 (its DIARY, 2026-10-10: HPACK to ALPN, h2spec);
+the host turns it on (`Config.http2`): by ALPN on HTTPS, by its preface
+on plain HTTP. Handlers then run on a stream's fiber as well as a
+connection's, so the request handles are sized by fourneau's
+`Config.handlers_max` (a connection's and a stream slot's each), not by
+connections: the table must never be full.
+
+Checked with the dragrace's roux competitor over h2c (curl 8.22):
+`/plaintext`, a Datastar `/sse` stream, the `/menu` template; HTTP/1.1
+alike. `zig build test` passes. On a branch: roux main may be pushed for
+the 05:00 race, which should not change tonight.
+
+Found on the way: `roux build --output` into /tmp fails (`AttachFailed`,
+`copy_file_range` across filesystems): TODO.
+
+## 2026-10-10: a restart refuses no one (systemd's sockets)
+
+The host takes the listening sockets systemd holds across a restart,
+when it is socket-activated (fourneau's listen.zig): `https` for the app
+over TLS, `http` for it plain or for the redirect, as fourneau-static
+names them; without systemd it binds as before. Its wait for io_uring's
+locked memory is fourneau's now (`listen.runtime_init`), the message
+kept. Branch `after-race` (was `http2`): the work that waits for
+tonight's race to pass.
+
+Measured with a transient socket unit (`systemd-run --user
+--socket-property=ListenStream=... FileDescriptorName=http`): the
+dragrace's roux competitor, 2 shards, oha with a new connection per
+request, three `systemctl --user restart`s in 6 s: 100% answered, twice,
+the slowest 313-316 ms (a client that waited in the socket's queue
+through a restart). fourneau-hello bound by itself refused 4,771 in the
+same test (fourneau DIARY).

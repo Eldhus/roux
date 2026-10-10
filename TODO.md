@@ -274,6 +274,19 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+- roux-tutor, once a roux release speaks HTTP/2 (this branch): the Ship
+  page's "On a server" gets a line: over HTTPS the app speaks HTTP/2, a
+  browser's every request and event stream on one connection, so live
+  streams in many tabs no longer use up the six connections HTTP/1.1
+  allows a site. The Speed page's "six connections a site" stays true
+  under `roux dev`: plain HTTP on localhost, and browsers speak HTTP/2
+  only over TLS. (Not before the release: the tutor runs a pinned roux.)
+- `roux build --output` on another filesystem than the app (the
+  scratchpad's /tmp, tmpfs): `AttachFailed`. `pipeline.attach` copies
+  roc's executable with `copy_file_range`, which fails across
+  filesystems (EXDEV) on many; fall back to read and write on EXDEV.
+  Found 2026-10-10 building the dragrace's roux into /tmp.
+
 From the adversarial pass over the templates' dev and prod flow
 (2026-10-09, owner: "take a serious adversarial pass ... be crazy cracked
 and check everything"). Checked and holding: a 300 KB page (runs split
