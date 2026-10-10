@@ -2031,3 +2031,15 @@ deep shadows. The note is three lines of fine print (what "app" is, two
 cores under roux dev, the nightly races); a problem the race meets
 still shows above it. The Templates page's tag table gives its terms at
 most half the width. Left as is: long lines in code blocks scroll.
+
+The owner, after: "i didn't want you to remove the animation. i wanted
+you to make it cooler", and the font and buttons "a little outdated".
+Lesson: asked for less cheese, make it better, do not take it away. The
+dated look was the fonts: none shipped, so on this Linux every family
+fell back to DejaVu. The tutor now carries Geist and Geist Mono 1.7.2
+(static/fonts, SIL OFL, ~140 KB, still offline), headings in Geist,
+heavy and tight, instead of a serif. Buttons have a lit top edge, a
+lift on hover, a press. The race: its button counts down 3-2-1 as its
+face fills and pulses while racing; light streams along the bar being
+raced, its leading edge glowing, its row warmed; each final figure lands
+with a pop (tutor 64d577d).
