@@ -274,6 +274,17 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+- **The generated `Templates.roc`'s `layouts` key hashes roc's path**
+  (`generate.zig`, `glue_start`: `identity.update(options.roc)`), so the
+  same app generates different files on two machines: the laptop's
+  roc at `/home/y2k/.cache/...`, a CI runner's at `/home/runner/...`.
+  The dragrace committed its copies, and every CI build from
+  2026-10-09 rewrote them, the checkout dirty, the bundle refused: the
+  2026-10-10 05:00 run never built. The dragrace stopped committing them
+  (`fd2996d`). Fix here: key by what glue laid out (a hash of
+  `layouts.zon` and the templates' names), which is the same wherever
+  roc lives and changes when a nightly lays out differently; then the
+  examples' committed copies and the dragrace's can be committed again.
 - roux-tutor, once a roux release speaks HTTP/2 (this branch): the Ship
   page's "On a server" gets a line: over HTTPS the app speaks HTTP/2, a
   browser's every request and event stream on one connection, so live
