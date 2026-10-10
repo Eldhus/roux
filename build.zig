@@ -97,9 +97,9 @@ pub fn build(b: *std.Build) void {
 /// `zig build db-floor`: examples/sqlite's workloads on fourneau and the
 /// host's database.zig, no Roc (host/floor.zig): what a database request
 /// costs without the Roc boundary. Built as the host is:
-/// musl, safe.
+/// musl, safe, the host's CPU level.
 fn db_floor_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
-    const target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl });
+    const target = host_target(b);
     const module = b.createModule(.{
         .root_source_file = b.path("host/floor.zig"),
         .target = target,
@@ -287,11 +287,27 @@ fn roc_path(b: *std.Build) []const u8 {
     return b.fmt("{s}/.local/share/roc-nightly/roc_nightly-linux_x86_64-{s}/roc", .{ home, version[prefix.len..] });
 }
 
+/// The host's target: x86_64 Linux musl at the CPU level `roc build` gives
+/// the app for `x64musl` (Roc's src/target/mod.zig, `CpuLevel.default`):
+/// x86-64-v3 with AES and PCLMUL. The app already needs those, so the host
+/// asking for them excludes no machine, and it gets Zig's hardware AES-GCM
+/// and GHASH for TLS (std.crypto picks them at compile time only). Without
+/// a CPU model, a cross build is baseline x86-64: software AES.
+fn host_target(b: *std.Build) std.Build.ResolvedTarget {
+    return b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .musl,
+        .cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 },
+        .cpu_features_add = std.Target.x86.featureSet(&.{ .aes, .pclmul }),
+    });
+}
+
 /// `zig build platform`: the roux host as libhost.a for x86_64 Linux musl,
 /// where `roc build` finds it (platform/targets/x64musl).
 /// Safe (assertions on) unless -Dhost-optimize says otherwise.
 fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
-    const target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl });
+    const target = host_target(b);
     const optimize = b.option(
         std.builtin.Optimize,
         "host-optimize",
