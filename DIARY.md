@@ -1925,3 +1925,17 @@ On the laptop, the dev app on its two shards, Server-Timing on: static
 file 428,927 requests/s, Roc text 317,611, the menu template 242,206, a
 SQLite read 259,206 (p50 140-236 µs); the browser race of the same lanes
 700-1,200.
+
+## 2026-10-09: a stop drains (fourneau's graceful shutdown)
+
+In production, SIGTERM or SIGINT now drains every shard (fourneau
+f0a3545-f500ef8, DIARY there): no more accepts, idle connections and
+event streams closed at once, requests in flight answered with
+`Connection: close`, the rest cut at 10 s; the host joins its shards and
+prints `roux: stopped`. Under `roux dev` (`ROUX_DEV`) the signals are
+left alone, so SIGTERM kills at once and an edit's restart is as fast as
+before. The shards' start moved into `serve` (tidy: `run` had reached 79
+lines). The shard's fibers come from fourneau's pool, sized from its
+server and redirect (333e773 carried that half). Measured, examples/hello
+on 8 shards under 400 connections of fourneau-load: exit 0 in 208-214 ms
+after SIGTERM, three runs; with `ROUX_DEV` set, killed in 1 ms.
