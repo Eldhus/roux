@@ -180,6 +180,142 @@ var init_said_len: usize = 0;
 /// with it, over the page, until roux dev restarts the app.
 var init_failure: ?[]const u8 = null;
 
+/// Development: the port this app serves, for roux-load to race it.
+var dev_port: u16 = 0;
+
+/// Development: a race of roux-load against this app (`/_dev/race`), run on
+/// a thread of its own, a lane at a time; the shards only read it.
+const Race = struct {
+    running: bool = false,
+    count: usize = 0,
+    /// The lane roux-load is on now.
+    current: usize = 0,
+    paths: [dev.race_lanes_max][dev.race_path_bytes_max]u8 = undefined,
+    path_lens: [dev.race_lanes_max]usize = @splat(0),
+    /// roux-load's JSON for each finished lane ("" before, or if it failed).
+    results: [dev.race_lanes_max][256]u8 = undefined,
+    result_lens: [dev.race_lanes_max]usize = @splat(0),
+};
+var race: Race = .{};
+/// Held while `race` is read or written: microseconds, development only.
+var race_lock: std.atomic.Value(bool) = .init(false);
+
+fn race_hold() void {
+    while (race_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+        std.atomic.spinLoopHint();
+    }
+}
+
+fn race_let_go() void {
+    race_lock.store(false, .release);
+}
+
+/// Starts a race of `paths` unless one runs; says whether it started.
+fn race_start(paths: []const []const u8) bool {
+    race_hold();
+    defer race_let_go();
+    if (race.running) return false;
+    race = .{ .running = true, .count = paths.len };
+    for (paths, 0..) |path, i| {
+        @memcpy(race.paths[i][0..path.len], path);
+        race.path_lens[i] = path.len;
+    }
+    const thread = std.Thread.spawn(.{}, race_run, .{}) catch {
+        race.running = false;
+        return false;
+    };
+    thread.detach();
+    return true;
+}
+
+/// The race's thread: roux-load (`ROUX_DEV_LOAD`, beside roux) on each lane
+/// in turn, on loopback, its JSON kept.
+fn race_run() void {
+    const loader = std.c.getenv("ROUX_DEV_LOAD");
+    // An Io of this thread's own that can spawn (the global one's allocator
+    // fails, and spawning allocates).
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var lane: usize = 0;
+    while (true) : (lane += 1) {
+        race_hold();
+        if (lane == race.count) {
+            race.running = false;
+            race_let_go();
+            return;
+        }
+        race.current = lane;
+        var path_buffer: [dev.race_path_bytes_max]u8 = undefined;
+        const path = path_buffer[0..race.path_lens[lane]];
+        @memcpy(path, race.paths[lane][0..path.len]);
+        race_let_go();
+        var port_buffer: [8]u8 = undefined;
+        const port = std.fmt.bufPrint(&port_buffer, "{d}", .{dev_port}) catch unreachable;
+        const seconds = std.fmt.comptimePrint("{d}", .{dev.race_seconds});
+        const ran = if (loader) |program| std.process.run(std.heap.page_allocator, io, .{
+            .argv = &.{
+                std.mem.span(program),
+                "--port",
+                port,
+                "--path",
+                path,
+                "--connections",
+                "64",
+                "--threads",
+                "2",
+                "--seconds",
+                seconds,
+                "--format",
+                "json",
+            },
+            .stdout_limit = .limited(1024),
+            .stderr_limit = .limited(1024),
+        }) catch |err| blk: {
+            var buffer: [96]u8 = undefined;
+            const said = "roux: roux-load could not run";
+            write_line(2, std.fmt.bufPrint(&buffer, said ++ ": {t}", .{err}) catch said);
+            break :blk null;
+        } else null;
+        race_hold();
+        if (ran) |result| {
+            const json = std.mem.trim(u8, result.stdout, " \n");
+            if (json.len > 0 and json[0] == '{' and json.len <= race.results[lane].len) {
+                @memcpy(race.results[lane][0..json.len], json);
+                race.result_lens[lane] = json.len;
+            }
+            std.heap.page_allocator.free(result.stdout);
+            std.heap.page_allocator.free(result.stderr);
+        }
+        race_let_go();
+    }
+}
+
+/// The race as JSON, in `gpa`'s memory: running, and each lane's path and
+/// roux-load's result (null until it has one).
+fn race_json(gpa: std.mem.Allocator) ![]u8 {
+    race_hold();
+    defer race_let_go();
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const w = &out.writer;
+    try w.print("{{\"running\":{},\"current\":{d},\"loader\":{},\"lanes\":[", .{
+        race.running,
+        race.current,
+        std.c.getenv("ROUX_DEV_LOAD") != null,
+    });
+    for (0..race.count) |i| {
+        if (i > 0) try w.writeAll(",");
+        try w.print("{{\"path\":\"{s}\",\"result\":", .{race.paths[i][0..race.path_lens[i]]});
+        if (race.result_lens[i] > 0) {
+            try w.writeAll(race.results[i][0..race.result_lens[i]]);
+        } else try w.writeAll("null");
+        try w.writeAll("}");
+    }
+    try w.writeAll("]}");
+    return out.toOwnedSlice();
+}
+
 fn init_said_add(bytes: []const u8) void {
     const room = init_said.len - init_said_len;
     const take = @min(room, bytes.len + 1);
@@ -717,6 +853,7 @@ const App = struct {
                 // roux dev starts it again (its database closed by the exit).
                 std.process.exit(dev.restart_code);
             }
+            if (dev.is_race(request.head.path_and_query)) return dev_race(request);
             if (init_failure) |text| return init_failure_page(text, build, program);
         }
         if (static_site) |site| {
@@ -859,6 +996,38 @@ const App = struct {
             .handle = 0,
             .dev_body = page,
         };
+    }
+
+    /// `/_dev/race`, in development: `POST ?paths=…` starts roux-load on
+    /// those lanes (409 while one runs, 400 for bad paths); `GET` is where
+    /// it is, as JSON.
+    fn dev_race(request: *Server.Request) Response {
+        const headers = comptime [_]Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "Cache-Control", .value = "no-store" },
+        };
+        const answer = struct {
+            fn of(status: u16, body: []const u8) Response {
+                return .{
+                    .status = status,
+                    .headers = &headers,
+                    .body = body,
+                    .roc = null,
+                    .handle = 0,
+                };
+            }
+        }.of;
+        if (request.head.method == .post) {
+            var out: [dev.race_lanes_max][]const u8 = undefined;
+            const paths = dev.race_paths(request.head.path_and_query, &out) orelse
+                return answer(400, "{\"started\":false,\"why\":\"paths\"}");
+            if (!race_start(paths)) return answer(409, "{\"started\":false,\"why\":\"running\"}");
+            return answer(202, "{\"started\":true}");
+        }
+        const json = race_json(std.heap.smp_allocator) catch return answer(500, "{}");
+        var response = answer(200, json);
+        response.dev_body = json;
+        return response;
     }
 
     /// `/_dev/stats`, in development: roux dev's last good pass, as it
@@ -1091,6 +1260,7 @@ fn run() !void {
     // as it says the address: a local run of an app that asks for 443.
     const app_port = if (started.port == 0) port_default else started.port;
     const port = port_from(environment("ROUX_PORT")) orelse app_port;
+    dev_port = port; // roux-load races it, in development
     assert(shards >= 1);
     assert(shards <= shards_max);
 

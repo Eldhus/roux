@@ -420,6 +420,15 @@ const State = struct {
         const errors = try std.fs.path.join(arena, &.{ out, errors_name });
         try environ.put("ROUX_DEV_ERRORS", errors);
         try environ.put("ROUX_DEV_STATS", try std.fs.path.join(arena, &.{ out, stats_name }));
+        // roux-load, beside this roux: the page's race from outside the browser.
+        var self_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        if (Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &self_buffer)) |self_len| {
+            const bin = std.fs.path.dirname(self_buffer[0..self_len]) orelse ".";
+            const loader = try std.fs.path.join(arena, &.{ bin, "roux-load" });
+            if (Io.Dir.cwd().access(io, loader, .{})) |_| {
+                try environ.put("ROUX_DEV_LOAD", loader);
+            } else |_| {}
+        } else |_| {}
         state.page_told = false; // a new build shows no failure
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");

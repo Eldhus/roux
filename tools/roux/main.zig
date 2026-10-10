@@ -31,6 +31,7 @@ const dev = @import("dev.zig");
 const usage =
     \\usage: roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
     \\       roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
+    \\       roux load --port N [--path /] [--connections N] [--threads N] [--seconds N]
     \\       roux version
     \\
 ;
@@ -56,6 +57,19 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 2 and std.mem.eql(u8, args[1], "version")) {
         try stderr.print("roux {s}, for roc {s}\n", .{ options.version, options.roc_version });
         return;
+    }
+    // `roux load …`: roux-load, beside this roux (fourneau's load generator).
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "load")) {
+        var buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const self_len = try Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &buffer);
+        const bin = std.fs.path.dirname(buffer[0..self_len]) orelse ".";
+        const argv = try arena.alloc([]const u8, args.len - 1);
+        argv[0] = try std.fs.path.join(arena, &.{ bin, "roux-load" });
+        @memcpy(argv[1..], args[2..]);
+        const err = std.process.replace(io, .{ .argv = argv });
+        try stderr.print("roux: roux-load could not run: {t}\n", .{err});
+        try stderr.flush();
+        std.process.exit(1);
     }
     if (args.len < 3) return usage_exit(stderr);
     const command = args[1];

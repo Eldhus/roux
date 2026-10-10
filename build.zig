@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(vm_tests).step);
 
     platform_step(b, fourneau);
-    tools_step(b, target);
+    tools_step(b, target, fourneau);
     floor_step(b, target);
     db_floor_step(b, fourneau);
 }
@@ -195,7 +195,11 @@ const example_databases = [_][]const u8{
 
 /// `zig build tools`: roux, which builds apps (zig-out/bin/roux build), and
 /// roux-db.
-fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
+fn tools_step(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    fourneau: *std.Build.Dependency,
+) void {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
     // roux runs the pinned Roc nightly `.roc-version` names: here, where
     // nightlies are installed side by side; in a release (`-Droc=roc`), the
@@ -237,6 +241,18 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
         }),
     });
     tools.dependOn(&b.addInstallArtifact(roux_db, .{}).step);
+    // roux-load: fourneau's load generator (io_uring, nothing allocated
+    // while it runs), for `roux load` and roux dev's race. Always fast: it
+    // must outrun the server it measures.
+    const roux_load = b.addExecutable(.{
+        .name = "roux-load",
+        .root_module = b.createModule(.{
+            .root_source_file = fourneau.path("src/load.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    tools.dependOn(&b.addInstallArtifact(roux_load, .{}).step);
     // The examples' databases, compiled next to them (the generated .roc is
     // committed; templates are roux build's).
     const examples = b.step("examples", "Regenerate the examples' databases");
@@ -253,7 +269,7 @@ fn tools_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
 /// (`nightly-2026-10-06-c34079d`), installed under
 /// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 /// roux's version: a release's tag (`v0.1.0`) without the `v`.
-const roux_version = "0.2.3";
+const roux_version = "0.2.4";
 
 /// `.roc-version`: `nightly-2026-10-06-c34079d`.
 fn roc_version(b: *std.Build) []const u8 {

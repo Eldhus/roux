@@ -1896,3 +1896,32 @@ Checked on a copy of examples/sqlite under `roux dev`: a query with an
 unknown column refused over the page with its line; a column added to
 `schema.sql` gave the page above (500, the message, the event); the
 database deleted and the restart posted, "build 1 started again", 200.
+
+## 2026-10-09: roux-load, and a race from outside the browser (0.2.4)
+
+The owner, playing with the tutor: the browser race hung once (three
+green lights, nothing ran, reloads took tries), and asked for a loader
+from outside the browser, "you would get some insane numbers".
+
+The hang: a browser keeps six connections a site, shared by every tab;
+each tutor page holds one open for live reload, and the Speed page held a
+second (its own stream, for save timing). A few tabs, and the race's
+fetches waited forever for a connection, as did reloads. The tutor's page
+now times a save from the old page's `pagehide` (no stream of its own),
+races four requests at a time, and gives each up after three seconds,
+saying why.
+
+The loader: fourneau-load (io_uring, a fixed histogram, nothing allocated
+while it runs) gained `--format json`; roux builds it from fourneau's
+source as `roux-load` (ReleaseFast, in the release tarball), `roux load
+…` runs it. Under `roux dev` the host answers `/_dev/race`: `POST
+?paths=/a,/b` starts roux-load against the app's own port, a lane at a
+time (64 connections, two threads, 2 s), on a thread with its own Io
+(the global single-threaded one's allocator fails, and spawning
+allocates: `OutOfMemory`); `GET` is where it is. The tutor's Speed page
+has a second button for it.
+
+On the laptop, the dev app on its two shards, Server-Timing on: static
+file 428,927 requests/s, Roc text 317,611, the menu template 242,206, a
+SQLite read 259,206 (p50 140-236 µs); the browser race of the same lanes
+700-1,200.
