@@ -274,6 +274,11 @@ Read the diary, keep the tests, delete what did not pay, write it again.
 
 ## Todo
 
+- **`roux build --output` on another filesystem fails: `AttachFailed`.**
+  (2026-10-10, building the dragrace's competitor to /tmp, a tmpfs) The
+  attach copies roc's executable with `copy_file_range`, which the kernel
+  refuses across filesystems (EXDEV); `tools/roux/pipeline.zig` gives
+  up. On EXDEV, copy through a buffer instead, and say which call failed.
 - **The failure overlay can stay after the fix.** (owner, 2026-10-10,
   playing with roux-tutor under `roux dev`, roux 0.2.4) A template broken
   by a changed curly brace showed its error over the page, as it should
