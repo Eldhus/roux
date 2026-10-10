@@ -693,6 +693,7 @@ const App = struct {
         const program = if (dev_build != null) templates.requested.load(.acquire) else 0;
         if (dev_build) |build| {
             if (dev.is_events(request.head.path_and_query)) return dev_events(request, build);
+            if (dev.is_stats(request.head.path_and_query)) return dev_stats();
         }
         if (static_site) |site| {
             if (site.respond(request.head, request.scratch)) |file| {
@@ -707,6 +708,11 @@ const App = struct {
         }
         const request_handle = shard_requests.?.begin(request);
         const roc_request = request_to_roc(request, request_handle);
+        // Development: the app's time, said in `Server-Timing` (below).
+        const started: ?std.Io.Timestamp = if (dev_build != null)
+            std.Io.Timestamp.now(shard_io.?, .awake)
+        else
+            null;
         abi.increfBox(@ptrCast(app.context), 1); // Roc consumes its arguments
         const roc = abi.roc_respond_for_host(roc_request, app.context);
         const kept_writer = give_back_writer(request_handle);
@@ -732,18 +738,9 @@ const App = struct {
                 "never committed: rolled back, 500");
             return status_only(500, roc, request_handle);
         }
-        // The response's headers, as fourneau wants them, in this
-        // connection's scratch memory; their bytes stay Roc's until release.
-        const table: [*]Header = @ptrCast(@alignCast(request.scratch.ptr));
-        const capacity = @min(response_headers_max, request.scratch.len / @sizeOf(Header));
-        const roc_headers = roc.headers.items();
-        const count = @min(roc_headers.len, capacity);
-        for (roc_headers[0..count], table[0..count]) |*roc_header, *header| {
-            header.* = .{ .name = roc_header.name.asSlice(), .value = roc_header.value.asSlice() };
-        }
         var response: Response = .{
             .status = roc.status,
-            .headers = table[0..count],
+            .headers = headers_of(request, roc, started),
             .body = roc.body.items(),
             .roc = roc,
             .handle = request_handle,
@@ -752,6 +749,40 @@ const App = struct {
             if (dev.wants_script(fetch_dest(request))) add_reload_script(&response, build, program);
         }
         return response;
+    }
+
+    /// The response's headers, as fourneau wants them, in this connection's
+    /// scratch memory; their bytes stay Roc's until release. In development
+    /// (`started`), `Server-Timing` too: `respond!` and the template's
+    /// render, which happens as Roc builds the response, for the browser to
+    /// show beside the round trip (PerformanceResourceTiming.serverTiming);
+    /// its text goes in the scratch memory after the table.
+    fn headers_of(
+        request: *Server.Request,
+        roc: ResponseToHost,
+        started: ?std.Io.Timestamp,
+    ) []const Header {
+        const table: [*]Header = @ptrCast(@alignCast(request.scratch.ptr));
+        const capacity = @min(response_headers_max, request.scratch.len / @sizeOf(Header));
+        const roc_headers = roc.headers.items();
+        var count = @min(roc_headers.len, capacity);
+        for (roc_headers[0..count], table[0..count]) |*roc_header, *header| {
+            header.* = .{ .name = roc_header.name.asSlice(), .value = roc_header.value.asSlice() };
+        }
+        const from = started orelse return table[0..count];
+        const micros: u64 = @intCast(@divTrunc(
+            from.durationTo(std.Io.Timestamp.now(shard_io.?, .awake)).nanoseconds,
+            std.time.ns_per_us,
+        ));
+        const text_at = (count + 1) * @sizeOf(Header);
+        if (count == capacity or text_at >= request.scratch.len) return table[0..count];
+        const text = std.fmt.bufPrint(request.scratch[text_at..], "roux;dur={d}.{d:0>3}", .{
+            micros / 1000,
+            micros % 1000,
+        }) catch return table[0..count];
+        table[count] = .{ .name = "Server-Timing", .value = text };
+        count += 1;
+        return table[0..count];
     }
 
     /// The request's `Sec-Fetch-Dest`: what the browser will do with the
@@ -777,6 +808,37 @@ const App = struct {
             response.dev_body = body;
             return;
         }
+    }
+
+    /// `/_dev/stats`, in development: roux dev's last good pass, as it
+    /// wrote it (`ROUX_DEV_STATS`, JSON: what it built and how long it
+    /// took, from noticing the save to the app told); `{}` before one.
+    fn dev_stats() Response {
+        const headers = comptime [_]Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "Cache-Control", .value = "no-store" },
+        };
+        const none: Response = .{
+            .status = 200,
+            .headers = &headers,
+            .body = "{}",
+            .roc = null,
+            .handle = 0,
+        };
+        const memory = std.heap.smp_allocator.alloc(u8, dev.stats_bytes_max) catch return none;
+        const text = dev_file_read(dev_stats_path, memory);
+        if (text.len == 0) {
+            std.heap.smp_allocator.free(memory);
+            return none;
+        }
+        return .{
+            .status = 200,
+            .headers = &headers,
+            .body = text,
+            .roc = null,
+            .handle = 0,
+            .dev_body = memory,
+        };
     }
 
     /// `/_dev/events`, in development: the name serving, then the name
@@ -1040,6 +1102,7 @@ fn start_dev() void {
     _ = std.os.linux.sigaction(.USR1, &action, null);
     // A failed build's report: roux dev rewrites the file and sends SIGUSR2;
     // the events streams send it to the pages, which show it.
+    if (std.c.getenv("ROUX_DEV_STATS")) |stats| dev_stats_path = std.mem.span(stats);
     const errors = std.c.getenv("ROUX_DEV_ERRORS") orelse return;
     dev_errors_path = std.mem.span(errors);
     var failure = action;
@@ -1070,7 +1133,15 @@ fn on_failure_signal(_: std.os.linux.SIG) callconv(.c) void {
 /// The report as the streams send it: read now, at most the most a page
 /// is shown, in `buffer`; "" for none or unreadable.
 fn dev_errors_read(buffer: []u8) []const u8 {
-    const path = dev_errors_path orelse return "";
+    return dev_file_read(dev_errors_path, buffer);
+}
+
+/// roux dev's last good pass (`ROUX_DEV_STATS`), for `/_dev/stats`.
+var dev_stats_path: ?[:0]const u8 = null;
+
+/// A file roux dev writes, read now into `buffer`; "" for none.
+fn dev_file_read(path_or_null: ?[:0]const u8, buffer: []u8) []const u8 {
+    const path = path_or_null orelse return "";
     const linux = std.os.linux;
     const opened = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
     if (linux.errno(opened) != .SUCCESS) return "";

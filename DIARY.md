@@ -1843,3 +1843,25 @@ Roc's error for a record lacking a contract's field, passed straight to
 `X.template({ … })`, says "needs … `X.Ctx`" without naming the field;
 annotating the record (`hello : Hello.Ctx`) puts one error on its line
 with "Hint: This record is missing the field: city". The tutor does that.
+
+## 2026-10-09: live numbers for the tutor's Speed page (0.2.2)
+
+The owner: a live performance page, "time to edit a template load it",
+a local drag race "not that serious". Two dev-mode additions:
+
+- **`/_dev/stats`.** After each good pass roux dev writes
+  `.roux/APP/dev-stats.json` (`ROUX_DEV_STATS`): the build, the rereads,
+  what was built and the microseconds from the save noticed to the app
+  told (a reread) or about to start (a restart), written before the
+  signal, since the page reloads and asks at once. The host serves it.
+- **`Server-Timing: roux;dur=…`** on every Roc response in development:
+  `respond!` with the template's render, which happens as Roc builds the
+  response. The browser reads it (`PerformanceResourceTiming.serverTiming`)
+  beside the round trip. (handle's header table moved to `headers_of`,
+  tidy's 70 lines.)
+
+The tutor's Speed page, in headless Chromium: a markup save timed as roux
+2.8 ms and the browser 184 ms (told to painted; headless, no GPU, a busy
+laptop); a race of five lanes at ~1,000-1,200 requests a second (six
+connections, the browser's cap), the server's share 0.01-0.02 ms of each
+~5 ms round trip; the menu template 0.054 ms by its header.

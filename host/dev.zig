@@ -37,6 +37,17 @@ pub fn event(current: []const u8, first: bool, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, "{s}data: {s}\n\n", .{ retry, current }) catch unreachable;
 }
 
+pub const stats_path = "/_dev/stats";
+
+/// The most of roux dev's stats file the host serves.
+pub const stats_bytes_max = 4096;
+
+/// Whether a request's target is `/_dev/stats`.
+pub fn is_stats(target: []const u8) bool {
+    const end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;
+    return std.mem.eql(u8, target[0..end], stats_path);
+}
+
 /// Whether a request's target (path and query) is the events stream.
 pub fn is_events(target: []const u8) bool {
     const end = std.mem.indexOfScalar(u8, target, '?') orelse target.len;

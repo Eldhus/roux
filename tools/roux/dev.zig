@@ -42,6 +42,10 @@ pub const Options = struct {
 const errors_name = "dev-errors.txt";
 /// roc's messages in a pass, read back into the pass's report.
 const roc_log_name = "roc.log";
+/// The last good pass, which the app serves at `/_dev/stats`
+/// (`ROUX_DEV_STATS`): what was built, and the microseconds from the save
+/// noticed to the app told (a reread) or started again (a restart).
+const stats_name = "dev-stats.json";
 
 const files_max = 4096;
 const directories_max = 256;
@@ -177,6 +181,20 @@ const State = struct {
     /// The running app shows a failure over its pages (`tell_page`).
     page_told: bool = false,
 
+    /// `stats_name` for the pass that just succeeded; a failure to write it
+    /// costs only the stats.
+    fn write_stats(state: *State, arena: Allocator, io: Io, what: []const u8, micros: i64) void {
+        const paths = pipeline.Paths.of(arena, state.options.app) catch return;
+        var dir = Io.Dir.cwd().openDir(io, paths.out_path, .{}) catch return;
+        defer dir.close(io);
+        const text = std.fmt.allocPrint(
+            arena,
+            "{{\"build\":{d},\"reread\":{d},\"built\":\"{s}\",\"micros\":{d}}}\n",
+            .{ state.build, state.rereads, what, micros },
+        ) catch return;
+        dir.writeFile(io, .{ .sub_path = stats_name, .data = text }) catch {};
+    }
+
     /// The running app told what the last pass said (`errors_name`, then
     /// SIGUSR2: host/dev.zig), shown over its pages; "" takes it away.
     fn tell_page(state: *State, arena: Allocator, io: Io, text: []const u8) void {
@@ -214,7 +232,7 @@ const State = struct {
         // (`templates.bin`), no link and no restart, its state kept.
         if (!roc and !static and state.child != null) {
             state.built = now;
-            if (templates) return state.reread(io, stderr, start);
+            if (templates) return state.reread(arena, io, stderr, start);
             // Nothing changed at all. (Exited: start it again, below; it
             // may have been a passing failure.)
             if (state.failing) {
@@ -233,6 +251,9 @@ const State = struct {
         state.build += 1;
         state.rereads = 0;
         state.failing = false;
+        const took = start.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds;
+        const micros = @divTrunc(took, std.time.ns_per_us);
+        state.write_stats(arena, io, built_what(roc, templates), @intCast(micros));
         try state.restart(arena, io, paths);
         try stderr.print("roux dev: build {d} ok ({s}) in {d} ms\n", .{
             state.build,
@@ -302,12 +323,21 @@ const State = struct {
     /// The running app told to reread the templates' program (SIGUSR1;
     /// host/templates.zig): it swaps it in at its next render and tells
     /// the browser, whose page reloads.
-    fn reread(state: *State, io: Io, stderr: *Io.Writer, start: Io.Timestamp) !void {
-        _ = linux.kill(state.child.?.id.?, .USR1);
+    fn reread(
+        state: *State,
+        arena: Allocator,
+        io: Io,
+        stderr: *Io.Writer,
+        start: Io.Timestamp,
+    ) !void {
+        const nanoseconds = start.durationTo(Io.Timestamp.now(io, .awake)).nanoseconds;
         state.rereads += 1;
         state.failing = false;
-        const tenths: u64 = @intCast(@divTrunc(start.durationTo(Io.Timestamp.now(io, .awake))
-            .nanoseconds, 100 * std.time.ns_per_us));
+        // Before the signal: the page reloads at once and asks for them.
+        const micros = @divTrunc(nanoseconds, std.time.ns_per_us);
+        state.write_stats(arena, io, "templates", @intCast(micros));
+        _ = linux.kill(state.child.?.id.?, .USR1);
+        const tenths: u64 = @intCast(@divTrunc(nanoseconds, 100 * std.time.ns_per_us));
         try stderr.print("roux dev: build {d} ok (templates reread, {d}) in {d}.{d} ms\n", .{
             state.build,
             state.rereads,
@@ -368,6 +398,7 @@ const State = struct {
         const out = std.fs.path.dirname(program).?;
         const errors = try std.fs.path.join(arena, &.{ out, errors_name });
         try environ.put("ROUX_DEV_ERRORS", errors);
+        try environ.put("ROUX_DEV_STATS", try std.fs.path.join(arena, &.{ out, stats_name }));
         state.page_told = false; // a new build shows no failure
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");
