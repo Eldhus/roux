@@ -428,7 +428,10 @@ const State = struct {
                 try environ.put("ROUX_DEV_LOAD", loader);
             } else |_| {}
         } else |_| {}
-        state.page_told = false; // a new build shows no failure
+        // A new build shows no failure: the file it reads one from emptied,
+        // or a failure fixed by this build is shown over its pages again.
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = errors, .data = "" });
+        state.page_told = false;
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");
         const output = state.options.app.output;
