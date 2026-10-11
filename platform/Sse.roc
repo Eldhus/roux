@@ -22,7 +22,8 @@ Sse := [].{
 	## A started stream: its request, as the host knows it.
 	Stream := { request : U64 }
 
-	## The largest event `send!` takes; larger is `Refused`.
+	## The largest event `send!` takes, framed (each line's `data: `
+	## counted); larger is `Refused`.
 	event_bytes_max : U64
 	event_bytes_max = 64 * 1024
 
@@ -45,10 +46,10 @@ Sse := [].{
 		}
 	}
 
-	## One event, a chunk of its own.
+	## One event, a chunk of its own, framed by the host in one pass.
 	send! : Stream, Event => Try({}, [SseErr(SseErr)])
-	send! = |Stream.{ request }, event|
-		match Host.response_stream_send!(request, Event.to_bytes(event)) {
+	send! = |Stream.{ request }, Event({ name, data })|
+		match Host.response_stream_event!(request, name, data) {
 			Ok({}) => Ok({})
 			Err(err) => Err(SseErr(from_host(err)))
 		}
@@ -70,8 +71,9 @@ Sse := [].{
 			Err(err) => Err(SseErr(from_host(err)))
 		}
 
-	## One event's bytes, framed (WHATWG HTML, server-sent events).
-	Event := [Event(List(U8))].{
+	## One event: its type and its data, framed as `send!` sends it
+	## (WHATWG HTML, server-sent events; host/sse.zig).
+	Event := [Event({ name : Str, data : Str })].{
 		## An event of a type (`event:`) with data: each line of the data
 		## is a `data:` line, as the format carries lines (CRLF and CR are
 		## line breaks too). A type with a line break would start another
@@ -81,15 +83,16 @@ Sse := [].{
 			if Str.contains(name, "\n") or Str.contains(name, "\r") {
 				Err(InvalidEventName)
 			} else {
-				Ok(Event(Str.to_utf8("event: ${name}\n${data_lines(data)}\n")))
+				Ok(Event({ name, data }))
 			}
 
 		## Data alone: the client's `message` event.
 		data : Str -> Event
-		data = |text| Event(Str.to_utf8("${data_lines(text)}\n"))
+		data = |text| Event({ name: "", data: text })
 
-		to_bytes : Event -> List(U8)
-		to_bytes = |Event(bytes)| bytes
+		## The type ("" for none) and the data, for a handler's tests.
+		parts : Event -> { name : Str, data : Str }
+		parts = |Event(event)| event
 	}
 }
 
@@ -100,19 +103,10 @@ from_host = |err|
 		StreamRefused => Refused
 	}
 
-## `data: ` and the line, for each line; every line ends with LF.
-data_lines : Str -> Str
-data_lines = |text| {
-	crlf_gone = Str.join_with(text.split_on("\r\n"), "\n")
-	lf = Str.join_with(crlf_gone.split_on("\r"), "\n")
-	Str.join_with(lf.split_on("\n").map(|line| "data: ${line}\n"), "")
-}
-
-expect Sse.Event.to_bytes(Sse.Event.data("hi")) == Str.to_utf8("data: hi\n\n")
+# The framing's cases are host/sse.zig's tests.
+expect Sse.Event.parts(Sse.Event.data("hi")) == { name: "", data: "hi" }
 expect
-	Sse.Event.named("patch", "a\nb").map_ok(Sse.Event.to_bytes)
-	== Ok(Str.to_utf8("event: patch\ndata: a\ndata: b\n\n"))
-expect Sse.Event.to_bytes(Sse.Event.data("a\r\nb\rc")) == Str.to_utf8("data: a\ndata: b\ndata: c\n\n")
-expect Sse.Event.to_bytes(Sse.Event.data("")) == Str.to_utf8("data: \n\n")
-expect Sse.Event.named("a\nevent: b", "x").map_ok(Sse.Event.to_bytes) == Err(InvalidEventName)
-expect Sse.Event.named("a\rb", "x").map_ok(Sse.Event.to_bytes) == Err(InvalidEventName)
+	Sse.Event.named("patch", "a\nb").map_ok(Sse.Event.parts)
+	== Ok({ name: "patch", data: "a\nb" })
+expect Sse.Event.named("a\nevent: b", "x").map_ok(Sse.Event.parts) == Err(InvalidEventName)
+expect Sse.Event.named("a\rb", "x").map_ok(Sse.Event.parts) == Err(InvalidEventName)

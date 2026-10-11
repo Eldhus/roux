@@ -1817,12 +1817,13 @@ pub const HostResponse_stream_startArgs = extern struct {
     arg1: RocList(__AnonStruct_82a96c5d55d63488),
 };
 
-/// Arguments for Host.response_stream_send!
-/// Roc signature: U64, List(U8) => Try({}, [StreamDisconnected, StreamRefused])
+/// Arguments for Host.response_stream_event!
+/// Roc signature: U64, Str, Str => Try({}, [StreamDisconnected, StreamRefused])
 /// Refcounted fields are owned by the hosted function.
-pub const HostResponse_stream_sendArgs = extern struct {
+pub const HostResponse_stream_eventArgs = extern struct {
     arg0: u64,
-    arg1: RocListWith(u8, false),
+    arg1: RocStr,
+    arg2: RocStr,
 };
 
 /// Arguments for Host.response_stream_flush!
@@ -1896,10 +1897,10 @@ pub const HostFile_read_utf8Err = FileNotFoundOrFileTooLargeOrFileUnreadable;
 pub const HostRequest_body_read_allErr = BodyAfterStreamOrBodyDisconnectedOrBodyDuringWriteOrBodyInvalidOrBodyTooLarge;
 pub const HostResponse_stream_startArg1 = __AnonStruct_82a96c5d55d63488;
 pub const HostResponse_stream_startErr = StreamDisconnectedOrStreamRefused;
-pub const HostResponse_stream_sendResult = HostResponse_stream_startResult;
-pub const HostResponse_stream_sendResultPayload = HostResponse_stream_startResultPayload;
-pub const HostResponse_stream_sendResultTag = HostResponse_stream_startResultTag;
-pub const HostResponse_stream_sendErr = StreamDisconnectedOrStreamRefused;
+pub const HostResponse_stream_eventResult = HostResponse_stream_startResult;
+pub const HostResponse_stream_eventResultPayload = HostResponse_stream_startResultPayload;
+pub const HostResponse_stream_eventResultTag = HostResponse_stream_startResultTag;
+pub const HostResponse_stream_eventErr = StreamDisconnectedOrStreamRefused;
 pub const HostResponse_stream_flushResult = HostResponse_stream_startResult;
 pub const HostResponse_stream_flushResultPayload = HostResponse_stream_startResultPayload;
 pub const HostResponse_stream_flushResultTag = HostResponse_stream_startResultTag;
@@ -2328,12 +2329,13 @@ pub extern fn hosted_request_body_read_all(arg0: u64, arg1: u64) callconv(.c) Ho
 ///     decrefListOf__AnonStruct_82a96c5d55d63488(arg1, roc_host);
 pub extern fn hosted_response_stream_start(arg0: u64, arg1: RocList(__AnonStruct_82a96c5d55d63488)) callconv(.c) HostResponse_stream_startResult;
 
-/// Hosted symbol for Host.response_stream_send!
-/// Roc signature: U64, List(U8) => Try({}, [StreamDisconnected, StreamRefused])
+/// Hosted symbol for Host.response_stream_event!
+/// Roc signature: U64, Str, Str => Try({}, [StreamDisconnected, StreamRefused])
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
 ///     arg1.decref(roc_host);
-pub extern fn hosted_response_stream_send(arg0: u64, arg1: RocListWith(u8, false)) callconv(.c) HostResponse_stream_startResult;
+///     arg2.decref(roc_host);
+pub extern fn hosted_response_stream_event(arg0: u64, arg1: RocStr, arg2: RocStr) callconv(.c) HostResponse_stream_startResult;
 
 /// Hosted symbol for Host.response_stream_flush!
 /// Roc signature: U64 => Try({}, [StreamDisconnected, StreamRefused])

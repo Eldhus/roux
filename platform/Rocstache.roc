@@ -52,10 +52,10 @@ Rocstache :: [].{
 	}
 
 	expect
-		Sse.Event.to_bytes(patch_event("<div id=\"a\">\n<b>x</b>\n</div>\n"))
-		== Str.to_utf8("event: datastar-patch-elements\ndata: elements <div id=\"a\">\ndata: elements <b>x</b>\ndata: elements </div>\n\n")
+		Sse.Event.parts(patch_event("<div id=\"a\">\n<b>x</b>\n</div>\n"))
+		== { name: "datastar-patch-elements", data: "elements <div id=\"a\">\nelements <b>x</b>\nelements </div>" }
 
 	expect
-		Sse.Event.to_bytes(patch_event("<span id=\"c\">7</span>"))
-		== Str.to_utf8("event: datastar-patch-elements\ndata: elements <span id=\"c\">7</span>\n\n")
+		Sse.Event.parts(patch_event("<span id=\"c\">7</span>"))
+		== { name: "datastar-patch-elements", data: "elements <span id=\"c\">7</span>" }
 }

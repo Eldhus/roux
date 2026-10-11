@@ -29,6 +29,7 @@ const backup_module = @import("backup.zig");
 const RequestsType = @import("requests.zig").RequestsType;
 const dev = @import("dev.zig");
 const templates = @import("templates.zig");
+const sse = @import("sse.zig");
 const sqlite = @import("sqlite");
 const sqlite_vfs = sqlite.vfs;
 const fourneau = @import("fourneau");
@@ -428,12 +429,11 @@ fn read_body(request: *Server.Request, limit_bytes: u64) !BodyBytes {
 
 const StreamResult = @typeInfo(@TypeOf(abi.hosted_response_stream_start)).@"fn".return_type.?;
 const StreamHeaders = @typeInfo(@TypeOf(abi.hosted_response_stream_start)).@"fn".param_types[1].?;
-const StreamBytes = @typeInfo(@TypeOf(abi.hosted_response_stream_send)).@"fn".param_types[1].?;
 const StreamError = @FieldType(@FieldType(StreamResult, "payload"), "err");
 
-/// The largest event: the platform's `Sse.event_bytes_max`, checked again
-/// here. Each effect checks where the stream is, too: the host never lets
-/// what a Roc app does reach one of fourneau's assertions.
+/// The largest event, framed: the platform's `Sse.event_bytes_max`,
+/// checked again here. Each effect checks where the stream is, too: the
+/// host never lets what a Roc app does reach one of fourneau's assertions.
 const stream_event_bytes_max = 64 * 1024;
 
 /// A 200 head with the app's headers; the stream's chunks follow.
@@ -466,13 +466,26 @@ export fn hosted_response_stream_start(
     return stream_ok();
 }
 
-/// One event, a chunk; its bytes are copied or sent before this returns.
-export fn hosted_response_stream_send(handle: u64, bytes: StreamBytes) callconv(.c) StreamResult {
-    defer bytes.decref(host());
+/// One event, framed into the scratch memory (sse.zig), which nothing
+/// else uses once the head is written; a chunk, copied or sent before
+/// this returns.
+export fn hosted_response_stream_event(
+    handle: u64,
+    name: abi.RocStr,
+    data: abi.RocStr,
+) callconv(.c) StreamResult {
+    defer name.decref(host());
+    defer data.decref(host());
     const request = request_from(handle) orelse return stream_error(.stream_refused);
     if (request.stream_state() != .streaming) return stream_error(.stream_refused);
-    if (bytes.len() > stream_event_bytes_max) return stream_error(.stream_refused);
-    request.stream_send(bytes.items()) catch return stream_error(.stream_disconnected);
+    if (sse.find_break(name.asSlice(), 0) != null) return stream_error(.stream_refused);
+    assert(request.scratch.len >= stream_event_bytes_max); // the shard's config
+    const out = request.scratch[0..stream_event_bytes_max];
+    const event = sse.frame(out, name.asSlice(), data.asSlice()) orelse {
+        return stream_error(.stream_refused);
+    };
+    assert(event.len > 0 and event.len <= stream_event_bytes_max);
+    request.stream_send(event) catch return stream_error(.stream_disconnected);
     return stream_ok();
 }
 
@@ -1485,6 +1498,8 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
         // (HTTP/2 by ALPN on HTTPS, by its preface on plain HTTP).
         .http2 = .{},
     };
+    // An event is framed in the scratch memory (hosted_response_stream_event).
+    assert(config.scratch_bytes_max >= stream_event_bytes_max);
     // A handle for every handler the server may run at once.
     const requests = try gpa.create(Requests);
     requests.* = try .init(gpa, config.handlers_max());

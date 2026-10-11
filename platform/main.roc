@@ -19,7 +19,7 @@ platform "roux"
 		"hosted_file_read_utf8": Host.file_read_utf8!,
 		"hosted_request_body_read_all": Host.request_body_read_all!,
 		"hosted_response_stream_start": Host.response_stream_start!,
-		"hosted_response_stream_send": Host.response_stream_send!,
+		"hosted_response_stream_event": Host.response_stream_event!,
 		"hosted_response_stream_flush": Host.response_stream_flush!,
 		"hosted_response_stream_end": Host.response_stream_end!,
 		"hosted_sqlite_open": Host.sqlite_open!,
