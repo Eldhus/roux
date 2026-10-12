@@ -1,0 +1,22 @@
+{
+  "comment": "The toolchain's downloads, each checked by SHA-256: what CI installs (.github/workflows/build.yml), and what a build's build.json hands on to the drag race. The versions must equal .zig-version and .roc-version, which CI checks; a bump changes all three.",
+  "zig": {
+    "version": "0.17.0",
+    "url": "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
+    "sha256": "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+  },
+  "roc": {
+    "version": "nightly-2026-10-06-c34079d",
+    "url": "https://github.com/roc-lang/nightlies/releases/download/nightly-2026-10-06-c34079d/roc_nightly-linux_x86_64-2026-10-06-c34079d.tar.gz",
+    "sha256": "11bf5c73b81e517ae2807f4211fe9e996f48f87a68b1e85b82c4ae2c6499a5d6"
+  },
+  "roc_musl": {
+    "comment": "musl's crt1.o and libc.a for x86_64, from Roc's test platform at the nightly's commit, into platform/targets/x64musl. Each file is pinned, not the archive: GitHub's archives are not byte-stable.",
+    "commit": "c34079d4cde82f475df7c1994c714ba25b29b951",
+    "url": "https://github.com/roc-lang/roc/archive/c34079d4cde82f475df7c1994c714ba25b29b951.tar.gz",
+    "files": {
+      "test/fx/platform/targets/x64musl/crt1.o": "ffb51a69191a69fc34acaec1003fabe245d8841da7036d124d3445718415f9ea",
+      "test/fx/platform/targets/x64musl/libc.a": "85f5eb2316bc6f86be7bd66008488c7d2eca290942b01ad2e86f02f8b5e8c90f"
+    }
+  }
+}

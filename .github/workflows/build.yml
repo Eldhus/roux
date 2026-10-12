@@ -1,0 +1,121 @@
+# roux's build: the platform and the tools, compiled once against
+# fourneau's master and published for the drag race and its site to
+# download. A build is named by what
+# went into it, build-ROUX-FOURNEAU (the two commits, 12 characters each),
+# so a run whose build exists stops at once: on a push to master, daily
+# (fourneau may have moved with no roux push), and by hand. A v* tag
+# publishes its commit as the release app authors name. The newest 20
+# builds are kept. No secrets: releases are made with this run's own token.
+name: build
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  schedule:
+    - cron: '7 7 * * *'
+  workflow_dispatch:
+concurrency:
+  group: build
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  build:
+    if: github.repository == 'Eldhus/roux'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: roux
+      # roux's build.zig.zon depends on ../fourneau.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Eldhus/fourneau
+          ref: master
+          path: fourneau
+      # A build exists once its build.json does, which is uploaded last; a
+      # release left without one by a run cut short is made again.
+      - name: The key
+        id: key
+        run: |
+          roux=$(git -C roux rev-parse HEAD)
+          fourneau=$(git -C fourneau rev-parse HEAD)
+          case "$GITHUB_REF" in
+            refs/tags/v*) tag=${GITHUB_REF#refs/tags/} ;;
+            *) tag="build-${roux:0:12}-${fourneau:0:12}" ;;
+          esac
+          echo "roux $roux, fourneau $fourneau: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null |
+            grep -qx build.json; then
+            echo "built already"
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes
+          fi
+      # toolchain.json's downloads, each checked by SHA-256, unpacked where
+      # a developer's machine keeps them, so build.zig and tools/release.sh
+      # find them as there; musl's two files into platform/targets.
+      - name: The toolchain
+        if: steps.key.outputs.built != 'true'
+        run: |
+          pins=roux/toolchain.json
+          zig_version=$(jq -r .zig.version $pins)
+          roc_version=$(jq -r .roc.version $pins)
+          if [ "$zig_version" != "$(cat roux/.zig-version)" ] || [ "$roc_version" != "$(cat roux/.roc-version)" ]; then
+            echo "toolchain.json names zig $zig_version and roc $roc_version; .zig-version and .roc-version disagree" >&2
+            exit 1
+          fi
+          fetch() {
+            curl -fsSL --retry 5 -o "$RUNNER_TEMP/$2" "$(jq -r ".$1.url" $pins)"
+            echo "$(jq -r ".$1.sha256" $pins)  $RUNNER_TEMP/$2" | sha256sum -c -
+          }
+          fetch zig zig.tar.xz
+          mkdir -p ~/.local/share/zig ~/.local/share/roc-nightly
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C ~/.local/share/zig
+          fetch roc roc.tar.gz
+          tar -xzf "$RUNNER_TEMP/roc.tar.gz" -C ~/.local/share/roc-nightly
+          echo "$HOME/.local/share/roc-nightly/roc_nightly-linux_x86_64-${roc_version#nightly-}" >> "$GITHUB_PATH"
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/roc-source.tar.gz" "$(jq -r .roc_musl.url $pins)"
+          mkdir -p "$RUNNER_TEMP/roc-source" roux/platform/targets/x64musl
+          jq -r '.roc_musl.files | keys[] | "*/" + .' $pins |
+            xargs tar -xzf "$RUNNER_TEMP/roc-source.tar.gz" -C "$RUNNER_TEMP/roc-source" --strip-components=1 --wildcards
+          jq -r '.roc_musl.files | to_entries[] | "\(.value)  \(.key)"' $pins |
+            (cd "$RUNNER_TEMP/roc-source" && sha256sum -c -)
+          jq -r '.roc_musl.files | keys[]' $pins |
+            while read -r path; do cp "$RUNNER_TEMP/roc-source/$path" roux/platform/targets/x64musl/; done
+      - name: Test
+        if: steps.key.outputs.built != 'true'
+        working-directory: roux
+        run: ~/.local/share/zig/zig-x86_64-linux-$(cat .zig-version)/zig build test
+      - name: Build
+        if: steps.key.outputs.built != 'true'
+        working-directory: roux
+        run: tools/release.sh
+      # build.json: the commits, the toolchain the drag race builds with
+      # (toolchain.json's zig and roc), the platform's and the tools' file
+      # names, and every file's SHA-256.
+      - name: Release
+        if: steps.key.outputs.built != 'true'
+        working-directory: roux
+        run: |
+          tag=${{ steps.key.outputs.tag }}
+          (cd dist && sha256sum -- *) | jq -R 'split("  ") | {(.[1]): .[0]}' | jq -s add > "$RUNNER_TEMP/files.json"
+          jq -n --arg roux "$(git rev-parse HEAD)" --arg fourneau "$(git -C ../fourneau rev-parse HEAD)" \
+            --arg platform "$(cd dist && ls -- *.tar.zst)" --arg tools "$(cd dist && ls -- roux-*.tar.gz)" \
+            --slurpfile pins toolchain.json --slurpfile files "$RUNNER_TEMP/files.json" \
+            '{roux: $roux, fourneau: $fourneau, zig: $pins[0].zig, roc: $pins[0].roc,
+              platform: $platform, tools: $tools, files: $files[0]}' > "$RUNNER_TEMP/build.json"
+          cat "$RUNNER_TEMP/build.json"
+          case "$tag" in
+            v*) gh release create "$tag" --title "roux ${tag#v}" --notes "roux ${tag#v}: README, \"Use a release\"." --latest dist/* ;;
+            *) gh release create "$tag" --target "$(git rev-parse HEAD)" --title "$tag" \
+                 --notes-file "$RUNNER_TEMP/build.json" --prerelease --latest=false dist/* ;;
+          esac
+          gh release upload "$tag" "$RUNNER_TEMP/build.json"
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq 'map(select(.tagName | startswith("build-"))) | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' |
+            while read -r old; do gh release delete "$old" --cleanup-tag --yes; done
