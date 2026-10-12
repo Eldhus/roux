@@ -69,6 +69,7 @@ const Server = struct {
         @"textDocument/didChange",
         @"textDocument/didClose",
         @"textDocument/hover",
+        @"textDocument/completion",
     };
 
     const Message = struct {
@@ -126,6 +127,9 @@ const Server = struct {
                     try server.respond(arena, message.id, .{ .contents = contents });
                 } else try server.respond(arena, message.id, null);
             },
+            .@"textDocument/completion" => {
+                try server.respond(arena, message.id, try server.completion(arena, message.params));
+            },
         }
         return null;
     }
@@ -136,6 +140,11 @@ const Server = struct {
             // Whole documents: a template is small, and it is parsed whole.
             .textDocumentSync = .{ .openClose = true, .change = 1 },
             .hoverProvider = true,
+            // A tag opening, a path's dot, a pipe, a partial, a section,
+            // `../`: where a list helps before a word is typed.
+            .completionProvider = .{
+                .triggerCharacters = [_][]const u8{ "{", ".", "|", ">", "#", "^", "?", "/" },
+            },
         },
         .serverInfo = .{ .name = "roux lsp" },
     };
@@ -165,6 +174,37 @@ const Server = struct {
             .buffers = try server.buffers(arena),
         });
         return assist.hover(arena, result, point.offset);
+    }
+
+    const Completion = struct {
+        label: []const u8,
+        /// The protocol's CompletionItemKind: Field 5, Function 3, File 17.
+        kind: u8,
+        detail: []const u8,
+    };
+
+    /// What may be typed at the point a completion request names.
+    fn completion(
+        server: *Server,
+        arena: Allocator,
+        params: std.json.Value,
+    ) Error![]const Completion {
+        const point = server.at(arena, params) orelse return &.{};
+        const items = try assist.complete(arena, server.io, .{
+            .path = point.document.path,
+            .source = point.document.text,
+            .buffers = try server.buffers(arena),
+        }, point.offset);
+        const result = try arena.alloc(Completion, items.len);
+        for (items, result) |item, *entry| {
+            const kind: u8 = switch (item.kind) {
+                .field => 5,
+                .formatter => 3,
+                .template => 17,
+            };
+            entry.* = .{ .label = item.label, .kind = kind, .detail = item.detail };
+        }
+        return result;
     }
 
     /// The open documents, as the analysis reads partials from them.
@@ -472,6 +512,8 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
         ,
         \\{"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":
         ++ "{\"uri\":\"" ++ page ++ "\"},\"position\":{\"line\":0,\"character\":3}}}",
+        \\{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":
+        ++ "{\"uri\":\"" ++ page ++ "\"},\"position\":{\"line\":0,\"character\":3}}}",
         \\{"jsonrpc":"2.0","id":3,"method":"shutdown"}
         ,
         \\{"jsonrpc":"2.0","method":"exit"}
@@ -516,6 +558,9 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
     const hovered = "\"id\":4,\"result\":{\"contents\":{\"kind\":\"markdown\"," ++
         "\"value\":\"```roc\\na : Str\\n```\"}}";
     try testing.expect(std.mem.indexOf(u8, written, hovered) != null);
+    // Top's `a`, in Page's scope: the tag being typed is not counted.
+    const completed = "\"id\":5,\"result\":[{\"label\":\"a\",\"kind\":5,\"detail\":\"Str\"}]";
+    try testing.expect(std.mem.indexOf(u8, written, completed) != null);
 }
 
 test "lsp: the pipe closing without exit is status 1; a non-JSON message is skipped" {
