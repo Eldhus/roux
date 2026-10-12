@@ -1801,6 +1801,13 @@ pub const HostFile_read_utf8Args = extern struct {
     arg1: u64,
 };
 
+/// Arguments for Host.sleep_millis!
+/// Roc signature: U64 => {}
+/// Refcounted fields are owned by the hosted function.
+pub const HostSleep_millisArgs = extern struct {
+    arg0: u64,
+};
+
 /// Arguments for Host.request_body_read_all!
 /// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyDuringWrite, BodyInvalid, BodyTooLarge])
 /// Refcounted fields are owned by the hosted function.
@@ -2316,6 +2323,10 @@ pub extern fn hosted_stderr_line(arg0: RocStr) callconv(.c) void;
 ///     arg0.decref(roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
 pub extern fn hosted_file_read_utf8(arg0: RocStr, arg1: u64) callconv(.c) HostFile_read_utf8Result;
+
+/// Hosted symbol for Host.sleep_millis!
+/// Roc signature: U64 => {}
+pub extern fn hosted_sleep_millis(arg0: u64) callconv(.c) void;
 
 /// Hosted symbol for Host.request_body_read_all!
 /// Roc signature: U64, U64 => Try(List(U8), [BodyAfterStream, BodyDisconnected, BodyDuringWrite, BodyInvalid, BodyTooLarge])

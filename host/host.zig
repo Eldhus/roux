@@ -374,6 +374,19 @@ fn file_error(err: abi.FileNotFoundOrFileTooLargeOrFileUnreadable) FileResult {
     return .{ .tag = .Err, .payload = .{ .err = err } };
 }
 
+/// `Sleep.millis!`: the request's fiber waits on the shard's `Io` (an
+/// io_uring timeout on Evented), so the shard serves other connections
+/// meanwhile; in `init!`, the main thread waits. Canceled (the shard
+/// stopping): it returns early, and the handler's next effect finds out.
+export fn hosted_sleep_millis(milliseconds: u64) callconv(.c) void {
+    const io = shard_io orelse init_io orelse return;
+    const capped: i64 = @intCast(@min(milliseconds, sleep_ms_max));
+    io.sleep(.fromMilliseconds(capped), .awake) catch {};
+}
+
+/// The longest `Sleep.millis!` waits, whatever it asks for: a day.
+const sleep_ms_max = std.time.ms_per_day;
+
 /// The largest file an app may read whole, whatever limit it asks for.
 const file_bytes_max = 64 * 1024 * 1024;
 

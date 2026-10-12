@@ -4,9 +4,12 @@ import pf.Server
 import pf.Sse
 import pf.Url
 import pf.Stdout
+import pf.Sleep
 
 ## Server-sent events, and their negative space:
 ## - `/count?n=N`: N events, the last flushed alone after the others;
+## - `/slow?n=N&ms=M`: N events, M milliseconds apart (`Sleep.millis!`,
+##   the fiber parked: other requests are answered meanwhile);
 ## - `/give-up`: two events, then an error: the stream is cut short (the
 ##   client sees no end), and the connection closes;
 ## - `/body-after`: reading the body once streaming is `BodyAfterStream`,
@@ -29,6 +32,7 @@ respond! = |request, _context| {
 		}
 	match path {
 		"/count" => count!(request)
+		"/slow" => slow!(request)
 		"/give-up" => {
 			stream = Sse.start!(request, [])?
 			Sse.send!(stream, Sse.Event.data("one"))?
@@ -82,6 +86,34 @@ count! = |request| {
 	}
 	Sse.end!(stream)
 }
+
+## Bounded: at most 20 events, at most 5 s apart. Each is flushed before
+## the sleep, or the client would wait for it too.
+slow! : Server.Request => Try(Server.Response(_), [BadRequest(Str), SseErr(Sse.SseErr)])
+slow! = |request| {
+	n = number(request, "n")?
+	ms = number(request, "ms")?
+	if n > 20 or ms > 5_000 {
+		return Err(BadRequest("n is at most 20, ms at most 5000"))
+	}
+	stream = Sse.start!(request, [])?
+	for index in 1..=n {
+		Sse.send!(stream, tick(index, n))?
+		Sse.flush!(stream)?
+		if index < n {
+			Sleep.millis!(ms)
+		}
+	}
+	Sse.end!(stream)
+}
+
+## A query parameter that must be a number.
+number : Server.Request, Str -> Try(U64, [BadRequest(Str)])
+number = |request, name|
+	match Url.query_value(request.target, name) {
+		Ok(text) => U64.from_str(text).map_err(|_| BadRequest("${name} is not a number"))
+		Err(_) => Err(BadRequest("no ${name}"))
+	}
 
 ## Event `index` of `n`: data alone, the client's `message` event.
 tick : U64, U64 -> Sse.Event
