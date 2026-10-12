@@ -68,6 +68,81 @@ pub fn analyze(arena: Allocator, io: Io, options: Options) Allocator.Error!Analy
     return decide(arena, templates[0..count]);
 }
 
+/// The scopes in effect at a point of a checked template, outermost first:
+/// the contract's root, then each enclosing section's, by the check's rule
+/// (a list's element, a record or a Bool itself; `{{^}}` and `{{?}}` open
+/// none). What `../` climbs, and what a path starts from.
+pub const Scopes = struct {
+    types: [parse.depth_max + 1]u16 = undefined,
+    len: u8 = 0,
+
+    pub fn slice(scopes: *const Scopes) []const u16 {
+        return scopes.types[0..scopes.len];
+    }
+};
+
+/// The scopes at `offset` of `source`, whose tree and checked contract
+/// these are. A tag's own path starts from the scopes at its `{{`.
+pub fn scopes_at(
+    contract: *const contract_.Contract,
+    tree: *const parse.Tree,
+    source: []const u8,
+    offset: u32,
+) Scopes {
+    assert(offset <= source.len);
+    var scopes: Scopes = .{};
+    scopes.types[0] = contract.root;
+    scopes.len = 1;
+    const nodes = tree.slice();
+    var index: u16 = 0;
+    while (index < nodes.len) {
+        const node = &nodes[index];
+        // At or past the point: neither this node nor any after encloses it.
+        if (node.offset + node.length > offset) break;
+        const opens = node.kind == .section or node.kind == .inverted or
+            node.kind == .conditional;
+        const body_end = if (node.end < nodes.len) nodes[node.end].offset else source.len;
+        if (!opens or body_end <= offset) {
+            index = node.end;
+            continue;
+        }
+        // The point is in this section's body.
+        if (node.kind == .section) {
+            const target = lookup(contract, scopes.slice(), node.up, node.path_slice()) orelse
+                break;
+            const type_ = contract.get(target);
+            assert(scopes.len <= parse.depth_max);
+            scopes.types[scopes.len] = switch (type_.kind) {
+                .list => type_.element,
+                .record, .bool => target,
+                .unknown, .str, .int, .other => break, // the check refuses it
+            };
+            scopes.len += 1;
+        }
+        index += 1;
+    }
+    assert(scopes.len >= 1);
+    return scopes;
+}
+
+/// The type a path names, `up` scopes out, in a finished contract; null
+/// where there is no such field, or a field of what is not a record.
+pub fn lookup(
+    contract: *const contract_.Contract,
+    scopes: []const u16,
+    up: u8,
+    path: []const []const u8,
+) ?u16 {
+    assert(scopes.len > 0);
+    if (up >= scopes.len) return null;
+    var at = scopes[scopes.len - 1 - up];
+    for (path) |name| {
+        if (contract.get(at).kind != .record) return null;
+        at = contract.field(at, name) orelse return null;
+    }
+    return at;
+}
+
 /// What generate.zig refuses in a template's file name.
 fn name_refused(name: []const u8) ?[]const u8 {
     if (!parse.is_type_name(name)) return "a template's name is a Roc type name, like `Page`";
@@ -398,6 +473,38 @@ test "analysis: a partial is read from its file, a missing one named at its tag"
     const problem = analysis.problem.?;
     try testing.expectEqualStrings("Gone", page[problem.offset..][0..problem.length]);
     try testing.expectEqualStrings("is not a template here (no such .rocstache)", problem.message);
+}
+
+test "analysis: the scopes at a point follow the sections around it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const page = "{{ t }}{{#xs}}A{{#on}}B{{/on}}{{^ys}}C{{/ys}}{{?f}}D{{/f}}{{/xs}}E";
+    const path = "/app/templates/Page.rocstache";
+    const options: Options = .{ .path = path, .source = page, .buffers = &.{} };
+    const analysis = try analyze(arena, testing.io, options);
+    const contract = analysis.contract.?;
+    const tree = analysis.templates[0].tree;
+    const element = "{ f : Bool, on : Bool, ys : Bool }";
+    const cases = [_]struct { at: u8, innermost: []const u8, depth: u8 }{
+        .{ .at = 'A', .innermost = element, .depth = 2 },
+        .{ .at = 'B', .innermost = "Bool", .depth = 3 },
+        .{ .at = 'C', .innermost = element, .depth = 2 },
+        .{ .at = 'D', .innermost = element, .depth = 2 },
+        .{ .at = 'E', .innermost = "{ t : Str, xs : List(" ++ element ++ ") }", .depth = 1 },
+    };
+    for (cases) |case| {
+        const offset: u32 = @intCast(std.mem.indexOfScalar(u8, page, case.at).?);
+        const scopes = scopes_at(contract, tree, page, offset);
+        try testing.expectEqual(case.depth, scopes.len);
+        var buffer: [128]u8 = undefined;
+        var writer: Io.Writer = .fixed(&buffer);
+        try contract_.write_line(contract, scopes.slice()[scopes.len - 1], &writer);
+        try testing.expectEqualStrings(case.innermost, writer.buffered());
+    }
+    // A section's own tag is read in the scopes outside it.
+    const tag: u32 = @intCast(std.mem.indexOf(u8, page, "{{#on}}").? + 3);
+    try testing.expectEqual(@as(u8, 2), scopes_at(contract, tree, page, tag).len);
 }
 
 test "analysis: a file name roux build refuses" {

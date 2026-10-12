@@ -51,6 +51,9 @@ pub const formatters_known = "len, plural, upper, lower, url";
 
 pub const Pipe = struct {
     formatter: Formatter,
+    /// The formatter's name as written, a slice of the source: where the
+    /// language server finds it under the cursor.
+    name: []const u8 = "",
     args: [args_max][]const u8 = @splat(""),
 };
 
@@ -159,6 +162,37 @@ pub fn parse(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!voi
         try push_text(tree, source[text_start..], text_start, diagnostic);
     }
     assert(tree.len <= nodes_max);
+}
+
+/// A tag's bytes: from its `{{` to after its closing braces; no end when
+/// it never closes.
+pub const Span = struct { start: u32, end: ?u32 };
+
+/// The tag around `offset` (after its `{{`, up to its closing braces),
+/// found as `parse` finds tags; null in text or in the `{{% %}}` block.
+/// For the language server, whose cursor is often in a tag still being
+/// typed, in a template that does not parse.
+pub fn tag_at(source: []const u8, offset: u32) ?Span {
+    assert(offset <= source.len);
+    if (source.len > source_bytes_max) return null;
+    var at: usize = 0;
+    if (std.mem.startsWith(u8, source, "{{%")) {
+        const block_end = std.mem.indexOfPos(u8, source, 3, "%}}") orelse return null;
+        at = block_end + 3;
+        if (offset < at) return null;
+    }
+    while (std.mem.indexOfPos(u8, source, at, "{{")) |start| {
+        if (start >= offset) return null;
+        const triple = std.mem.startsWith(u8, source[start..], "{{{");
+        const close: []const u8 = if (triple) "}}}" else "}}";
+        const inner_end = std.mem.indexOfPos(u8, source, start + close.len, close) orelse
+            return .{ .start = @intCast(start), .end = null };
+        const end = inner_end + close.len;
+        if (offset <= inner_end) return .{ .start = @intCast(start), .end = @intCast(end) };
+        assert(end > at);
+        at = end;
+    }
+    return null;
 }
 
 /// The `{{% %}}` block, if the file starts with one: recorded, and the
@@ -392,7 +426,7 @@ fn pipe(piece: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Pipe {
         "is not a formatter (" ++ formatters_known ++ "): compute it in Roc, into a field",
         name,
     );
-    var result: Pipe = .{ .formatter = formatter };
+    var result: Pipe = .{ .formatter = formatter, .name = name };
     var args_len: u8 = 0;
     var rest = std.mem.trim(u8, piece[name_end..], " \t");
     while (rest.len > 0) {
@@ -504,6 +538,25 @@ test "parse: a node's length spans its tag, braces included, or its text" {
     for (tree.slice(), expected) |node, written| {
         try testing.expectEqualStrings(written, source[node.offset..][0..node.length]);
     }
+}
+
+test "parse: tag_at finds the tag around an offset as parse does, closed or not" {
+    const source = "{{% Ctx : {} %}}<p>{{ a | upper }}</p>{{{ b }}}{{#c";
+    const none: ?Span = null;
+    try testing.expectEqual(none, tag_at(source, 5)); // the block
+    try testing.expectEqual(none, tag_at(source, 17)); // text
+    // `{{ a | upper }}` is 19..34: inside from after `{{` to before `}}`.
+    try testing.expectEqual(Span{ .start = 19, .end = 34 }, tag_at(source, 21).?);
+    try testing.expectEqual(Span{ .start = 19, .end = 34 }, tag_at(source, 32).?);
+    try testing.expectEqual(none, tag_at(source, 33));
+    try testing.expectEqual(Span{ .start = 38, .end = 47 }, tag_at(source, 41).?);
+    try testing.expectEqual(Span{ .start = 47, .end = null }, tag_at(source, source.len).?);
+    // The formatter's name is a slice of the source.
+    var tree: Tree = .{};
+    var diagnostic: Diagnostic = .{};
+    try parse(source[0..38], &tree, &diagnostic);
+    const name = tree.slice()[1].pipes[0].name;
+    try testing.expectEqual(@as(usize, 26), @intFromPtr(name.ptr) - @intFromPtr(source.ptr));
 }
 
 test "parse: a tag alone on its line takes the line with it" {

@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 const parse = @import("parse.zig");
 const generate = @import("generate.zig");
 const analysis = @import("analysis.zig");
+const assist = @import("assist.zig");
 
 pub const documents_max = generate.templates_max;
 /// A source's bytes, escaped in JSON (`\u0001` is six bytes for one).
@@ -67,6 +68,7 @@ const Server = struct {
         @"textDocument/didOpen",
         @"textDocument/didChange",
         @"textDocument/didClose",
+        @"textDocument/hover",
     };
 
     const Message = struct {
@@ -117,6 +119,13 @@ const Server = struct {
                 if (closed) |uri| try server.notify(arena, uri, &.{});
                 try server.publish(arena);
             },
+            .@"textDocument/hover" => {
+                const text = try server.hover(arena, message.params);
+                if (text) |markdown| {
+                    const contents = .{ .kind = "markdown", .value = markdown };
+                    try server.respond(arena, message.id, .{ .contents = contents });
+                } else try server.respond(arena, message.id, null);
+            },
         }
         return null;
     }
@@ -126,9 +135,46 @@ const Server = struct {
             .positionEncoding = "utf-16",
             // Whole documents: a template is small, and it is parsed whole.
             .textDocumentSync = .{ .openClose = true, .change = 1 },
+            .hoverProvider = true,
         },
         .serverInfo = .{ .name = "roux lsp" },
     };
+
+    /// A point in an open document, as a request names it.
+    const At = struct { textDocument: struct { uri: []const u8 }, position: Position };
+
+    /// The document a request names, and the offset of its point; null
+    /// for a document not open, or a request not readable.
+    fn at(server: *const Server, arena: Allocator, params: std.json.Value) ?struct {
+        document: Document,
+        offset: u32,
+    } {
+        const json: std.json.ParseOptions = .{ .ignore_unknown_fields = true };
+        const request = std.json.parseFromValueLeaky(At, arena, params, json) catch return null;
+        const index = server.find(request.textDocument.uri) orelse return null;
+        const document = server.documents.items[index];
+        return .{ .document = document, .offset = offset_of(document.text, request.position) };
+    }
+
+    /// Markdown about the point a hover request names, or null.
+    fn hover(server: *Server, arena: Allocator, params: std.json.Value) Error!?[]const u8 {
+        const point = server.at(arena, params) orelse return null;
+        const result = try analysis.analyze(arena, server.io, .{
+            .path = point.document.path,
+            .source = point.document.text,
+            .buffers = try server.buffers(arena),
+        });
+        return assist.hover(arena, result, point.offset);
+    }
+
+    /// The open documents, as the analysis reads partials from them.
+    fn buffers(server: *const Server, arena: Allocator) Allocator.Error![]const analysis.Buffer {
+        const result = try arena.alloc(analysis.Buffer, server.documents.items.len);
+        for (server.documents.items, result) |document, *buffer| {
+            buffer.* = .{ .path = document.path, .text = document.text };
+        }
+        return result;
+    }
 
     const Opened = struct { textDocument: struct { uri: []const u8, text: []const u8 } };
     const Changed = struct {
@@ -206,15 +252,12 @@ const Server = struct {
 
     /// Every open template checked, and what is wrong in each published.
     fn publish(server: *Server, arena: Allocator) Error!void {
-        const buffers = try arena.alloc(analysis.Buffer, server.documents.items.len);
-        for (server.documents.items, buffers) |document, *buffer| {
-            buffer.* = .{ .path = document.path, .text = document.text };
-        }
+        const open = try server.buffers(arena);
         for (server.documents.items) |document| {
             const result = try analysis.analyze(arena, server.io, .{
                 .path = document.path,
                 .source = document.text,
-                .buffers = buffers,
+                .buffers = open,
             });
             const problem = result.problem orelse {
                 try server.notify(arena, document.uri, &.{});
@@ -360,6 +403,26 @@ fn position_of(source: []const u8, offset: u32) Position {
     return .{ .line = @intCast(std.mem.count(u8, before, "\n")), .character = character };
 }
 
+/// The byte offset of a position: past its line's end is the line's end,
+/// past the last line the source's end.
+fn offset_of(source: []const u8, position: Position) u32 {
+    var line_start: usize = 0;
+    for (0..position.line) |_| {
+        const newline = std.mem.indexOfScalarPos(u8, source, line_start, '\n') orelse
+            return @intCast(source.len);
+        line_start = newline + 1;
+    }
+    var at = line_start;
+    var character: u32 = 0;
+    while (at < source.len and source[at] != '\n' and character < position.character) {
+        const length = std.unicode.utf8ByteSequenceLength(source[at]) catch 1;
+        character += if (length == 4) 2 else 1;
+        at = @min(at + length, source.len);
+    }
+    assert(at <= source.len);
+    return @intCast(at);
+}
+
 const testing = std.testing;
 
 /// `json` framed as the protocol frames it.
@@ -372,6 +435,12 @@ test "lsp: positions count UTF-16 units, URIs decode" {
     try testing.expectEqual(Position{ .line = 0, .character = 2 }, position_of(source, 2));
     // `é` is two bytes and one unit; the emoji four bytes and two units.
     try testing.expectEqual(Position{ .line = 1, .character = 4 }, position_of(source, 10));
+    // And back, a position past its line or the source clamped.
+    for ([_]u32{ 0, 2, 3, 4, 10, 18 }) |offset| {
+        try testing.expectEqual(offset, offset_of(source, position_of(source, offset)));
+    }
+    try testing.expectEqual(@as(u32, 2), offset_of(source, .{ .line = 0, .character = 9 }));
+    try testing.expectEqual(source.len, offset_of(source, .{ .line = 7, .character = 0 }));
     const path = try path_of(testing.allocator, "file:///a/b%20c/T.rocstache");
     defer testing.allocator.free(path);
     try testing.expectEqualStrings("/a/b c/T.rocstache", path);
@@ -399,8 +468,10 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
         \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":
         ++ "{\"uri\":\"" ++ top ++ "\",\"version\":2},\"contentChanges\":" ++
             "[{\"text\":\"{{ a }}\"}]}}",
-        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{}}
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{}}
         ,
+        \\{"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":
+        ++ "{\"uri\":\"" ++ page ++ "\"},\"position\":{\"line\":0,\"character\":3}}}",
         \\{"jsonrpc":"2.0","id":3,"method":"shutdown"}
         ,
         \\{"jsonrpc":"2.0","method":"exit"}
@@ -442,6 +513,9 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
     try testing.expect(std.mem.indexOfPos(u8, written, at, page_published) == null);
     try testing.expect(std.mem.indexOf(u8, written, "\"id\":2,\"error\":{\"code\":-32601") != null);
     try testing.expect(std.mem.indexOf(u8, written, "\"id\":3,\"result\":null") != null);
+    const hovered = "\"id\":4,\"result\":{\"contents\":{\"kind\":\"markdown\"," ++
+        "\"value\":\"```roc\\na : Str\\n```\"}}";
+    try testing.expect(std.mem.indexOf(u8, written, hovered) != null);
 }
 
 test "lsp: the pipe closing without exit is status 1; a non-JSON message is skipped" {
