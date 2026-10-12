@@ -229,6 +229,24 @@ pub fn equal(a: *const Contract, ai: u16, b: *const Contract, bi: u16, depth: u8
     };
 }
 
+/// Whether every partial a tree calls (through the partials it inlines,
+/// too) has its contract: whether `of` can run on it yet. One that does
+/// not exist counts as known: the check reports it. generate.zig and the
+/// language server order the contracts by it.
+pub fn calls_known(templates: []const Template, tree: *const parse.Tree, depth: u8) bool {
+    if (depth > partial_depth_max) return true; // the check reports the depth
+    for (tree.slice()) |node| {
+        if (node.kind != .partial) continue;
+        const target = for (templates) |t| {
+            if (std.mem.eql(u8, t.name, node.text)) break t;
+        } else continue;
+        if (node.called()) {
+            if (target.contract == null) return false;
+        } else if (!calls_known(templates, target.tree, depth + 1)) return false;
+    }
+    return true;
+}
+
 pub fn id(name: []const u8, line: []const u8) u64 {
     var hash = std.hash.Fnv1a_64.init();
     hash.update(name);

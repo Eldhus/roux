@@ -410,7 +410,7 @@ fn compute_contracts(
         if (remaining == 0) return;
         var progressed = false;
         for (kept, 0..) |k, index| {
-            if (done[index] or !calls_known(templates, k.tree.?, 0)) continue;
+            if (done[index] or !contract_.calls_known(templates, k.tree.?, 0)) continue;
             const key = contract_key(kept, templates, index);
             if (k.contract == null or k.contract_key != key) {
                 const fresh = try contract_of(gpa, cache, templates, index, errors);
@@ -482,23 +482,6 @@ fn reach(
             hasher.update(std.mem.asBytes(&kept[target].contract_key));
         }
     }
-}
-
-/// Whether every partial a tree calls (through the partials it inlines,
-/// too) has its contract. One that does not exist counts as known: the
-/// contract's check reports it.
-fn calls_known(templates: []const contract_.Template, tree: *const parse.Tree, depth: u8) bool {
-    if (depth > contract_.partial_depth_max) return true; // the check reports the depth
-    for (tree.slice()) |node| {
-        if (node.kind != .partial) continue;
-        const target = for (templates) |t| {
-            if (std.mem.eql(u8, t.name, node.text)) break t;
-        } else continue;
-        if (node.called()) {
-            if (target.contract == null) return false;
-        } else if (!calls_known(templates, target.tree, depth + 1)) return false;
-    }
-    return true;
 }
 
 /// Template `index`'s contract, checked, in the cache's memory.

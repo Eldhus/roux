@@ -10,3 +10,5 @@ pub const program = @import("program.zig");
 pub const parse = @import("parse.zig");
 pub const bytecode = @import("bytecode.zig");
 pub const layout = @import("layout.zig");
+/// The templates' language server, `roux lsp`.
+pub const lsp = @import("lsp.zig");

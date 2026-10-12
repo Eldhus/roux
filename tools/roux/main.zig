@@ -2,6 +2,7 @@
 //!
 //!   roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
 //!   roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
+//!   roux lsp
 //!
 //! `build` generates the app's templates (each `templates/Page.rocstache`
 //! beside `APP.roc` gets its `templates/Page.roc` contract; their bytecode goes in
@@ -15,6 +16,10 @@
 //! the browser reloading itself (dev.zig). `--static` names the app's
 //! static files' directory, whose changes restart it.
 //!
+//! `lsp` is the templates' language server, for an editor (Zed's rocstache
+//! extension): what `build` would say is wrong in a template, as it is
+//! typed (tools/rocstache/lsp.zig). It needs no roc.
+//!
 //! roc is the one tool: the nightly roux's `.roc-version` names, which
 //! roux checks before anything. Built here, roux runs it where nightlies
 //! are installed side by side; a release (`-Droc=roc`) runs the `roc` on
@@ -25,12 +30,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
 const options = @import("roux_options");
+const rocstache = @import("rocstache");
 const pipeline = @import("pipeline.zig");
 const dev = @import("dev.zig");
 
 const usage =
     \\usage: roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
     \\       roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
+    \\       roux lsp
     \\       roux load --port N [--path /] [--connections N] [--threads N] [--seconds N]
     \\                 [--mode requests|events]
     \\       roux version
@@ -71,6 +78,18 @@ pub fn main(init: std.process.Init) !void {
         try stderr.print("roux: roux-load could not run: {t}\n", .{err});
         try stderr.flush();
         std.process.exit(1);
+    }
+    if (args.len == 2 and std.mem.eql(u8, args[1], "lsp")) {
+        var stdin_buffer: [64 * 1024]u8 = undefined;
+        var stdout_buffer: [64 * 1024]u8 = undefined;
+        var stdin: Io.File.Reader = .initStreaming(.stdin(), io, &stdin_buffer);
+        var stdout: Io.File.Writer = .initStreaming(.stdout(), io, &stdout_buffer);
+        const status = try rocstache.lsp.run(init.gpa, io, .{
+            .input = &stdin.interface,
+            .output = &stdout.interface,
+            .log = stderr,
+        });
+        std.process.exit(status);
     }
     if (args.len < 3) return usage_exit(stderr);
     const command = args[1];

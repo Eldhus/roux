@@ -12,5 +12,7 @@ test {
     _ = @import("roc.zig");
     _ = @import("program.zig");
     _ = @import("generate.zig");
+    _ = @import("analysis.zig");
+    _ = @import("lsp.zig");
     _ = @import("root.zig");
 }

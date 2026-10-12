@@ -61,6 +61,9 @@ pub const Node = struct {
     text: []const u8,
     /// Byte offset of the tag in the source, for messages.
     offset: u32,
+    /// The tag's bytes, braces included, or the text's: what the language
+    /// server underlines, and finds under the cursor.
+    length: u32 = 0,
     /// How many `../` precede the path.
     up: u8 = 0,
     path: [path_max][]const u8 = @splat(""),
@@ -138,7 +141,13 @@ pub fn parse(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!voi
         if (text_end > text_start) {
             try push_text(tree, source[text_start..text_end], text_start, diagnostic);
         }
+        const pushed = tree.len;
         try add_tag(found, tag_start, tree, &open, &open_len, diagnostic);
+        // A comment or a closing tag pushes nothing; any other tag, one node.
+        if (tree.len > pushed) {
+            assert(tree.len == pushed + 1);
+            tree.nodes[pushed].length = @intCast(found.end - tag_start);
+        }
         at = if (line) |l| l.after else found.end;
         text_start = at;
     }
@@ -318,6 +327,7 @@ fn push_text(tree: *Tree, text: []const u8, offset: usize, diagnostic: *Diagnost
         .kind = .text,
         .text = text,
         .offset = @intCast(offset),
+        .length = @intCast(text.len),
         .end = tree.len + 1,
     }, diagnostic);
 }
@@ -480,6 +490,20 @@ test "parse: partials, conditionals, raw values, parents, arguments with spaces"
     try testing.expectEqual(@as(u8, 1), n[4].up);
     try testing.expectEqualStrings("a dish", n[4].pipes[0].args[0]);
     try testing.expectEqual(@as(u8, 0), n[5].path_len);
+}
+
+test "parse: a node's length spans its tag, braces included, or its text" {
+    var tree: Tree = .{};
+    var diagnostic: Diagnostic = .{};
+    const source = "<p>{{{ raw }}}{{#xs}}{{ . | upper }}{{/xs}}{{! c }}{{> Top frame}}</p>";
+    try parse(source, &tree, &diagnostic);
+    const expected = [_][]const u8{
+        "<p>", "{{{ raw }}}", "{{#xs}}", "{{ . | upper }}", "{{> Top frame}}", "</p>",
+    };
+    try testing.expectEqual(expected.len, tree.len);
+    for (tree.slice(), expected) |node, written| {
+        try testing.expectEqualStrings(written, source[node.offset..][0..node.length]);
+    }
 }
 
 test "parse: a tag alone on its line takes the line with it" {
