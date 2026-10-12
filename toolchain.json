@@ -1,5 +1,5 @@
 {
-  "comment": "The toolchain's downloads, each checked by SHA-256: what CI installs (.github/workflows/build.yml), and what a build's build.json hands on to the drag race. The versions must equal .zig-version and .roc-version, which CI checks; a bump changes all three.",
+  "comment": "The toolchain's downloads, each checked by SHA-256: what CI installs (.github/workflows/build.yml), and what the drag race builds roux and its competitors with. The versions must equal .zig-version and .roc-version, which CI checks; a bump changes all three.",
   "zig": {
     "version": "0.17.0",
     "url": "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
