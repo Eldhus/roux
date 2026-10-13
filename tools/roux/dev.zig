@@ -2,7 +2,7 @@
 //!
 //! One loop, one pass at a time, so a build never races a generator. A
 //! pass hashes the app's sources by kind and runs only what changed: a
-//! query (`*.sql`) runs roux-db; then the templates are generated, which
+//! query (`db/*.sql`) runs roux-db; then the templates are generated, which
 //! rewrites a `Page.roc` only when its contract changed, and the program
 //! (`templates.bin`) when the markup did. Markup alone: the running app
 //! is told to reread the program (SIGUSR1), no compiler, no restart. Roc
@@ -63,10 +63,9 @@ const directories_max = 256;
 const Digests = struct {
     roc: u64 = 0,
     templates: u64 = 0,
+    /// The queries: `db/*.sql` only (what roux-db reads).
     sql: u64 = 0,
     static: u64 = 0,
-    /// An app without queries has no `db/` for roux-db.
-    sql_files: u32 = 0,
 };
 
 const Kind = enum { roc, templates, sql, static, other };
@@ -236,7 +235,8 @@ const State = struct {
         else
             try digests(arena, io, state.options);
         const paths: pipeline.Paths = try .of(arena, app);
-        if (before.sql_files > 0 and before.sql != state.built.sql) {
+        // roux-db runs when roux build would: the app has `db/schema.sql`.
+        if (before.sql != state.built.sql and pipeline.has_queries(io, app)) {
             queries(arena, io, paths, app, stderr) catch |err| return state.failed(stderr, err);
         }
         const built = state.generate_and_roc(arena, io, paths, before, p, stderr) catch |err|
@@ -510,7 +510,6 @@ fn digests(arena: Allocator, io: Io, options: Options) !Digests {
     defer walker.deinit();
     var hashes: [4]std.hash.Wyhash = @splat(.init(0));
     var files: u32 = 0;
-    var sql_files: u32 = 0;
     while (try walker.next(io)) |entry| {
         if (entry.basename[0] == '.') continue;
         if (entry.kind == .directory) {
@@ -520,9 +519,11 @@ fn digests(arena: Allocator, io: Io, options: Options) !Digests {
         if (entry.kind != .file) continue;
         const kind: Kind = if (in_static(options, entry.path)) .static else kind_of(entry.basename);
         if (kind == .other) continue;
+        // A `.sql` elsewhere (another app's, beside this one) is no query
+        // of this app's.
+        if (kind == .sql and !std.mem.startsWith(u8, entry.path, "db/")) continue;
         files += 1;
         if (files > files_max) return error.TooManyFiles;
-        if (kind == .sql) sql_files += 1;
         const content = try entry.dir.readFileAlloc(io, entry.basename, arena, .limited(16 << 20));
         const hash = &hashes[@backingInt(kind)];
         hash.update(entry.path);
@@ -533,7 +534,6 @@ fn digests(arena: Allocator, io: Io, options: Options) !Digests {
         .templates = hashes[@backingInt(Kind.templates)].final(),
         .sql = hashes[@backingInt(Kind.sql)].final(),
         .static = hashes[@backingInt(Kind.static)].final(),
-        .sql_files = sql_files,
     };
 }
 

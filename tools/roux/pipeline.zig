@@ -95,8 +95,9 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     try stderr.print("{s}\n", .{app.output});
 }
 
-/// Whether the app has a `db/` directory of queries for roux-db.
-fn has_queries(io: Io, app: App) bool {
+/// Whether the app has queries for roux-db: a `db/schema.sql` (`roux dev`
+/// asks the same).
+pub fn has_queries(io: Io, app: App) bool {
     var dir = Io.Dir.cwd().openDir(io, app.dir, .{}) catch return false;
     defer dir.close(io);
     dir.access(io, "db/schema.sql", .{}) catch return false;
