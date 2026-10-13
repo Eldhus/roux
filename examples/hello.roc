@@ -2,6 +2,12 @@ app [Context, program] { pf: platform "../platform/main.roc" }
 
 import pf.Server
 
+## The smallest app, and its negative space:
+## - `/`: `hello`;
+## - `/echo`: the body read (at most 1 MB), its method and length
+##   answered; a body that cannot be read is 400;
+## - anything else 404.
+
 Context : {}
 
 program = { init!, respond! }

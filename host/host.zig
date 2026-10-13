@@ -1331,8 +1331,8 @@ fn run() !void {
 
 /// The shards, until a stop has drained them all. In production a stop is
 /// SIGTERM or SIGINT (fourneau's stop.zig); in development SIGTERM kills
-/// at once, as it always did: `roux dev` restarts the app on every edit,
-/// and a drain would wait on the page's event stream.
+/// at once, as it always did: `roux dev` restarts the app on a Roc or
+/// static edit, and a drain would wait on the page's event stream.
 fn serve(app: *App, listen: Listen, stop: *fourneau.stop.Stop) !void {
     assert(listen.stop == &stop.requested);
     if (dev_build == null) try stop.watch(); // before any shard's thread

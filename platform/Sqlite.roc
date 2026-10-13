@@ -23,8 +23,8 @@ import Server
 ## No SQL is read at run time: every statement was prepared at startup,
 ## and a call names it by number. A read runs on its request's shard. A
 ## write runs on the one writer, one request at a time: `write!` waits a
-## bounded time (`WriterBusy`, answered 503), is refused to a GET or a
-## HEAD (`WriteRefused`), and a transaction not committed when `respond!`
+## bounded time (`WriterBusy`, answered 503), is refused to a safe method
+## (GET, HEAD, OPTIONS, TRACE: `WriteRefused`), and a transaction not committed when `respond!`
 ## returns is rolled back: an error answer stays as it is (a constraint
 ## the handler made a 400), a success becomes a 500, since what it did was
 ## undone. `ROUX_DATABASE` overrides the
@@ -64,7 +64,8 @@ Sqlite := [].{
 		## A UNIQUE, NOT NULL, CHECK or FOREIGN KEY constraint, as SQLite
 		## says it.
 		Constraint(Str),
-		## A write for a GET or HEAD, a second `write!`, a write without one.
+		## A write for a safe method (GET, HEAD, OPTIONS, TRACE), a second
+		## `write!`, a write without one.
 		WriteRefused(Str),
 		Failed(Str),
 		## Generated code and the host disagree: regenerate with roux-db.
@@ -115,8 +116,9 @@ Sqlite := [].{
 	## oldest copies past `keep`; gives the copy's name. A copy with its
 	## name is whole and on the disk. It reads a snapshot, so writes go
 	## on meanwhile; outside the app the database cannot be copied (roux
-	## holds a lock on it). A copy writes files: refused to a GET or a
-	## HEAD (`WriteRefused`); one at a time, one a second (`Failed`).
+	## holds a lock on it). A copy writes files: refused to a safe method
+	## (GET, HEAD, OPTIONS, TRACE: `WriteRefused`); one at a time, one a
+	## second (`Failed`).
 	backup! : Db, Server.Request, Backup => Try(Str, [DbErr(Err)])
 	backup! = |_db, request, { directory, keep }|
 		match Host.sqlite_backup!(request.body, directory, keep) {
