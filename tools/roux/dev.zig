@@ -353,6 +353,9 @@ const State = struct {
         // Before the signal: the page reloads at once and asks for them.
         const micros = @divTrunc(nanoseconds, std.time.ns_per_us);
         state.write_stats(arena, io, "templates", @intCast(micros));
+        // A failure shown is taken away first: the reloaded page's stream
+        // reads the errors file as it connects.
+        if (state.page_told) state.tell_page(arena, io, "");
         _ = linux.kill(state.child.?.id.?, .USR1);
         const tenths: u64 = @intCast(@divTrunc(nanoseconds, 100 * std.time.ns_per_us));
         try stderr.print("roux dev: build {d} ok (templates reread, {d}) in {d}.{d} ms\n", .{
