@@ -1,5 +1,5 @@
 ## The host's effects and the records that cross the boundary. Apps use
-## them through Server, Stdout and Stderr, never directly.
+## them through the platform's exposed modules (main.roc), never directly.
 Host := [].{
 	Header : { name : Str, value : Str }
 

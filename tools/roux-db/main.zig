@@ -1,5 +1,4 @@
-//! roux-db: an app's typed queries, generated as rocstache compiles
-//! templates.
+//! roux-db: an app's typed queries.
 //!
 //!   roux-db gen DIR
 //!

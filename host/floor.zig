@@ -5,8 +5,8 @@
 //!   roux-db-floor DATABASE [PORT]
 //!
 //! fourneau, one shard per CPU, and the host's own database.zig: the same
-//! statements as examples/sqlite (by_id, with_stars, Reviews.add), a reader
-//! per shard, the one writer; the answers formatted here, in Zig.
+//! statements as examples/sqlite (by_id, with_stars, Reviews.add), a
+//! shard's reader pool, the one writer; the answers formatted here, in Zig.
 //!
 //!   GET /dishes/ID                one dish
 //!   GET /                         every dish with its stars (a LEFT JOIN)

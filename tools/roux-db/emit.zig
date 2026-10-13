@@ -1,8 +1,7 @@
 //! The generated Roc: a module per query file, and `Database.roc`, the
 //! schema and every statement in the order the host prepares them. Each
-//! generated function names the SQL line it runs (`# Dishes.sql:6`), as
-//! rocstache-gen names template lines. Pure: compiled statements in, text
-//! out, tabs as Roc writes them.
+//! generated function names the SQL line it runs (`# Dishes.sql:6`).
+//! Pure: compiled statements in, text out, tabs as Roc writes them.
 
 const std = @import("std");
 const assert = std.debug.assert;

@@ -1,9 +1,9 @@
 #!/bin/sh
 # A roux release in dist/: the platform as roc's URL package
 # (HASH.tar.zst, from `roc bundle`) and the tools, static, as
-# roux-VERSION-x86_64-linux.tar.gz (roux, roux-db, roux-load). Then
-#   gh release create vVERSION dist/* --title ... --notes ...
-# An app names the platform by the release's URL:
+# roux-VERSION-x86_64-linux.tar.gz (roux, roux-db, roux-load). A pushed
+# vVERSION tag has .github/workflows/build.yml build dist/ again and
+# publish it as the release. An app names the platform by the release's URL:
 #   https://github.com/Eldhus/roux/releases/download/vVERSION/HASH.tar.zst
 #
 # Needs the pinned Zig and roc (.zig-version, .roc-version, installed side

@@ -1,10 +1,13 @@
 //! roux's build: the host, for `roc build`, and its checks.
 //!
 //!   zig build platform     the host as libhost.a, where roc finds it
-//!   zig build test         tidy over the host and tools, the tools' tests
+//!   zig build test         tidy, and every test: the host, SQLite's build,
+//!                          roux-db, the template compiler, the VM
 //!   zig build tools        roux, which builds apps (templates included),
-//!                          and roux-db, the typed-query generator
+//!                          roux-db, the typed-query generator, and
+//!                          roux-load, fourneau's load generator
 //!   zig build examples     the examples' databases, regenerated
+//!   zig build db-floor     the database workloads without Roc (host/floor.zig)
 //!   zig build sqlite-floor SQLite alone, timed (sqlite/floor.zig)
 //!
 //! fourneau (../fourneau) is a dependency: the server, our port of
@@ -37,7 +40,8 @@ pub fn build(b: *std.Build) void {
     // ...which the build system cannot see: a change to a file the test does
     // not import would otherwise reuse the cached run (as in fourneau).
     run_tests.has_side_effects = true;
-    const test_step = b.step("test", "Run tidy over the host, and SQLite's tests");
+    const test_step = b.step("test", "Run tidy and every test: the host, SQLite's build, " ++
+        "roux-db, the template compiler, the VM");
     test_step.dependOn(&run_tests.step);
     // SQLite's build, checked: its options, its behaviour, with SQLite's
     // own assertions on (SQLITE_DEBUG). The test root imports the bindings
@@ -225,7 +229,7 @@ fn tools_step(
         },
     });
     const roux = b.addExecutable(.{ .name = "roux", .root_module = roux_module });
-    const tools = b.step("tools", "Build roux and roux-db");
+    const tools = b.step("tools", "Build roux, roux-db and roux-load");
     tools.dependOn(&b.addInstallArtifact(roux, .{}).step);
     const roux_db = b.addExecutable(.{
         .name = "roux-db",
@@ -265,9 +269,6 @@ fn tools_step(
     }
 }
 
-/// The pinned Roc nightly's `roc`: `.roc-version` names it
-/// (`nightly-2026-10-06-c34079d`), installed under
-/// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 /// roux's version: a release's tag (`v0.1.0`) without the `v`.
 const roux_version = "0.2.6";
 
@@ -279,6 +280,9 @@ fn roc_version(b: *std.Build) []const u8 {
     return std.mem.trim(u8, pin, " \n");
 }
 
+/// The pinned Roc nightly's `roc`: `.roc-version` names it
+/// (`nightly-2026-10-06-c34079d`), installed under
+/// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 fn roc_path(b: *std.Build) []const u8 {
     const version = roc_version(b);
     const prefix = "nightly-";

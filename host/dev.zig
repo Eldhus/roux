@@ -10,12 +10,21 @@
 //!   itself: the name now, then the name again each time the program is
 //!   reread, and a comment every 15 s until the client leaves. A restart
 //!   drops the stream; the browser's EventSource reconnects (after
-//!   `retry`, 50 ms) and hears the new build's name.
-//! - Every `text/html` answer of the app gets a script appended that
-//!   knows the name the page was made under, and reloads the page when
-//!   the stream says another. The name is read before the page is
-//!   rendered: a page made while the program was reread names the older
-//!   one, and reloads once more, never one time too few.
+//!   `retry`, 50 ms) and hears the new build's name. A failed build's
+//!   report comes as `build-failed` events (shown over the page),
+//!   `build-ok` takes it away.
+//! - Every `text/html` answer a browser shows (`Sec-Fetch-Dest` `document`
+//!   or `iframe`, or none sent) gets a script appended that knows the name
+//!   the page was made under, and reloads the page when the stream says
+//!   another. The name is read before the page is rendered: a page made
+//!   while the program was reread names the older one, and reloads once
+//!   more, never one time too few.
+//! - `GET /_dev/stats`: roux dev's last good pass, as JSON.
+//! - `POST /_dev/restart`: the app exits 75, and roux dev starts it again.
+//! - `POST /_dev/race?paths=/a,/b[&mode=events]`: roux-load against this
+//!   app, a lane a path, one after another; `GET` says where it is.
+//! - An `init!` that failed is answered by a page saying why (500), with a
+//!   button to start it again.
 
 const std = @import("std");
 const assert = std.debug.assert;
