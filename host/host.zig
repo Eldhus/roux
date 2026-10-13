@@ -3,7 +3,8 @@
 //! `roc build` links this library (libhost.a) with the compiled app and
 //! musl into one static executable; musl's crt1.o calls our `main`.
 //!
-//! Each request runs on its connection's fiber: the host builds the
+//! Each request runs on its own fiber (its connection's, or an HTTP/2
+//! stream's): the host builds the
 //! request record, calls the app's `respond!` (`roc_respond_for_host`),
 //! and sends what it returns. A Roc effect that waits (reading the body)
 //! is plain blocking-style code over `std.Io`, so it yields the fiber, not
@@ -45,8 +46,8 @@ const ResponseToHost = @typeInfo(@TypeOf(abi.roc_respond_for_host)).@"fn".return
 const RocHeaders = @FieldType(RequestFromHost, "headers");
 const RocHeader = @typeInfo(@typeInfo(@TypeOf(RocHeaders.items)).@"fn".return_type.?).pointer.child;
 
-/// Requests carry at most this many headers into Roc; the server's own
-/// limit (`headers_max`) is lower.
+/// A response carries at most this many of Roc's headers: more are dropped
+/// from a response (`headers_of`) and refuse a stream (`stream_start`).
 const response_headers_max = 64;
 const port_default: u16 = 8080;
 const shards_max = 256;
@@ -1308,10 +1309,10 @@ fn run() !void {
         const site = try std.heap.page_allocator.create(fourneau.site.Site);
         const gpa = std.heap.page_allocator;
         // Brotli copies in production; in development none: roux dev
-        // restarts the app on every edit, and compressing costs ~0.1 s
-        // a large file.
+        // restarts the app on a Roc or static edit, and compressing costs
+        // ~0.1 s a large file.
         const options: fourneau.site.LoadOptions = .{ .brotli = dev_build == null };
-        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, "", options);
+        site.* = try fourneau.site.Site.load(gpa, startup_io, static_dir, options);
         static_site = site;
     }
 
@@ -1463,9 +1464,9 @@ fn port_from(text: ?[]const u8) ?u16 {
 
 /// One shard per CPU this process may run on (its affinity mask, so
 /// `taskset` decides), at most `shards_max`, and at most `ROUX_SHARDS` when
-/// the deployment says (`roux dev` runs two: a restart right after a stop
-/// found the old process's io_uring memory not yet freed, and eight shards
-/// twice over did not fit 8 MiB of locked memory).
+/// the deployment says (`roux dev` runs two: development needs no more,
+/// and two rings fit the locked memory (`RLIMIT_MEMLOCK`, often 8 MiB) while the old process's are still being freed; fourneau's
+/// `listen.runtime_init` waits out the rest).
 fn shard_count() u32 {
     var set: std.os.linux.cpu_set_t = @splat(0);
     const linux = std.os.linux;
