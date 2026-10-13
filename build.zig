@@ -197,8 +197,8 @@ const example_databases = [_][]const u8{
     "examples/sqlite/db",
 };
 
-/// `zig build tools`: roux, which builds apps (zig-out/bin/roux build), and
-/// roux-db.
+/// `zig build tools`: roux, which builds apps (zig-out/bin/roux build),
+/// roux-db and roux-load.
 fn tools_step(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -269,8 +269,9 @@ fn tools_step(
     }
 }
 
-/// roux's version: a release's tag (`v0.1.0`) without the `v`.
-const roux_version = "0.2.6";
+/// roux's version, set in build.zig.zon only: a release's tag (`v0.2.6`)
+/// without the `v`.
+const roux_version = @import("build.zig.zon").version;
 
 /// `.roc-version`: `nightly-2026-10-06-c34079d`.
 fn roc_version(b: *std.Build) []const u8 {

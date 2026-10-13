@@ -70,7 +70,7 @@ jobs:
         run: |
           tag=${GITHUB_REF#refs/tags/}
           if [ ! -e "dist/roux-${tag#v}-x86_64-linux.tar.gz" ]; then
-            echo "the tag $tag is not build.zig's roux_version:" dist/* >&2
+            echo "the tag $tag is not build.zig.zon's version:" dist/* >&2
             exit 1
           fi
           gh release create "$tag" --title "roux ${tag#v}" --notes "roux ${tag#v}: README, \"Use a release\"." --latest dist/*

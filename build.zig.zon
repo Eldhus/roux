@@ -1,6 +1,8 @@
 .{
     .name = .roux,
-    .version = "0.1.0",
+    // roux's version, set here only: build.zig gives it to `roux version`
+    // and the release's file names, and a release's tag is it with a `v`.
+    .version = "0.2.6",
     .fingerprint = 0xaf6f4fab96f74033,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
