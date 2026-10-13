@@ -1,7 +1,8 @@
 //! The steps of building a roux app, shared by `roux build` (all of them)
-//! and `roux dev` (only those an edit needs): the templates generated (their
-//! modules, and their bytecode's object, written directly), then roc, then
-//! the link.
+//! and `roux dev` (only those an edit needs): the queries' modules
+//! (roux-db), the templates generated (their modules and the program,
+//! `templates.bin`), roc building the executable while glue lays out the
+//! contracts, then the program attached to roc's executable.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -47,19 +48,17 @@ pub const Mode = enum {
 /// Where a build's files go, relative to the app's directory (where roc
 /// runs) and to the working directory.
 pub const Paths = struct {
-    /// `.roux/main`, from the app's directory.
-    out: []const u8,
-    /// The same, from the working directory.
+    /// The build directory, `.roux/main` from the app's directory, here from
+    /// the working directory.
     out_path: []const u8,
     /// `.roux/main/app`, roc's executable, from the app's directory.
-    archive: []const u8,
+    executable: []const u8,
 
     pub fn of(arena: Allocator, app: App) Allocator.Error!Paths {
         const out = try std.fmt.allocPrint(arena, ".roux/{s}", .{app.name});
         return .{
-            .out = out,
             .out_path = try std.fs.path.join(arena, &.{ app.dir, out }),
-            .archive = try std.fmt.allocPrint(arena, "{s}/app", .{out}),
+            .executable = try std.fmt.allocPrint(arena, "{s}/app", .{out}),
         };
     }
 };
@@ -84,14 +83,14 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     try wait_roc(io, &roc);
     const compiled_at = Io.Timestamp.now(io, .awake);
     try attach(arena, io, paths, app);
-    const linked_at = Io.Timestamp.now(io, .awake);
+    const attached_at = Io.Timestamp.now(io, .awake);
     const line = "roux: {d} templates ({d} ms{s}), roc and glue {d} ms, attach {d} ms: ";
     try stderr.print(line, .{
         generated.templates,
         milliseconds(start, begun_at),
         if (generated.modules_changed) ", modules changed" else "",
         milliseconds(begun_at, compiled_at),
-        milliseconds(compiled_at, linked_at),
+        milliseconds(compiled_at, attached_at),
     });
     try stderr.print("{s}\n", .{app.output});
 }
@@ -135,7 +134,6 @@ pub fn begin(
         .app = try std.fs.path.join(arena, &.{ app.dir, rocstache.generate.templates_dir }),
         .build = paths.out_path,
         .roc = app.roc,
-        .cache = cache,
         .changed = changed,
     }, cache, stderr);
 }
@@ -145,7 +143,7 @@ pub fn begin(
 /// null for the terminal.
 pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode, log: ?Io.File) !std.process.Child {
     var buffer: [std.fs.max_path_bytes + 16]u8 = undefined;
-    const output = try std.fmt.bufPrint(&buffer, "--output={s}", .{paths.archive});
+    const output = try std.fmt.bufPrint(&buffer, "--output={s}", .{paths.executable});
     const argv = &.{ app.roc, "build", mode.roc_opt(), app.file, output };
     const to: std.process.SpawnOptions.StdIo = if (log) |file| .{ .file = file } else .inherit;
     return spawn_to(io, argv, app.dir, to);
@@ -158,7 +156,7 @@ pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode, log: ?Io.File) !std
 pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App) !void {
     const copies_max = 16; // 16 GiB: no executable is
     const cwd = Io.Dir.cwd();
-    const built = try std.fs.path.joinZ(arena, &.{ app.dir, paths.archive });
+    const built = try std.fs.path.joinZ(arena, &.{ app.dir, paths.executable });
     const program_path = try std.fs.path.join(arena, &.{
         paths.out_path,
         rocstache.generate.program_name,
@@ -196,13 +194,9 @@ pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
     if (!(try roc.wait(io)).success()) return error.ChildFailed;
 }
 
-/// A tool started; one that cannot be is named, with why, as a tool that
-/// ran and failed would have said (rare: a plain unbuffered line).
-fn spawn(io: Io, argv: []const []const u8, cwd: []const u8) !std.process.Child {
-    return spawn_to(io, argv, cwd, .inherit);
-}
-
-/// The same, its output (stdout and stderr) to `to`.
+/// A tool started, its output (stdout and stderr) to `to`; one that cannot
+/// be is named, with why, as a tool that ran and failed would have said
+/// (rare: a plain unbuffered line).
 fn spawn_to(
     io: Io,
     argv: []const []const u8,

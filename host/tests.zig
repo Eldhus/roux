@@ -1,9 +1,11 @@
 //! The host's test root: tidy over this tree, with fourneau's rules.
 //!
-//! The host builds only as libhost.a for `roc build`, so its behaviour is
-//! tested through the platform's examples; what a test binary can check
-//! here is the code itself, and the database, which knows nothing of Roc
-//! (database_test.zig).
+//! The host builds only as libhost.a for `roc build`, so a test binary
+//! checks the parts that need no Roc: the database (database_test.zig),
+//! request handles, SSE framing, dev mode's pages and queries, backups'
+//! names, the VM's escaping and digits. The compiler and the VM together
+//! have their own root (templates_test.zig); the rest is tested through
+//! the platform's examples.
 
 const std = @import("std");
 const tidy = @import("tidy");

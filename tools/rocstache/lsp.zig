@@ -4,7 +4,7 @@
 //! It keeps the documents the editor has open and, after each change,
 //! checks every open template as `roux build` does (analysis.zig) and
 //! publishes what is wrong in each: an edit to a partial changes what its
-//! includers report, so all are checked again (a few, each microseconds).
+//! includers report, so all are checked again.
 //!
 //! What comes from the editor is validated, never asserted: a message it
 //! cannot frame ends the server; one it can frame but not read is skipped.

@@ -35,8 +35,8 @@ pub const Kind = enum {
 
 pub const Field = struct { name: []const u8, offset: u32, type: u32 };
 
-/// A tag of a union: the app's `Page`, each tag a template and its
-/// contract.
+/// A tag of a union: in the app's `Templates.Template`, each tag a
+/// template holding its contract.
 pub const Tag = struct {
     name: []const u8,
     discriminant: u32,

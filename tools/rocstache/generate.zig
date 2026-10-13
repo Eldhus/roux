@@ -1,5 +1,5 @@
 //! An app's templates, generated: every `*.rocstache` in the app's
-//! directory gets its module beside it (`Page.roc`: the contract and a
+//! `templates/` gets its module beside it (`Page.roc`: the contract and a
 //! one-line `template`, roc.zig) and the app gets `Templates.roc`, the
 //! contracts are laid out by Roc's compiler (`roc glue`, only when one
 //! changed: layout.zig), and the build directory gets the program, every
@@ -41,14 +41,11 @@ pub const Options = struct {
     /// `*.rocstache` and the modules written for them; missing for an app
     /// without templates.
     app: []const u8,
-    /// Where the templates' object goes (`<app>/.roux/main`), and glue's
-    /// files (`glue/`).
+    /// The build directory (`<app>/.roux/main`): the program
+    /// (`templates.bin`) and glue's files (`glue/`).
     build: []const u8,
     /// The pinned `roc`, for glue.
     roc: []const u8,
-    /// What a long-lived caller (`roux dev`) keeps between generations
-    /// (cache.zig); null for one generation alone.
-    cache: ?*Cache = null,
     /// The templates whose files changed since the last generation, by
     /// name (inotify told `roux dev`); the others' kept sources are theirs.
     /// Null: read every one, and list the directory.
@@ -65,7 +62,8 @@ pub const Result = struct {
     templates: u32,
     /// Some `Page.roc` changed: the app's Roc must be built again.
     modules_changed: bool,
-    /// The program changed: a running app must reread it (or be linked).
+    /// The program changed: a running app must reread it (or the binary be
+    /// attached again).
     program_changed: bool,
 };
 
@@ -73,21 +71,14 @@ pub const Error = error{Invalid} || Allocator.Error || Io.Dir.ReadFileAllocError
     Io.Dir.WriteFileError || Io.Dir.RenameError || Io.Dir.CreateDirPathError ||
     Io.Dir.OpenError || Io.Dir.Iterator.Error || Io.Writer.Error;
 
-/// Generates everything; a template's mistake is printed to `errors` as
-/// `Page.rocstache:12:5: ...` and returns `error.Invalid`. `gpa` is used
-/// as an arena: what is kept goes in the cache's own allocator.
-pub fn generate(gpa: Allocator, io: Io, options: Options, errors: *Io.Writer) Error!Result {
-    var alone: Cache = .init(gpa);
-    var generation = try begin(gpa, io, options, options.cache orelse &alone, errors);
-    return finish(gpa, io, &generation, errors);
-}
-
 /// A generation in two halves, so a caller can build the app's Roc while
 /// glue lays the contracts out (neither needs the other): `begin` writes
 /// the modules and starts glue, when it must run; `finish` waits for it
 /// and writes the program. Between them, `modules_changed` says whether
 /// the Roc must be built. Every `begin` that returns is followed by
-/// `finish` or `abandon`.
+/// `finish` or `abandon`. A template's mistake is printed to `errors` as
+/// `Page.rocstache:12:5: ...` and returns `error.Invalid`. `gpa` is used
+/// as an arena: what is kept goes in the cache's own allocator (cache.zig).
 pub const Generation = struct {
     options: Options,
     cache: *Cache,
@@ -320,7 +311,7 @@ fn contains(names: []const []const u8, name: []const u8) bool {
     return false;
 }
 
-/// Every `*.rocstache` in the app's directory, by name, sorted.
+/// Every `*.rocstache` in `templates/`, by name, sorted.
 fn template_names(
     gpa: Allocator,
     io: Io,

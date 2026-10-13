@@ -14,10 +14,14 @@
 //! The app runs with `ROUX_DEV` set to the build's number, so the host
 //! answers `/_dev/events` and adds the reload script to HTML (host/dev.zig):
 //! a restart drops the browser's stream, it reconnects to the new build
-//! and reloads. A failed build leaves the last good one serving.
+//! and reloads. It also gets `ROUX_DEV_TEMPLATES`, `ROUX_DEV_ERRORS` and
+//! `ROUX_DEV_STATS` (files in the build directory) and `ROUX_DEV_LOAD`
+//! (roux-load beside roux, when there). A failed build leaves the last
+//! good one serving.
 //!
 //! One line per pass on stderr, for people and agents to wait on:
-//! `roux dev: build 4 ok (templates) in 412 ms`, or `... failed`.
+//! `roux dev: build 3 ok (templates reread, 2) in 0.8 ms` for markup,
+//! `roux dev: build 4 ok (roc) in 1097 ms` for a restart, or `... failed`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -54,9 +58,6 @@ const restart_code = 75;
 
 const files_max = 4096;
 const directories_max = 256;
-/// Saves come in bursts (an editor writes, renames, writes again): a pass
-/// starts once the app's sources are quiet this long.
-const quiet_milliseconds = 0;
 
 /// What the app is built from, a hash of each kind's paths and contents.
 const Digests = struct {
@@ -181,7 +182,9 @@ const Pass = struct {
 const State = struct {
     options: Options,
     environ: *const std.process.Environ.Map,
-    /// What generation keeps between passes (the parsed layouts).
+    /// What generation keeps between passes (tools/rocstache/cache.zig:
+    /// each template's parse, contract and code, the layouts, the outputs'
+    /// hashes).
     cache: rocstache.generate.Cache,
     built: Digests = .{},
     build: u32 = 0,
@@ -243,7 +246,7 @@ const State = struct {
         const static = now.static != state.built.static;
         const templates = built.program_changed;
         // Only markup changed, and the app runs: it rereads the program
-        // (`templates.bin`), no link and no restart, its state kept.
+        // (`templates.bin`), no attach and no restart, its state kept.
         if (!roc and !static and state.child != null) {
             state.built = now;
             if (templates) return state.reread(arena, io, stderr, start);
@@ -404,8 +407,9 @@ const State = struct {
     }
 
     /// The old build stopped (its database closed), the new one started,
-    /// on two shards unless the environment says otherwise (host.zig,
-    /// shard_count: eight right after eight did not fit 8 MiB).
+    /// on two shards unless `ROUX_SHARDS` says otherwise (host.zig,
+    /// shard_count: development needs no more, and two rings fit the locked
+    /// memory while the old process's are still being freed).
     fn restart(state: *State, arena: Allocator, io: Io, paths: pipeline.Paths) !void {
         state.stop(io);
         var environ = try state.environ.clone(arena);
@@ -546,8 +550,6 @@ const Watch = struct {
     static: std.AutoHashMapUnmanaged(i32, void) = .empty,
     /// What the events named since the last pass.
     changed: Changed = .{},
-    /// The app's directory's watch: templates are its files.
-    root: i32 = -1,
     /// Where events are read (a field: a safe build fills a local
     /// `undefined` buffer on every read).
     buffer: [64 * 1024]u8 align(@alignOf(linux.inotify_event)) = undefined,
@@ -556,9 +558,9 @@ const Watch = struct {
         templates: bool = false,
         /// Roc, SQL, static files, or events lost (the queue overflowed).
         other: bool = false,
-        /// A template created or deleted, one outside the app's own
-        /// directory, or more than `names` holds: generation lists the
-        /// directory and reads every template.
+        /// A template created or deleted, one outside `templates/`, or more
+        /// than `names` holds: generation lists the directory and reads
+        /// every template.
         listing: bool = false,
         /// The templates whose files were written, by name: offsets into
         /// `bytes` (not slices, so the struct can be copied).
@@ -610,7 +612,7 @@ const Watch = struct {
         const fd: i32 = @intCast(try syscall(linux.inotify_init1(linux.IN.CLOEXEC)));
         var watch: Watch = .{ .fd = fd, .gpa = gpa, .io = io, .options = options };
         errdefer watch.deinit(gpa);
-        watch.root = try watch.add_tree("");
+        _ = try watch.add_tree("");
         return watch;
     }
 
@@ -659,8 +661,6 @@ const Watch = struct {
         return wd;
     }
 
-    /// A directory made (or moved in) under a watched one: it and what it
-    /// holds are watched now, and what it holds may be sources.
     /// Whether `wd` watches the app's `templates/`, where an edit names
     /// its template (elsewhere a `.rocstache` is no template of the app's).
     fn is_templates(watch: *const Watch, wd: i32) bool {
@@ -668,6 +668,8 @@ const Watch = struct {
         return std.mem.eql(u8, path, rocstache.generate.templates_dir);
     }
 
+    /// A directory made (or moved in) under a watched one: it and what it
+    /// holds are watched now, and what it holds may be sources.
     fn appeared(watch: *Watch, wd: i32, name: []const u8) void {
         const parent = watch.paths.get(wd) orelse return;
         const relative = std.fs.path.join(watch.gpa, &.{ parent, name }) catch return;
@@ -679,9 +681,9 @@ const Watch = struct {
 
     const Woken = enum { source, exited, stopping };
 
-    /// Blocks until a source changes, then until the sources are quiet; or
-    /// until the app (`child_fd`, a pidfd; -1 for none) exits, or a signal
-    /// asks roux dev to stop.
+    /// Blocks until a source changes, then drains the events already
+    /// queued; or until the app (`child_fd`, a pidfd; -1 for none) exits,
+    /// or a signal asks roux dev to stop.
     fn wait(watch: *Watch, child_fd: i32) !Woken {
         while (!stopping.load(.monotonic)) {
             switch (try watch.read(-1, child_fd)) {
@@ -690,7 +692,9 @@ const Watch = struct {
                 .quiet => {},
             }
         } else return .stopping;
-        while (try watch.read(quiet_milliseconds, -1) != .quiet) {
+        // No quiet window: inotify's events mean complete files, so a burst
+        // costs at most one more pass.
+        while (try watch.read(0, -1) != .quiet) {
             if (stopping.load(.monotonic)) return .stopping;
         }
         return .source;

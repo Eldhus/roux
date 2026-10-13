@@ -1,6 +1,5 @@
-//! The template compiler's test root (`zig build test`). What the host's
-//! renderer does with the bytecode is tested through the examples, whose
-//! pages are compared.
+//! The template compiler's test root (`zig build test`). The compiler and
+//! the host's VM together, against an oracle: host/templates_test.zig.
 
 test {
     _ = @import("parse.zig");

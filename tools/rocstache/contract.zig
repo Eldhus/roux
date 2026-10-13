@@ -155,7 +155,8 @@ pub fn of(
     try walker.check(self, 0, self.tree.len, &.{contract.root}, 0);
 }
 
-/// The contract as one line of Roc, fields by name: what the id hashes.
+/// The contract as one line of Roc, fields by name, every type spelled out
+/// (what glue reads).
 pub fn write_line(
     contract: *const Contract,
     index: u16,
@@ -164,7 +165,7 @@ pub fn write_line(
     return write_line_as(contract, index, writer, .spelled);
 }
 
-/// `.spelled` writes every type out (what the id hashes and glue reads);
+/// `.spelled` writes every type out (what glue reads);
 /// `.named` writes a called partial's contract as `Top.Ctx` (the module).
 pub fn write_line_as(
     contract: *const Contract,
@@ -245,14 +246,6 @@ pub fn calls_known(templates: []const Template, tree: *const parse.Tree, depth: 
         } else if (!calls_known(templates, target.tree, depth + 1)) return false;
     }
     return true;
-}
-
-pub fn id(name: []const u8, line: []const u8) u64 {
-    var hash = std.hash.Fnv1a_64.init();
-    hash.update(name);
-    hash.update("\x00");
-    hash.update(line);
-    return hash.final();
 }
 
 pub const int_names = [_][]const u8{ "U8", "U16", "U32", "U64", "I8", "I16", "I32", "I64" };

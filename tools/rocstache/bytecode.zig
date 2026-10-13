@@ -30,9 +30,11 @@
 //!
 //! The scopes are the template's: each section opens one (a list's
 //! element, a record, a Bool), and `../` counts them, as the template
-//! does. The code starts with a header: the number of templates, then
-//! each one's `[start, end)` (by its index among the app's templates,
-//! sorted by name), so a template's Roc names only its index.
+//! does. The code starts with a header: the number of templates, each
+//! one's `[start, end)` (by its index, templates sorted by name; a CALL
+//! names its partial by that index), then the union (`Union`): its
+//! discriminant's offset and size, and each template's discriminant and
+//! payload offset. The host finds a rendered template by its tag.
 
 const std = @import("std");
 const assert = std.debug.assert;

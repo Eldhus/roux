@@ -2,11 +2,12 @@
 //! VM for every template of every app. roux build compiles the app's
 //! templates to bytecode (tools/rocstache/bytecode.zig), each read a byte
 //! offset where Roc's compiler laid the contract's record out (`roc glue`
-//! told it), and links the bytecode and the static text in. A template's
-//! value (`Menu.template(ctx)`, a tag of the app's `Templates.Template`)
-//! is boxed as it is sent and given to `hosted_template_render`; the VM
-//! finds the template by the tag and walks its bytecode reading the
-//! record in place: no copy of it, no Roc value made per part.
+//! told it), and attaches the bytecode and the static text after the
+//! executable roc linked. A template's value (`Menu.template(ctx)`, a tag
+//! of the app's `Templates.Template`) is boxed as it is sent and given to
+//! `hosted_template_render`; the VM finds the template by the tag and
+//! walks its bytecode reading the record in place: no copy of it, no Roc
+//! value made per part.
 //!
 //! The writing is the hot path: one pass into a buffer of the shard's (no
 //! measuring pass), static runs and short strings copied as whole 16- or
@@ -46,7 +47,7 @@ const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
 /// appends the templates' program after it, then a trailer: the program's
 /// length in bytes and `attached_magic`. Words: the code's length in
 /// words, the text's in bytes, the layouts' identity, the code, then the
-/// text, with `slack` bytes after it (elf.zig's `write_program`).
+/// text, with `slack` bytes after it (tools/rocstache/program.zig).
 var attached: Data = undefined;
 
 pub const attached_magic = "ROUXTPL1";
@@ -116,20 +117,17 @@ fn pread_all(fd: i32, buffer: []u8, offset: u64) error{Unreadable}!void {
     }
 }
 
-/// A program: the linked one, one reread, or one a test assembled
+/// A program: the attached one, one reread, or one a test assembled
 /// (templates_test.zig).
 pub const Data = struct {
     code: []const u64,
     text: []const u8,
-    /// The identity of the layouts the code reads records by (elf.zig).
+    /// The identity of the layouts the code reads records by
+    /// (tools/rocstache/program.zig).
     layouts: u64,
 };
 
-fn data_linked() Data {
-    return attached;
-}
-
-/// The program in `words`, laid out as elf.zig writes it.
+/// The program in `words`, laid out as tools/rocstache/program.zig writes it.
 fn data_at(words: [*]const u64) Data {
     const code_len: usize = @intCast(words[0]);
     const text_len: usize = @intCast(words[1]);
@@ -161,9 +159,9 @@ const scopes_max = 16 * 9 + 1;
 /// The app's `Templates.Template` at `template` (a box's payload), made
 /// for `layouts`, rendered in one Roc list: which template by the union's
 /// discriminant, from its tag's payload, as glue laid the union out (the
-/// program's header: bytecode.zig's `Pages`). The value is only read.
+/// program's header: bytecode.zig's `Union`). The value is only read.
 pub fn render(layouts: u64, template: abi.RocBox, roc_host: *abi.RocHost) Bytes {
-    if (reload_path == null) return render_union(data_linked(), layouts, template, roc_host);
+    if (reload_path == null) return render_union(attached, layouts, template, roc_host);
     const program = acquire();
     defer release();
     return render_union(program.data, layouts, template, roc_host);
@@ -173,7 +171,7 @@ pub fn render_union(data: Data, layouts: u64, template: abi.RocBox, roc_host: *a
     // A value made for other layouts would be read at another program's
     // offsets: memory the host must never send. roux build writes the
     // app's Templates.roc and this program from one generation, and a
-    // reread program keeps the linked layouts, so this is a broken build.
+    // reread program keeps the attached layouts, so this is a broken build.
     if (layouts != data.layouts) @panic("a template's value made for other layouts than the " ++
         "templates' program: Templates.roc and the program are from different builds");
     const code = data.code;
@@ -225,9 +223,10 @@ pub fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.R
 
 // ---- development: the program reread, no restart --------------------------------
 
-// In development `roux dev` writes the program to a file (`templates.bin`)
-// beside the object it links, and on a markup edit only rewrites it and
-// sends the app SIGUSR1: no link, no restart, the app's state kept. The
+// In development the app is also given the program's file
+// (`templates.bin`, the one roux build attaches); on a markup edit `roux
+// dev` only rewrites it and sends the app SIGUSR1: no attach, no restart,
+// the app's state kept. The
 // signal bumps `requested`; the next render rereads the file and swaps
 // the program in. A render on another shard may still run the old one:
 // each thread publishes the program it renders from (a hazard), and the
@@ -251,12 +250,12 @@ var swapping: std.atomic.Value(bool) = .init(false);
 var templates_count: u64 = 0;
 
 const Program = struct {
-    /// Its words, read from the file (empty for the linked program).
+    /// Its words, read from the file (empty for the attached program).
     words: []u64,
     data: Data,
 };
 
-var linked_program: Program = undefined;
+var attached_program: Program = undefined;
 
 const threads_max = 256;
 var hazards: [threads_max]std.atomic.Value(?*const Program) = @splat(.init(null));
@@ -267,11 +266,10 @@ threadlocal var hazard: ?*std.atomic.Value(?*const Program) = null;
 /// once, before the shards start.
 pub fn reload_from(path: [:0]const u8) void {
     assert(reload_path == null);
-    const linked = data_linked();
-    assert(linked.code.len > 0);
-    templates_count = linked.code[0];
-    linked_program = .{ .words = &.{}, .data = linked };
-    current.store(&linked_program, .seq_cst);
+    assert(attached.code.len > 0);
+    templates_count = attached.code[0];
+    attached_program = .{ .words = &.{}, .data = attached };
+    current.store(&attached_program, .seq_cst);
     reload_path = path;
     swap_in(0);
 }
@@ -368,7 +366,7 @@ fn read_program(path: [:0]const u8) ReadError!*const Program {
     const data = data_at(words.ptr);
     // Made for other layouts (a contract changed, roc not rebuilt yet): its
     // offsets are not this app's records'. Never read by them.
-    if (data.layouts != linked_program.data.layouts) return error.ContractsChanged;
+    if (data.layouts != attached_program.data.layouts) return error.ContractsChanged;
     if (data.code[0] != templates_count) return error.TemplatesChanged;
     const program = try std.heap.page_allocator.create(Program);
     program.* = .{ .words = words, .data = data };
