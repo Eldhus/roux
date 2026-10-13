@@ -3,6 +3,8 @@
 //!   roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
 //!   roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
 //!   roux lsp
+//!   roux load ...      (roux-load, installed beside roux)
+//!   roux version
 //!
 //! `build` generates the app's templates (each `templates/Page.rocstache`
 //! beside `APP.roc` gets its `templates/Page.roc` contract; their bytecode goes in

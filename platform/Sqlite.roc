@@ -24,12 +24,12 @@ import Server
 ## and a call names it by number. A read runs on its request's shard. A
 ## write runs on the one writer, one request at a time: `write!` waits a
 ## bounded time (`WriterBusy`, answered 503), is refused to a safe method
-## (GET, HEAD, OPTIONS, TRACE: `WriteRefused`), and a transaction not committed when `respond!`
-## returns is rolled back: an error answer stays as it is (a constraint
-## the handler made a 400), a success becomes a 500, since what it did was
-## undone. `ROUX_DATABASE` overrides the
-## path. No migrations yet: an existing database must hold exactly the
-## schema `schema.sql` makes, or `open!` fails.
+## (GET, HEAD, OPTIONS, TRACE: `WriteRefused`), and a transaction not
+## committed when `respond!` returns is rolled back: an error answer stays
+## as it is (a constraint the handler made a 400), a success becomes a
+## 500, since what it did was undone. `ROUX_DATABASE` overrides the path.
+## No migrations yet: an existing database must hold exactly the schema
+## `schema.sql` makes, or `open!` fails.
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
 	Database : { path : Str, schema : Str, statements : List(Statement) }
