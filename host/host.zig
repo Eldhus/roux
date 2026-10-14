@@ -53,8 +53,8 @@ const port_default: u16 = 8080;
 const shards_max = 256;
 /// Connections across all shards; each shard takes an equal part. The
 /// kernel spreads connections over the shards' listeners by hash, not by
-/// load, so a shard can refuse while another has room (balance at
-/// accept is to come).
+/// load, so a shard can refuse while another has room (to come: balance
+/// at accept).
 const connections_max = 1024;
 
 // --- memory -------------------------------------------------------------------
