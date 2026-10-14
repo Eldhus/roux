@@ -4,21 +4,6 @@
 //!
 //! The tree is flat, in source order: a section's body is the nodes after
 //! it up to its `end`, so a walk jumps from a node to `node.end`.
-//!
-//! The language:
-//!
-//! | tag | what |
-//! |---|---|
-//! | `{{ a.b }}` | a value, HTML-escaped; `{{{ a }}}` unescaped |
-//! | `{{ a \| len \| plural "dish" "dishes" }}` | a value through formatters |
-//! | `{{#a}}…{{/a}}` | a list's elements, a record's fields, or a Bool when true |
-//! | `{{^a}}…{{/a}}` | when the list is empty or the Bool false |
-//! | `{{?a}}…{{/a}}` | when the Bool is true, in the same scope |
-//! | `{{> Name}}` | the template `Name.rocstache`, inlined in the same scope |
-//! | `{{> Name field}}` | `Name.rocstache` called with `field` as its context, its own contract |
-//! | `{{../a}}`, `{{.}}` | a field of the enclosing scope; the element itself |
-//! | `{{! … }}` | a comment |
-//! | `{{% … %}}` | first in the file only: the contract, `Ctx : { … }` |
 
 const std = @import("std");
 const assert = std.debug.assert;
