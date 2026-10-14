@@ -377,12 +377,17 @@ fn file_error(err: abi.FileNotFoundOrFileTooLargeOrFileUnreadable) FileResult {
 
 /// `Sleep.millis!`: the request's fiber waits on the shard's `Io` (an
 /// io_uring timeout on Evented), so the shard serves other connections
-/// meanwhile; in `init!`, the main thread waits. Canceled (the shard
-/// stopping): it returns early, and the handler's next effect finds out.
+/// meanwhile; in `init!`, the main thread waits. Canceled (the shard's
+/// drain at its deadline): it returns early, and the cancel is re-armed
+/// (`recancel`), for Roc has no error to take from it, so the handler's
+/// next effect fails as canceled and the handler ends. Dropped, a quiet
+/// stream's handler would sleep on past the drain.
 export fn hosted_sleep_millis(milliseconds: u64) callconv(.c) void {
     const io = shard_io orelse init_io orelse return;
     const capped: i64 = @intCast(@min(milliseconds, sleep_ms_max));
-    io.sleep(.fromMilliseconds(capped), .awake) catch {};
+    io.sleep(.fromMilliseconds(capped), .awake) catch |err| switch (err) {
+        error.Canceled => io.recancel(),
+    };
 }
 
 /// The longest `Sleep.millis!` waits, whatever it asks for: a day.
