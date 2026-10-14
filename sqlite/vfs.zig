@@ -100,8 +100,7 @@ const Shared = struct {
     /// Each file's size (database, WAL, journal), by kind. One process
     /// owns the files, so only its own writes and truncates change them:
     /// read once at the first open, kept since, and a size asked for costs
-    /// no system call (one a read transaction would
-    /// make). Checked against the file's in tests.
+    /// no system call (one a read transaction would make). Checked against the file's in tests.
     sizes: [kinds]u64 = @splat(0),
     sizes_known: [kinds]bool = @splat(false),
 

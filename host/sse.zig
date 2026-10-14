@@ -6,7 +6,7 @@
 //!
 //! Framed by the host into the request's scratch memory, then sent as one
 //! chunk: in Roc, splitting and joining the data on each kind of line
-//! break was three quarters of a Datastar action's instructions (measured).
+//! break was three quarters of a Datastar action's instructions.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -39,7 +39,7 @@ pub fn frame(out: []u8, name: []const u8, data: []const u8) ?[]const u8 {
 
 /// The first CR or LF from `start`, sixteen bytes at a time:
 /// `std.mem.indexOfAnyPos` compares byte by byte, and was a fifth of a
-/// Datastar action's instructions (measured).
+/// Datastar action's instructions.
 pub fn find_break(data: []const u8, start: usize) ?usize {
     assert(start <= data.len);
     const lanes = 16;

@@ -1470,7 +1470,8 @@ fn port_from(text: ?[]const u8) ?u16 {
 /// One shard per CPU this process may run on (its affinity mask, so
 /// `taskset` decides), at most `shards_max`, and at most `ROUX_SHARDS` when
 /// the deployment says (`roux dev` runs two: development needs no more,
-/// and two rings fit the locked memory (`RLIMIT_MEMLOCK`, often 8 MiB) while the old process's are still being freed; fourneau's
+/// and two rings fit the locked memory (`RLIMIT_MEMLOCK`, often 8 MiB)
+/// while the old process's are still being freed; fourneau's
 /// `listen.runtime_init` waits out the rest).
 fn shard_count() u32 {
     var set: std.os.linux.cpu_set_t = @splat(0);

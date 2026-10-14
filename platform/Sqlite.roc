@@ -39,7 +39,7 @@ Sqlite := [].{
 	## When a commit is durable. `Full`: when `commit!` returns.
 	## `Normal`: at the next checkpoint; a power loss or a kernel panic
 	## may lose the commits since (a crash of the app loses none), for
-	## about 30 times the commits a second (measured).
+	## about 30 times the commits a second.
 	Settings : { synchronous : [Full, Normal] }
 
 	## A parameter, or a cell of a row.

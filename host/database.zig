@@ -67,7 +67,7 @@ pub const writer_cache_kib = 8 * 1024;
 pub const reader_cache_kib = 1024;
 /// What a connection takes from SQLite's heap beside its page cache: the
 /// schema, the prepared statements, lookaside, a statement's working
-/// memory (sorts, joins). A bound to check by measurement.
+/// memory (sorts, joins). A bound still to check by measurement.
 pub const connection_bytes = 4 * 1024 * 1024;
 
 /// The page cache of a backup's copy (backup.zig), one at a time.
@@ -163,7 +163,7 @@ pub const Description = struct {
 /// When a commit is durable. `full`: when it returns (the WAL synced at
 /// every commit). `normal`: at the next checkpoint (a power loss or a
 /// kernel panic may lose the commits since; a process crash loses
-/// nothing): 31 times the writes (measured).
+/// nothing): 31 times the writes, measured.
 pub const Synchronous = enum(u8) {
     full = 0,
     normal = 1,
