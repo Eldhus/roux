@@ -1,0 +1,10 @@
+# roux build's working files, and the app it builds (named after main.roc).
+.roux/
+main
+# Made by roux build, and its layouts hash keys the path roc is installed at:
+# a committed copy is wrong on any other machine. The build writes it first.
+templates/Templates.roc
+# The app's SQLite database.
+*.db
+*.db-wal
+*.db-shm

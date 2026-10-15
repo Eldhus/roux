@@ -269,7 +269,7 @@ fn tools_step(
     }
 }
 
-/// roux's version, set in build.zig.zon only: a release's tag (`v0.2.6`)
+/// roux's version, set in build.zig.zon only: a release's tag (`v1.2.3`)
 /// without the `v`.
 const roux_version = @import("build.zig.zon").version;
 

@@ -1,4 +1,4 @@
-app [Context, program] { pf: platform "../platform/main.roc" }
+app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 

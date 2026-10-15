@@ -72,4 +72,12 @@ jobs:
             echo "the tag $tag is not build.zig.zon's version:" dist/* >&2
             exit 1
           fi
-          gh release create "$tag" --title "roux ${tag#v}" --notes "roux ${tag#v}: README, \"Use it\"." --latest dist/*
+          # The notes give the line an app names the platform by, as the
+          # README's "Use it" says: its URL has the bundle's hash in it.
+          bundle=$(cd dist && ls *.tar.zst)
+          notes="roux ${tag#v}, for roc $(cat .roc-version). Name the platform in your app's header:
+
+          \`\`\`roc
+          app [Context, program] { pf: platform \"https://github.com/Eldhus/roux/releases/download/$tag/$bundle\" }
+          \`\`\`"
+          gh release create "$tag" --title "roux ${tag#v}" --notes "$notes" --latest dist/*
