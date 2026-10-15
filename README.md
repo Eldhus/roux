@@ -44,6 +44,20 @@ zig build platform tools   # the host and roux
 zig build test             # tidy and every test
 ```
 
+To build an app against the checkout, the platform also needs musl's `crt1.o` and `libc.a`, from
+Roc's source at the commit `toolchain.json` pins, each checked against its SHA-256 there:
+
+```sh
+c=$(jq -r .roc_musl.commit toolchain.json)
+mkdir -p platform/targets/x64musl
+for f in crt1.o libc.a; do
+    curl -fsSL -o platform/targets/x64musl/$f \
+        https://raw.githubusercontent.com/roc-lang/roc/$c/test/fx/platform/targets/x64musl/$f
+done
+jq -r '.roc_musl.files | to_entries[] | "\(.value)  platform/targets/x64musl/\(.key | split("/") | last)"' \
+    toolchain.json | sha256sum -c
+```
+
 Zig and the Roc nightly are pinned in `.zig-version`, `.roc-version` and `toolchain.json`.
 
 
