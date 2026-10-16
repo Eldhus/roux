@@ -31,6 +31,9 @@ x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 - A developer tool under `/_dev`.
 - `shutdown!`
 - Migrations.
+- Nested results in typed SQL: a column built by SQLite's JSON functions read as a Roc list or
+  record, so a query returns a tree in one round trip.
+- Tag unions in typed SQL: a table's variants read and written as a Roc tag union.
 - Roc hot reload: a Roc edit served without a restart, as a markup edit already is.
 - Data-driven routing: routes declared as data, and routers that compose. More structure in routing
   makes a large app easier to understand.
