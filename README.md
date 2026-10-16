@@ -30,6 +30,9 @@ x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 - `shutdown!`
 - A developer tool under `/_dev`.
 - Migrations.
+- Roc hot reload: a Roc edit served without a restart, as a markup edit already is.
+- Data-driven routing: routes declared as data, and routers that compose. More structure in routing
+  makes a large app easier to understand.
 - Pub/sub: a publish needs no request, a gap is told, a slow reader never slows a publisher.
 - A simulated disk, so SQLite runs under fourneau's simulator.
 
