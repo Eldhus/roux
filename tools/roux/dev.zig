@@ -63,6 +63,14 @@ const static_name = "dev-static.txt";
 /// `/_dev/restart`; host/dev.zig's `restart_code`, the same).
 const restart_code = 75;
 
+/// How long the app's directory must be quiet after an edit before a pass:
+/// one pass for a save through a temp file, or many files saved at once
+/// (2026-10-16: Zed and nvim save in place; a tool that renames a temp file
+/// over the file does it 0.2-0.4 ms after making it).
+const quiet_ms = 10;
+/// At most 1 s of edits gathered into one pass.
+const quiet_windows_max = 100;
+
 const files_max = 4096;
 const directories_max = 256;
 
@@ -832,24 +840,33 @@ const Watch = struct {
             switch (try watch.read(-1, child_fd)) {
                 .source => break,
                 .exited => return .exited,
-                .quiet => {},
+                .quiet, .timeout => {},
             }
         } else return .stopping;
-        // No quiet window: inotify's events mean complete files, so a burst
-        // costs at most one more pass.
-        while (try watch.read(0, -1) != .quiet) {
+        // Then until the directory is quiet `quiet_ms`, every kind of edit
+        // alike: a save through a temp file and a rename (0.2-0.4 ms
+        // apart), several files saved at once, a
+        // checkout, each one pass. Bounded: a directory that never goes
+        // quiet still gets its pass.
+        for (0..quiet_windows_max) |_| {
+            if (try watch.read(quiet_ms, -1) == .timeout) break;
             if (stopping.load(.monotonic)) return .stopping;
         }
         return .source;
     }
 
-    /// What happened within `timeout` (ms; -1 forever).
-    fn read(watch: *Watch, timeout: i32, child_fd: i32) !enum { source, exited, quiet } {
+    /// What happened within `timeout` (ms; -1 forever): a source changed,
+    /// the app exited, only other events (`quiet`), or none (`timeout`).
+    fn read(
+        watch: *Watch,
+        timeout: i32,
+        child_fd: i32,
+    ) !enum { source, exited, quiet, timeout } {
         var fds = [_]linux.pollfd{
             .{ .fd = watch.fd, .events = linux.POLL.IN },
             .{ .fd = child_fd, .events = linux.POLL.IN }, // poll skips a negative fd
         };
-        if (try syscall(linux.poll(&fds, fds.len, timeout)) == 0) return .quiet;
+        if (try syscall(linux.poll(&fds, fds.len, timeout)) == 0) return .timeout;
         if (fds[1].revents & linux.POLL.IN != 0) return .exited;
         if (fds[0].revents & linux.POLL.IN == 0) return .quiet;
         const buffer = &watch.buffer;
