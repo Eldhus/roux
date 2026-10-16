@@ -10,27 +10,30 @@ import Server
 ## Sse.end!(stream)
 ## ```
 ##
-## Events made together leave together, in one write; `flush!` sends what
-## waits, and belongs before any wait on something else (a sleep, another
-## request), or the client waits too. A handler that returns without
-## `end!` (an error, a peer that left) has its connection closed without
-## the stream's end, so the client sees it cut short. Read the request's
-## body before `start!`: it is not read once a stream has started.
+## Events made together leave together: they wait in the connection's
+## send buffer and go out as it fills. `flush!` sends what waits, and
+## belongs before any wait on something else (a sleep, another request),
+## or the client waits too. A handler that returns without `end!` (an
+## error, a peer that left) has its connection closed without the stream's
+## end, so the client sees it cut short. Read the request's body before
+## `start!`: it is not read once a stream has started.
 Sse := [].{
+	## `Disconnected`: the client is gone, or stopped reading for longer
+	## than the server's send timeout; nothing more reaches it. `Refused`:
+	## the app's mistake, an effect out of order (a second `start!`, a send
+	## after `end!`), a header that could break the head, a head too large,
+	## or more than 62 headers (the host holds 64, `start!`'s own two among
+	## them). Never an event's size.
 	SseErr : [Disconnected, Refused]
 
 	## A started stream: its request, as the host knows it.
 	Stream := { request : U64 }
 
-	## The largest event `send!` takes, framed (each line's `data: `
-	## counted); larger is `Refused`.
-	event_bytes_max : U64
-	event_bytes_max = 64 * 1024
-
 	## Start the stream: a 200 head with `Content-Type: text/event-stream`,
 	## `Cache-Control: no-cache` and these headers. `Refused` when a header
-	## could break the head (CR, LF, a name the server writes itself), or a
-	## stream was started already.
+	## could break the head (CR, LF, a name the server writes itself), the
+	## head is too large, there are more than 62 headers, or a stream was
+	## started already.
 	start! : Server.Request, List(Server.Header) => Try(Stream, [SseErr(SseErr)])
 	start! = |request, headers| {
 		all = List.concat(
@@ -46,7 +49,19 @@ Sse := [].{
 		}
 	}
 
-	## One event, a chunk of its own, framed by the host in one pass.
+	## One event, of any size. The host frames it as it sends it, through
+	## memory of a fixed size (host/sse.zig): a small event is one chunk of
+	## the response, a large one several, which the client cannot tell
+	## apart. A large event holds this handler until the client has taken
+	## all but the send buffer's last part of it; the server answers others
+	## meanwhile.
+	##
+	## A client acts on an event only once it has all of it, so a client
+	## that leaves midway (`Disconnected`) never sees half of one. Its size
+	## is the app's to bound: all of it is in memory, as the `Str` it was
+	## made from, and a client receives all of it. A page drawn from data
+	## that only grows (every race, every row) is bounded by what it shows,
+	## not by this.
 	send! : Stream, Event => Try({}, [SseErr(SseErr)])
 	send! = |Stream.{ request }, Event({ name, data })|
 		match Host.response_stream_event!(request, name, data) {

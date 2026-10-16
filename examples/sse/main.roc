@@ -10,6 +10,9 @@ import pf.Sleep
 ## - `/count?n=N`: N events, the last flushed alone after the others;
 ## - `/slow?n=N&ms=M`: N events, M milliseconds apart (`Sleep.millis!`,
 ##   the fiber parked: other requests are answered meanwhile);
+## - `/large?kib=N`: one event of about 2N KiB, N KiB of short lines then
+##   a line N KiB long, framed through the host's 64 KiB in pieces; then
+##   `after`, to show the stream goes on;
 ## - `/give-up`: two events, then an error: the stream is cut short (the
 ##   client sees no end), and the connection closes;
 ## - `/body-after`: reading the body once streaming is `BodyAfterStream`,
@@ -33,6 +36,7 @@ respond! = |request, _context| {
 	match path {
 		"/count" => count!(request)
 		"/slow" => slow!(request)
+		"/large" => large!(request)
 		"/give-up" => {
 			stream = Sse.start!(request, [])?
 			Sse.send!(stream, Sse.Event.data("one"))?
@@ -104,6 +108,23 @@ slow! = |request| {
 			Sleep.millis!(ms)
 		}
 	}
+	Sse.end!(stream)
+}
+
+## Bounded: at most 16 MiB of lines, and as long a line. Each short line is
+## 63 bytes and its line feed.
+large! : Server.Request => Try(Server.Response(_), [BadRequest(Str), SseErr(Sse.SseErr)])
+large! = |request| {
+	kib = number(request, "kib")?
+	if kib > 16 * 1024 {
+		return Err(BadRequest("kib is at most 16384"))
+	}
+	lines = Str.concat("x".repeat(63), "\n").repeat(16 * kib)
+	data = Str.concat(lines, "y".repeat(1024 * kib))
+	event = Sse.Event.named("large", data) ? |_| BadRequest("a fixed name")
+	stream = Sse.start!(request, [])?
+	Sse.send!(stream, event)?
+	Sse.send!(stream, Sse.Event.data("after"))?
 	Sse.end!(stream)
 }
 

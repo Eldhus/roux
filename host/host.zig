@@ -450,10 +450,12 @@ const StreamResult = @typeInfo(@TypeOf(abi.hosted_response_stream_start)).@"fn".
 const StreamHeaders = @typeInfo(@TypeOf(abi.hosted_response_stream_start)).@"fn".param_types[1].?;
 const StreamError = @FieldType(@FieldType(StreamResult, "payload"), "err");
 
-/// The largest event, framed: the platform's `Sse.event_bytes_max`,
-/// checked again here. Each effect checks where the stream is, too: the
-/// host never lets what a Roc app does reach one of fourneau's assertions.
-const stream_event_bytes_max = 64 * 1024;
+/// An event goes out a piece of this size at a time, each a chunk of the
+/// stream, framed in the scratch memory (sse.zig): an event of any size
+/// in memory of a fixed size, and one that fits is one chunk. Each effect
+/// checks where the stream is: the host never lets what a Roc app does
+/// reach one of fourneau's assertions.
+const stream_piece_bytes = 64 * 1024;
 
 /// A 200 head with the app's headers; the stream's chunks follow.
 export fn hosted_response_stream_start(
@@ -485,9 +487,10 @@ export fn hosted_response_stream_start(
     return stream_ok();
 }
 
-/// One event, framed into the scratch memory (sse.zig), which nothing
-/// else uses once the head is written; a chunk, copied or sent before
-/// this returns.
+/// One event, of any size, framed through the scratch memory (sse.zig),
+/// which nothing else uses once the head is written: a chunk a piece, each
+/// copied or sent before the next is framed. A peer that leaves midway
+/// gets no more of it; the client drops an event it has not seen end.
 export fn hosted_response_stream_event(
     handle: u64,
     name: abi.RocStr,
@@ -498,15 +501,23 @@ export fn hosted_response_stream_event(
     const request = request_from(handle) orelse return stream_error(.stream_refused);
     if (request.stream_state() != .streaming) return stream_error(.stream_refused);
     if (sse.find_break(name.asSlice(), 0) != null) return stream_error(.stream_refused);
-    assert(request.scratch.len >= stream_event_bytes_max); // the shard's config
-    const out = request.scratch[0..stream_event_bytes_max];
-    const event = sse.frame(out, name.asSlice(), data.asSlice()) orelse {
-        return stream_error(.stream_refused);
+    assert(request.scratch.len >= stream_piece_bytes); // the shard's config
+    const piece = request.scratch[0..stream_piece_bytes];
+    sse.frame(piece, name.asSlice(), data.asSlice(), Chunks{ .request = request }) catch {
+        return stream_error(.stream_disconnected);
     };
-    assert(event.len > 0 and event.len <= stream_event_bytes_max);
-    request.stream_send(event) catch return stream_error(.stream_disconnected);
     return stream_ok();
 }
+
+/// Where sse.frame's pieces go: each the stream's next chunk.
+const Chunks = struct {
+    request: *Server.Request,
+
+    pub fn send(chunks: Chunks, bytes: []const u8) error{Disconnected}!void {
+        assert(bytes.len > 0); // an empty chunk would end the stream
+        chunks.request.stream_send(bytes) catch return error.Disconnected;
+    }
+};
 
 export fn hosted_response_stream_flush(handle: u64) callconv(.c) StreamResult {
     const request = request_from(handle) orelse return stream_error(.stream_refused);
@@ -1539,8 +1550,9 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
         // (HTTP/2 by ALPN on HTTPS, by its preface on plain HTTP).
         .http2 = .{},
     };
-    // An event is framed in the scratch memory (hosted_response_stream_event).
-    assert(config.scratch_bytes_max >= stream_event_bytes_max);
+    // An event is framed through the scratch memory, a piece at a time
+    // (hosted_response_stream_event).
+    assert(config.scratch_bytes_max >= stream_piece_bytes);
     // A handle for every handler the server may run at once.
     const requests = try gpa.create(Requests);
     requests.* = try .init(gpa, config.handlers_max());

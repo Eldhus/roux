@@ -31,10 +31,11 @@ Host := [].{
 	request_body_read_all! : U64, U64 => Try(List(U8), [BodyTooLarge, BodyInvalid, BodyDisconnected, BodyAfterStream, BodyDuringWrite])
 
 	## A streamed response on the request `body` names: a 200 head with
-	## these headers, then a chunk per send, then the end (fourneau's
-	## streams). Out of order, or an event too large, is `StreamRefused`.
-	## An event is its type (none when "") and its data, framed by the host
-	## (host/sse.zig).
+	## these headers, then the events, then the end (fourneau's streams).
+	## Out of order is `StreamRefused`, and so is a header that could break
+	## the head or an event type with a line break. An event is its type
+	## (none when "") and its data, of any size: the host frames it through
+	## its scratch memory, a chunk a piece (host/sse.zig).
 	response_stream_start! : U64, List(Header) => Try({}, [StreamDisconnected, StreamRefused])
 	response_stream_event! : U64, Str, Str => Try({}, [StreamDisconnected, StreamRefused])
 	response_stream_flush! : U64 => Try({}, [StreamDisconnected, StreamRefused])
