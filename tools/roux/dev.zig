@@ -14,10 +14,17 @@
 //! The app runs with `ROUX_DEV` set to the build's number, so the host
 //! answers `/_dev/events` and adds the reload script to HTML (host/dev.zig):
 //! a restart drops the browser's stream, it reconnects to the new build
-//! and reloads. It also gets `ROUX_DEV_TEMPLATES`, `ROUX_DEV_ERRORS` and
-//! `ROUX_DEV_STATS` (files in the build directory) and `ROUX_DEV_LOAD`
-//! (roux-load beside roux, when there). A failed build leaves the last
-//! good one serving.
+//! and reloads. It also gets `ROUX_DEV_TEMPLATES`, `ROUX_DEV_ERRORS`,
+//! `ROUX_DEV_STATS` and `ROUX_DEV_STATIC` (files in the build directory)
+//! and `ROUX_DEV_LOAD` (roux-load beside roux, when there). A failed build
+//! leaves the last good one serving.
+//!
+//! The app is built into the build directory (`.roux/main/main`), never
+//! beside `main.roc`: a binary there comes only from `roux build`, so a
+//! dev build is never shipped by mistake. It runs in the app's directory,
+//! as a built one does. Its static files are the directory its `init!`
+//! names, which the host writes to `ROUX_DEV_STATIC` as it starts; from
+//! then on an edit there restarts the app (the host reads them at startup).
 //!
 //! One line per pass on stderr, for people and agents to wait on:
 //! `roux dev: build 3 ok (templates reread, 2) in 0.8 ms` for markup,
@@ -35,9 +42,6 @@ pub const Options = struct {
     app: pipeline.App,
     /// The port to serve on (`ROUX_PORT`), or the app's own.
     port: ?[]const u8,
-    /// A directory of static files, relative to the app's: the host reads
-    /// them at startup, so a change restarts the app.
-    static: ?[]const u8,
 };
 
 /// What the last failed pass said, beside the program: the running app
@@ -51,6 +55,9 @@ const roux_db_log_name = "roux-db.log";
 /// (`ROUX_DEV_STATS`): what was built, and the microseconds from the save
 /// noticed to the app told (a reread) or started again (a restart).
 const stats_name = "dev-stats.json";
+/// The app's static directory, as its `init!` returned it, written by the
+/// host as it starts (`ROUX_DEV_STATIC`; empty: none).
+const static_name = "dev-static.txt";
 
 /// The exit code of an app asking roux dev to start it again (the host's
 /// `/_dev/restart`; host/dev.zig's `restart_code`, the same).
@@ -73,16 +80,28 @@ const Kind = enum { roc, templates, sql, static, other };
 pub fn run(
     gpa: Allocator,
     io: Io,
-    options: Options,
+    options_given: Options,
     environ: *const std.process.Environ.Map,
 ) !void {
     var stderr_buffer: [4096]u8 = undefined;
     var stderr_file: Io.File.Writer = .initStreaming(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file.interface;
     defer stderr.flush() catch {};
-    var watch: Watch = try .start(gpa, io, options);
+    // The binary in the build directory, named as roux build names it.
+    var options = options_given;
+    const out_path = (try pipeline.Paths.of(gpa, options.app)).out_path;
+    defer gpa.free(out_path);
+    options.app.output = try std.fs.path.join(gpa, &.{ out_path, options.app.name });
+    defer gpa.free(options.app.output);
+    try Io.Dir.cwd().createDirPath(io, out_path);
+    var watch: Watch = try .start(gpa, io, options, out_path);
     defer watch.deinit(gpa);
-    var state: State = .{ .options = options, .environ = environ, .cache = .init(gpa) };
+    var state: State = .{
+        .options = options,
+        .static = &watch.static,
+        .environ = environ,
+        .cache = .init(gpa),
+    };
     defer state.cache.deinit();
     defer state.stop(io);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -91,6 +110,7 @@ pub fn run(
     // Until SIGINT or SIGTERM: roux dev runs as long as it is wanted.
     while (!stopping.load(.monotonic)) {
         _ = arena_state.reset(.retain_capacity);
+        if (watch.static_told) try state.static_said(arena_state.allocator(), io, &watch, stderr);
         const changed = watch.changed;
         watch.changed.reset();
         var names: [16][]const u8 = undefined;
@@ -116,24 +136,7 @@ pub fn run(
             state.tell_page(arena, io, "");
         }
         stderr.flush() catch {};
-        // Until a source changes; the app exiting on its own is said, and
-        // waits for an edit too, unless it asked to be started again.
-        while (true) {
-            switch (try watch.wait(state.child_fd)) {
-                .source, .stopping => break,
-                .exited => if (state.exited(io, stderr)) {
-                    const paths: pipeline.Paths = try .of(arena, options.app);
-                    state.restart(arena, io, paths) catch |err| {
-                        stderr.print("roux dev: build {d} would not start again ({t})\n", .{
-                            state.build,
-                            err,
-                        }) catch {};
-                    };
-                    stderr.print("roux dev: build {d} started again\n", .{state.build}) catch {};
-                },
-            }
-            stderr.flush() catch {};
-        }
+        try state.wait(arena, io, &watch, stderr);
     }
 }
 
@@ -180,6 +183,8 @@ const Pass = struct {
 
 const State = struct {
     options: Options,
+    /// The app's static directory, once its host has said (`Watch.static`).
+    static: *const ?[]const u8,
     environ: *const std.process.Environ.Map,
     /// What generation keeps between passes (tools/rocstache/cache.zig:
     /// each template's parse, contract and code, the layouts, the outputs'
@@ -196,6 +201,41 @@ const State = struct {
     failing: bool = false,
     /// The running app shows a failure over its pages (`tell_page`).
     page_told: bool = false,
+
+    /// Until a source changes; the app exiting on its own is said, and
+    /// waits for an edit too, unless it asked to be started again.
+    fn wait(state: *State, arena: Allocator, io: Io, watch: *Watch, stderr: *Io.Writer) !void {
+        while (true) {
+            switch (try watch.wait(state.child_fd)) {
+                .source, .stopping => return,
+                .exited => if (state.exited(io, stderr)) {
+                    const paths: pipeline.Paths = try .of(arena, state.options.app);
+                    state.restart(arena, io, paths) catch |err| {
+                        stderr.print("roux dev: build {d} would not start again ({t})\n", .{
+                            state.build,
+                            err,
+                        }) catch {};
+                    };
+                    stderr.print("roux dev: build {d} started again\n", .{state.build}) catch {};
+                },
+            }
+            stderr.flush() catch {};
+        }
+    }
+
+    /// The app named its static files as it started: watched from now, and
+    /// what they are now is what it serves (no restart for them).
+    fn static_said(
+        state: *State,
+        arena: Allocator,
+        io: Io,
+        watch: *Watch,
+        stderr: *Io.Writer,
+    ) !void {
+        watch.static_told = false;
+        if (!watch.learn_static(stderr)) return;
+        state.built.static = (try digests(arena, io, state.options.app.dir, watch.static)).static;
+    }
 
     /// `stats_name` for the pass that just succeeded; a failure to write it
     /// costs only the stats.
@@ -233,7 +273,7 @@ const State = struct {
         const before = if (p.markup_only and state.child != null and !state.failing)
             state.built
         else
-            try digests(arena, io, state.options);
+            try digests(arena, io, app.dir, state.static.*);
         const paths: pipeline.Paths = try .of(arena, app);
         // roux-db runs when roux build would: the app has `db/schema.sql`.
         if (before.sql != state.built.sql and pipeline.has_queries(io, app)) {
@@ -296,7 +336,7 @@ const State = struct {
         var generation =
             try pipeline.begin(arena, io, paths, app, &state.cache, p.written, stderr);
         const now = if (generation.modules_changed)
-            digests(arena, io, state.options) catch |err| {
+            digests(arena, io, app.dir, state.static.*) catch |err| {
                 rocstache.generate.abandon(io, &generation);
                 return err;
             }
@@ -426,6 +466,7 @@ const State = struct {
         const errors = try std.fs.path.join(arena, &.{ out, errors_name });
         try environ.put("ROUX_DEV_ERRORS", errors);
         try environ.put("ROUX_DEV_STATS", try std.fs.path.join(arena, &.{ out, stats_name }));
+        try environ.put("ROUX_DEV_STATIC", try std.fs.path.join(arena, &.{ out, static_name }));
         // roux-load, beside this roux: the page's race from outside the browser.
         var self_buffer: [std.fs.max_path_bytes]u8 = undefined;
         if (Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &self_buffer)) |self_len| {
@@ -441,11 +482,11 @@ const State = struct {
         state.page_told = false;
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");
-        const output = state.options.app.output;
-        const binary = try std.fmt.allocPrint(arena, "./{s}", .{std.fs.path.basename(output)});
+        // From the build directory, in the app's: where a built app runs.
+        const binary = try std.fs.path.join(arena, &.{ out, state.options.app.name });
         const child = try std.process.spawn(io, .{
             .argv = &.{binary},
-            .cwd = .{ .path = std.fs.path.dirname(output) orelse "." },
+            .cwd = .{ .path = state.options.app.dir },
             .environ_map = &environ,
             .stdin = .ignore,
         });
@@ -491,10 +532,48 @@ fn built_what(roc: bool, templates: bool) []const u8 {
     return "static";
 }
 
-/// Whether a path in the app's directory is under its static files.
-fn in_static(options: Options, path: []const u8) bool {
-    const static = options.static orelse return false;
-    return std.mem.startsWith(u8, path, std.mem.trimEnd(u8, static, "/"));
+/// Whether a path in the app's directory is under its static files (the
+/// directory itself included; `static` normalized by `Watch.learn_static`).
+fn in_static(static_or_null: ?[]const u8, path: []const u8) bool {
+    const static = static_or_null orelse return false;
+    if (!std.mem.startsWith(u8, path, static)) return false;
+    return path.len == static.len or path[static.len] == '/';
+}
+
+test in_static {
+    try std.testing.expect(in_static("static", "static"));
+    try std.testing.expect(in_static("static", "static/css/a.css"));
+    try std.testing.expect(!in_static("static", "static2/a.css"));
+    try std.testing.expect(!in_static("static", "templates"));
+    try std.testing.expect(!in_static(null, "static"));
+}
+
+/// A static directory as `init!` named it, relative to the app's, as the
+/// watches name theirs (`static`, from `./static/`); "" for none; null for
+/// one not strictly inside the app's directory (absolute, `..`, the app's own).
+fn normalized(said: []const u8) ?[]const u8 {
+    if (said.len == 0) return "";
+    if (said[0] == '/') return null;
+    var path = std.mem.trimEnd(u8, said, "/");
+    while (std.mem.startsWith(u8, path, "./")) path = path[2..];
+    if (path.len == 0 or std.mem.eql(u8, path, ".")) return null;
+    var parts = std.mem.splitScalar(u8, path, '/');
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, "..") or std.mem.eql(u8, part, ".")) return null;
+        if (part.len == 0) return null;
+    }
+    return path;
+}
+
+test normalized {
+    try std.testing.expectEqualStrings("static", normalized("static").?);
+    try std.testing.expectEqualStrings("static", normalized("./static/").?);
+    try std.testing.expectEqualStrings("a/b", normalized("a/b").?);
+    try std.testing.expectEqualStrings("", normalized("").?);
+    try std.testing.expect(normalized("/srv/static") == null);
+    try std.testing.expect(normalized("../shared") == null);
+    try std.testing.expect(normalized("a/../b") == null);
+    try std.testing.expect(normalized(".") == null);
 }
 
 fn kind_of(name: []const u8) Kind {
@@ -505,9 +584,9 @@ fn kind_of(name: []const u8) Kind {
 }
 
 /// Each kind's hash over the app's directory (hidden directories and
-/// `.roux/` left out), static files only under `options.static`.
-fn digests(arena: Allocator, io: Io, options: Options) !Digests {
-    var dir = try Io.Dir.cwd().openDir(io, options.app.dir, .{ .iterate = true });
+/// `.roux/` left out), static files only under `static`.
+fn digests(arena: Allocator, io: Io, app_dir: []const u8, static: ?[]const u8) !Digests {
+    var dir = try Io.Dir.cwd().openDir(io, app_dir, .{ .iterate = true });
     defer dir.close(io);
     var walker = try dir.walkSelectively(arena);
     defer walker.deinit();
@@ -520,7 +599,7 @@ fn digests(arena: Allocator, io: Io, options: Options) !Digests {
             continue;
         }
         if (entry.kind != .file) continue;
-        const kind: Kind = if (in_static(options, entry.path)) .static else kind_of(entry.basename);
+        const kind: Kind = if (in_static(static, entry.path)) .static else kind_of(entry.basename);
         if (kind == .other) continue;
         // A `.sql` elsewhere (another app's, beside this one) is no query
         // of this app's.
@@ -547,10 +626,19 @@ const Watch = struct {
     gpa: Allocator,
     io: Io,
     options: Options,
+    /// The build directory, from the working directory.
+    out_path: []const u8,
+    /// Its watch: only `static_name` written there counts.
+    out_wd: i32 = -1,
     /// Each watch's directory, from the app's (`""` for the app's own).
     paths: std.AutoHashMapUnmanaged(i32, []const u8) = .empty,
+    /// The app's static directory, from the app's (owned); null: none, or
+    /// not said yet.
+    static: ?[]const u8 = null,
     /// Which watches are the static directory's (by watch descriptor).
-    static: std.AutoHashMapUnmanaged(i32, void) = .empty,
+    static_wds: std.AutoHashMapUnmanaged(i32, void) = .empty,
+    /// The host wrote `static_name` since the last pass.
+    static_told: bool = false,
     /// What the events named since the last pass.
     changed: Changed = .{},
     /// Where events are read (a field: a safe build fills a local
@@ -611,11 +699,20 @@ const Watch = struct {
         }
     };
 
-    fn start(gpa: Allocator, io: Io, options: Options) !Watch {
+    fn start(gpa: Allocator, io: Io, options: Options, out_path: []const u8) !Watch {
         const fd: i32 = @intCast(try syscall(linux.inotify_init1(linux.IN.CLOEXEC)));
-        var watch: Watch = .{ .fd = fd, .gpa = gpa, .io = io, .options = options };
+        var watch: Watch = .{
+            .fd = fd,
+            .gpa = gpa,
+            .io = io,
+            .options = options,
+            .out_path = out_path,
+        };
         errdefer watch.deinit(gpa);
         _ = try watch.add_tree("");
+        const out = try std.posix.toPosixPath(out_path);
+        const mask = linux.IN.CLOSE_WRITE | linux.IN.MOVED_TO;
+        watch.out_wd = @intCast(try syscall(linux.inotify_add_watch(fd, &out, mask)));
         return watch;
     }
 
@@ -623,9 +720,52 @@ const Watch = struct {
         var paths = watch.paths.valueIterator();
         while (paths.next()) |path| gpa.free(path.*);
         watch.paths.deinit(gpa);
-        watch.static.deinit(gpa);
+        watch.static_wds.deinit(gpa);
+        if (watch.static) |static| gpa.free(static);
         _ = linux.close(watch.fd);
         watch.* = undefined;
+    }
+
+    /// The static directory the host wrote (`static_name`) taken as the
+    /// app's: whether it changed. One outside the app's directory is said
+    /// and not watched (its edits wait for a restart, as without roux dev).
+    fn learn_static(watch: *Watch, stderr: *Io.Writer) bool {
+        const gpa = watch.gpa;
+        var buffer: [std.fs.max_path_bytes]u8 = undefined;
+        var dir = Io.Dir.cwd().openDir(watch.io, watch.out_path, .{}) catch return false;
+        defer dir.close(watch.io);
+        const said = dir.readFile(watch.io, static_name, &buffer) catch return false;
+        const static = normalized(said) orelse {
+            stderr.print("roux dev: static files in {s} are outside the app's directory; " ++
+                "not watched\n", .{said}) catch {};
+            return watch.set_static(null);
+        };
+        return watch.set_static(if (static.len == 0) null else gpa.dupe(u8, static) catch null);
+    }
+
+    /// `static` (owned) as the app's static directory, and its watches
+    /// marked: whether it changed.
+    fn set_static(watch: *Watch, static: ?[]const u8) bool {
+        const gpa = watch.gpa;
+        const old = watch.static;
+        const same = if (old) |o|
+            (if (static) |s| std.mem.eql(u8, o, s) else false)
+        else
+            static == null;
+        if (same) {
+            if (static) |s| gpa.free(s);
+            return false;
+        }
+        if (old) |o| gpa.free(o);
+        watch.static = static;
+        watch.static_wds.clearRetainingCapacity();
+        var entries = watch.paths.iterator();
+        while (entries.next()) |entry| {
+            if (in_static(static, entry.value_ptr.*)) {
+                watch.static_wds.put(gpa, entry.key_ptr.*, {}) catch {};
+            }
+        }
+        return true;
     }
 
     /// `relative` (from the app's directory) watched, and each directory
@@ -660,7 +800,7 @@ const Watch = struct {
         const entry = try watch.paths.getOrPut(gpa, wd);
         if (entry.found_existing) gpa.free(entry.value_ptr.*);
         entry.value_ptr.* = try gpa.dupe(u8, relative);
-        if (in_static(watch.options, relative)) try watch.static.put(gpa, wd, {});
+        if (in_static(watch.static, relative)) try watch.static_wds.put(gpa, wd, {});
         return wd;
     }
 
@@ -724,13 +864,20 @@ const Watch = struct {
             if (event.mask & linux.IN.Q_OVERFLOW != 0) {
                 watch.changed.other = true;
                 watch.changed.listing = true;
+                watch.static_told = true;
                 source = true;
+            } else if (event.wd == watch.out_wd) {
+                // The build's own files: only the host's word counts.
+                if (std.mem.eql(u8, name, static_name)) {
+                    watch.static_told = true;
+                    source = true;
+                }
             } else if (event.mask & linux.IN.ISDIR != 0) {
                 if (event.mask & made != 0 and name.len > 0 and name[0] != '.') {
                     watch.appeared(event.wd, name);
                     source = true;
                 }
-            } else if (watch.static.contains(event.wd)) {
+            } else if (watch.static_wds.contains(event.wd)) {
                 watch.changed.other = true;
                 source = true;
             } else switch (kind_of(name)) {

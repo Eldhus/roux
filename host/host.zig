@@ -1310,6 +1310,7 @@ fn run() !void {
     try https_options.check();
     const tls = try fourneau.https.context(std.heap.page_allocator, startup_io, https_options);
     const static_dir = started.static_dir.asSlice();
+    dev_static_tell(static_dir);
     if (static_dir.len > 0) {
         const site = try std.heap.page_allocator.create(fourneau.site.Site);
         const gpa = std.heap.page_allocator;
@@ -1440,6 +1441,26 @@ fn dev_errors_read(buffer: []u8) []const u8 {
 
 /// roux dev's last good pass (`ROUX_DEV_STATS`), for `/_dev/stats`.
 var dev_stats_path: ?[:0]const u8 = null;
+
+/// roux dev told which directory the app's static files are in, as `init!`
+/// returned it (`ROUX_DEV_STATIC`; "" for none): it watches that tree, and
+/// an edit there restarts the app. A failure costs only the watching.
+fn dev_static_tell(static_dir: []const u8) void {
+    if (dev_build == null) return;
+    const path = std.c.getenv("ROUX_DEV_STATIC") orelse return;
+    const linux = std.os.linux;
+    const how: linux.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
+    const opened = linux.open(path, how, 0o644);
+    if (linux.errno(opened) != .SUCCESS) return;
+    const fd: i32 = @intCast(opened);
+    defer _ = linux.close(fd);
+    var done: usize = 0;
+    while (done < static_dir.len) {
+        const wrote = linux.write(fd, static_dir[done..].ptr, static_dir.len - done);
+        if (linux.errno(wrote) != .SUCCESS or wrote == 0) return;
+        done += wrote;
+    }
+}
 
 /// A file roux dev writes, read now into `buffer`; "" for none.
 fn dev_file_read(path_or_null: ?[:0]const u8, buffer: []u8) []const u8 {

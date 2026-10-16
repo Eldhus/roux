@@ -1,7 +1,7 @@
 //! roux: builds a roux app, and serves it as it is edited.
 //!
 //!   roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
-//!   roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
+//!   roux dev [--port=N] [--roc=PATH] APP.roc
 //!   roux lsp
 //!   roux load ...      (roux-load, installed beside roux)
 //!   roux version
@@ -15,8 +15,8 @@
 //! bytecode is the same either way.
 //!
 //! `dev` builds fast, runs the app, and rebuilds only what each edit needs,
-//! the browser reloading itself (dev.zig). `--static` names the app's
-//! static files' directory, whose changes restart it.
+//! the browser reloading itself (dev.zig). It builds into `.roux/APP/`,
+//! never `APP`, and watches the static files the app's `init!` names.
 //!
 //! `lsp` is the templates' language server, for an editor (Zed's rocstache
 //! extension): what `build` would say is wrong in a template, as it is
@@ -38,7 +38,7 @@ const dev = @import("dev.zig");
 
 const usage =
     \\usage: roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
-    \\       roux dev [--port=N] [--static=DIR] [--roc=PATH] APP.roc
+    \\       roux dev [--port=N] [--roc=PATH] APP.roc
     \\       roux lsp
     \\       roux load --port N [--path /] [--connections N] [--threads N] [--seconds N]
     \\                 [--mode requests|events]
@@ -51,7 +51,6 @@ const Flags = struct {
     output: ?[]const u8 = null,
     roc: []const u8 = options.roc,
     port: ?[]const u8 = null,
-    static: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -108,7 +107,6 @@ pub fn main(init: std.process.Init) !void {
         dev.run(init.gpa, io, .{
             .app = app,
             .port = flags.port,
-            .static = flags.static,
         }, init.environ_map);
     result catch |err| switch (err) {
         error.Invalid, error.GlueFailed, error.ChildFailed => {
@@ -168,8 +166,6 @@ fn parse(arguments: []const []const u8, building: bool) ?Flags {
             flags.output = flag["--output=".len..];
         } else if (!building and std.mem.startsWith(u8, flag, "--port=")) {
             flags.port = flag["--port=".len..];
-        } else if (!building and std.mem.startsWith(u8, flag, "--static=")) {
-            flags.static = flag["--static=".len..];
         } else return null;
     }
     return flags;
