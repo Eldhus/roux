@@ -27,8 +27,9 @@ x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 ## The road ahead
 
 - Multipart uploads, file responses.
-- `shutdown!`
+- x64v1musl support
 - A developer tool under `/_dev`.
+- `shutdown!`
 - Migrations.
 - Roc hot reload: a Roc edit served without a restart, as a markup edit already is.
 - Data-driven routing: routes declared as data, and routers that compose. More structure in routing
