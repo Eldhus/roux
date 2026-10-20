@@ -18,7 +18,7 @@ import pf.Sleep
 ## - `/body-after`: reading the body once streaming is `BodyAfterStream`,
 ##   reported in the stream;
 ## - `/send-after-end`: a send after the end is `Refused`;
-## - `/no-stream`: `Server.streamed` returned without a stream is a 500.
+## - `/no-stream`: `Server.streamed()` returned without a stream is a 500.
 Context : {}
 
 program = { init!, respond! }
@@ -64,7 +64,7 @@ respond! = |request, _context| {
 			Stdout.line!("send after end: ${said}")
 			Ok(response)
 		}
-		"/no-stream" => Ok(Server.streamed)
+		"/no-stream" => Ok(Server.streamed())
 		_ => Err(NotFound)
 	}
 }

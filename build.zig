@@ -273,7 +273,7 @@ fn tools_step(
 /// without the `v`.
 const roux_version = @import("build.zig.zon").version;
 
-/// `.roc-version`: `nightly-2026-10-06-c34079d`.
+/// `.roc-version`: `nightly-<date>-<commit>`.
 fn roc_version(b: *std.Build) []const u8 {
     const pin_path = b.root.joinString(b.allocator, ".roc-version") catch @panic("OOM");
     const pin = std.Io.Dir.cwd().readFileAlloc(b.graph.io, pin_path, b.allocator, .limited(256)) catch
@@ -282,7 +282,7 @@ fn roc_version(b: *std.Build) []const u8 {
 }
 
 /// The pinned Roc nightly's `roc`: `.roc-version` names it
-/// (`nightly-2026-10-06-c34079d`), installed under
+/// (`nightly-<date>-<commit>`), installed under
 /// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
 fn roc_path(b: *std.Build) []const u8 {
     const version = roc_version(b);

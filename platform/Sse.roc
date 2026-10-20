@@ -82,7 +82,7 @@ Sse := [].{
 	end! : Stream => Try(Server.Response(t), [SseErr(SseErr)])
 	end! = |Stream.{ request }|
 		match Host.response_stream_end!(request) {
-			Ok({}) => Ok(Server.streamed)
+			Ok({}) => Ok(Server.streamed())
 			Err(err) => Err(SseErr(from_host(err)))
 		}
 

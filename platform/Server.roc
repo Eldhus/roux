@@ -82,7 +82,8 @@ Server := [].{
 
 	## What `respond!` returns after a stream (`Sse.end!` gives it): the
 	## response is on its way already. Returned without a stream, the host
-	## answers 500: status 0 is no status.
-	streamed : Response(t)
-	streamed = { status: 0, headers: [], body: Bytes([]) }
+	## answers 500: status 0 is no status. A function, because a value
+	## cannot be of every `Response(t)`.
+	streamed : () -> Response(t)
+	streamed = || { status: 0, headers: [], body: Bytes([]) }
 }
