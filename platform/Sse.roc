@@ -27,7 +27,8 @@ Sse := [].{
 	SseErr : [Disconnected, Refused]
 
 	## A started stream: its request, as the host knows it. (Not `Stream`:
-	## that is the builtin effectful stream since nightly-2026-10-24.)
+	## that is the builtin effectful stream, which a nested type may not
+	## shadow without a warning since nightly-2026-10-24.)
 	Started := { request : U64 }
 
 	## Start the stream: a 200 head with `Content-Type: text/event-stream`,
