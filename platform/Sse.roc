@@ -26,15 +26,16 @@ Sse := [].{
 	## them). Never an event's size.
 	SseErr : [Disconnected, Refused]
 
-	## A started stream: its request, as the host knows it.
-	Stream := { request : U64 }
+	## A started stream: its request, as the host knows it. (Not `Stream`:
+	## that is the builtin effectful stream since nightly-2026-10-24.)
+	Started := { request : U64 }
 
 	## Start the stream: a 200 head with `Content-Type: text/event-stream`,
 	## `Cache-Control: no-cache` and these headers. `Refused` when a header
 	## could break the head (CR, LF, a name the server writes itself), the
 	## head is too large, there are more than 62 headers, or a stream was
 	## started already.
-	start! : Server.Request, List(Server.Header) => Try(Stream, [SseErr(SseErr)])
+	start! : Server.Request, List(Server.Header) => Try(Started, [SseErr(SseErr)])
 	start! = |request, headers| {
 		all = List.concat(
 			[
@@ -44,7 +45,7 @@ Sse := [].{
 			headers,
 		)
 		match Host.response_stream_start!(request.body, all) {
-			Ok({}) => Ok(Stream.{ request: request.body })
+			Ok({}) => Ok(Started.{ request: request.body })
 			Err(err) => Err(SseErr(from_host(err)))
 		}
 	}
@@ -62,16 +63,16 @@ Sse := [].{
 	## made from, and a client receives all of it. A page drawn from data
 	## that only grows (every race, every row) is bounded by what it shows,
 	## not by this.
-	send! : Stream, Event => Try({}, [SseErr(SseErr)])
-	send! = |Stream.{ request }, Event({ name, data })|
+	send! : Started, Event => Try({}, [SseErr(SseErr)])
+	send! = |Started.{ request }, Event({ name, data })|
 		match Host.response_stream_event!(request, name, data) {
 			Ok({}) => Ok({})
 			Err(err) => Err(SseErr(from_host(err)))
 		}
 
 	## Send every event so far to the client now.
-	flush! : Stream => Try({}, [SseErr(SseErr)])
-	flush! = |Stream.{ request }|
+	flush! : Started => Try({}, [SseErr(SseErr)])
+	flush! = |Started.{ request }|
 		match Host.response_stream_flush!(request) {
 			Ok({}) => Ok({})
 			Err(err) => Err(SseErr(from_host(err)))
@@ -79,8 +80,8 @@ Sse := [].{
 
 	## The stream's end, and what `respond!` returns for it: the response
 	## is on its way already. `Refused` after an end.
-	end! : Stream => Try(Server.Response(t), [SseErr(SseErr)])
-	end! = |Stream.{ request }|
+	end! : Started => Try(Server.Response(t), [SseErr(SseErr)])
+	end! = |Started.{ request }|
 		match Host.response_stream_end!(request) {
 			Ok({}) => Ok(Server.streamed())
 			Err(err) => Err(SseErr(from_host(err)))

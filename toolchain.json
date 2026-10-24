@@ -6,14 +6,14 @@
     "sha256": "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
   },
   "roc": {
-    "version": "nightly-2026-10-17-5f126ac",
-    "url": "https://github.com/roc-lang/nightlies/releases/download/nightly-2026-10-17-5f126ac/roc_nightly-linux_x86_64-2026-10-17-5f126ac.tar.gz",
-    "sha256": "ceeb031acf3774bcceee432e3ebaf98e571308d6b0f38a296c3a1e2025df8d1d"
+    "version": "nightly-2026-10-24-f6c6cfb",
+    "url": "https://github.com/roc-lang/nightlies/releases/download/nightly-2026-10-24-f6c6cfb/roc_nightly-linux_x86_64-2026-10-24-f6c6cfb.tar.gz",
+    "sha256": "86963a4f5ebbe63f5a017662c602e89468c1b8a5d08f69da45c088d3006754ba"
   },
   "roc_musl": {
     "comment": "musl's crt1.o and libc.a for x86_64, from Roc's test platform at the nightly's commit, into platform/targets/x64musl. Each file is pinned, not the archive: GitHub's archives are not byte-stable.",
-    "commit": "5f126ac3ce5dd3c52d4d3309d5dcf53c5f7ffed5",
-    "url": "https://github.com/roc-lang/roc/archive/5f126ac3ce5dd3c52d4d3309d5dcf53c5f7ffed5.tar.gz",
+    "commit": "f6c6cfb3d22265fced1ddf473a18dfadf3f1c706",
+    "url": "https://github.com/roc-lang/roc/archive/f6c6cfb3d22265fced1ddf473a18dfadf3f1c706.tar.gz",
     "files": {
       "test/fx/platform/targets/x64musl/crt1.o": "ffb51a69191a69fc34acaec1003fabe245d8841da7036d124d3445718415f9ea",
       "test/fx/platform/targets/x64musl/libc.a": "85f5eb2316bc6f86be7bd66008488c7d2eca290942b01ad2e86f02f8b5e8c90f"
