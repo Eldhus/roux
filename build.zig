@@ -273,8 +273,11 @@ fn tools_step(
 /// without the `v`.
 const roux_version = @import("build.zig.zon").version;
 
-/// `.roc-version`: `nightly-<date>-<commit>`.
+/// `.roc-version`: `nightly-<date>-<commit>`. Declared as the configure
+/// step's input: Zig caches the configured graph, so a moved pin would
+/// otherwise keep building against the old nightly.
 fn roc_version(b: *std.Build) []const u8 {
+    b.dependOnFileContents(b.path(".roc-version"));
     const pin_path = b.root.joinString(b.allocator, ".roc-version") catch @panic("OOM");
     const pin = std.Io.Dir.cwd().readFileAlloc(b.graph.io, pin_path, b.allocator, .limited(256)) catch
         @panic("cannot read .roc-version");
