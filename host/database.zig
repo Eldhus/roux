@@ -383,6 +383,18 @@ pub fn open_reader(
     return reader;
 }
 
+/// A connection to the database at `path` with no statements, before it
+/// is opened: what host/backup.zig copies before a migration drops rows.
+pub fn open_copy_source(
+    gpa: Allocator,
+    path: []const u8,
+    report: *Report,
+) error{Failed}!*Connection {
+    const path_z = dupe_sentinel(gpa, path) catch return out_of_memory(report);
+    defer gpa.free(path_z);
+    return open_connection(gpa, path_z, .reader, &.{}, .full, report);
+}
+
 /// `bytes` with a 0 after them, as SQLite reads a path or a statement.
 fn dupe_sentinel(gpa: Allocator, bytes: []const u8) error{OutOfMemory}![:0]u8 {
     const copy = try gpa.allocSentinel(u8, bytes.len, 0);

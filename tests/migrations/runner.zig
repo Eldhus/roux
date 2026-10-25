@@ -10,10 +10,16 @@
 //! hold whatever the plan was:
 //!
 //! - opened: the schema is what schema.sql makes, to the byte; every row
-//!   of every table both have is there, by the columns both have; the
-//!   database is whole and its foreign keys hold; opening again plans
-//!   nothing;
-//! - not opened: nothing changed, schema or rows.
+//!   of every table both have is there, by the columns both have; an
+//!   AUTOINCREMENT kept goes on from where it was; the database is whole
+//!   and its foreign keys hold; opening again plans nothing;
+//! - not opened: nothing changed, schema or rows;
+//! - a migration that lost a table or a column copied the database first,
+//!   whole (`test.db.before-drop/`), and one that lost nothing did not.
+//!
+//! `== before` runs as plain SQL, with no policy: it may make what
+//! schema.sql never could (`ANALYZE`'s `sqlite_stat1`), as a database
+//! touched by other tools would hold.
 //!
 //! `zig build migrations` runs every case; `-Dbless` writes what was
 //! printed into the cases instead (read the diff), the checks still on;
@@ -207,6 +213,7 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
     } else {
         try check_unchanged(arena, dir, w);
     }
+    try check_copied(arena, io, dir, opened.opened, w);
     if (bless) {
         case.sections[@intFromEnum(Section.plan)] = opened.plan;
         case.sections[@intFromEnum(Section.@"error")] = opened.@"error";
@@ -224,7 +231,9 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
 
 fn expect_text(w: *std.Io.Writer, what: []const u8, expected: []const u8, got: []const u8) !void {
     if (std.mem.eql(u8, expected, got)) return;
-    try w.print("  == {s} expected:\n{s}\n  == {s} printed:\n{s}\n", .{ what, expected, what, got });
+    try w.print("  == {s} expected:\n{s}\n  == {s} printed:\n{s}\n", .{
+        what, expected, what, got,
+    });
 }
 
 const Opened = struct {
@@ -244,7 +253,8 @@ fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []con
         for (diagnostics.items()) |diagnostic| try said.writer.print("roux-db: {s}\n", .{
             diagnostic.message,
         });
-        return .{ .opened = false, .plan = "", .@"error" = std.mem.trimEnd(u8, said.written(), "\n") };
+        const refused = std.mem.trimEnd(u8, said.written(), "\n");
+        return .{ .opened = false, .plan = "", .@"error" = refused };
     }
     var drops: std.Io.Writer.Allocating = .init(arena);
     for (compiled.drops) |drop| {
@@ -282,12 +292,14 @@ fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []con
     };
 }
 
-/// What the host printed, without its line once the database is open.
+/// What the host printed, without its line once the database is open, and
+/// the copy's before a drop, dated (`check_copied` checks the copy).
 fn plan_of(arena: Allocator, stdout: []const u8) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(arena);
     var lines = std.mem.splitScalar(u8, stdout, '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "roux: database ")) continue;
+        if (std.mem.startsWith(u8, line, "roux: copied ")) continue;
         try out.writer.print("{s}\n", .{line});
     }
     return std.mem.trim(u8, out.written(), "\n");
@@ -311,7 +323,9 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     const made = try text_of(arena, db, schema_sql);
     const wanted = try text_of(arena, pristine, schema_sql);
     if (!std.mem.eql(u8, made, wanted)) {
-        try w.print("  the schema is not what schema.sql makes:\n{s}\n  but:\n{s}\n", .{ made, wanted });
+        try w.print("  the schema is not what schema.sql makes:\n{s}\n  but:\n{s}\n", .{
+            made, wanted,
+        });
     }
     const integrity = try text_of(arena, db, "PRAGMA integrity_check");
     if (!std.mem.eql(u8, integrity, "ok")) try w.print("  integrity_check: {s}\n", .{integrity});
@@ -319,6 +333,76 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     if (!std.mem.eql(u8, broken, "0")) try w.print("  {s} rows break a foreign key\n", .{broken});
     try check_rows(arena, before, db, w);
     try check_sequences(arena, before, db, w);
+}
+
+/// A migration that lost a table or a column copied the database first,
+/// whole, into `test.db.before-drop/`; one that lost nothing copied
+/// nothing. One that failed may have copied it (the copy comes first).
+fn check_copied(
+    arena: Allocator,
+    io: Io,
+    dir: []const u8,
+    opened: bool,
+    w: *std.Io.Writer,
+) !void {
+    const copies_dir = try std.fmt.allocPrint(arena, "{s}/test.db.before-drop", .{dir});
+    var copy_name: ?[]const u8 = null;
+    var copies: u32 = 0;
+    if (Io.Dir.cwd().openDir(io, copies_dir, .{ .iterate = true })) |opened_dir| {
+        var copies_handle = opened_dir;
+        defer copies_handle.close(io);
+        var entries = copies_handle.iterate();
+        while (try entries.next(io)) |entry| {
+            copies += 1;
+            copy_name = try arena.dupe(u8, entry.name);
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    if (copies > 1) try w.print("  {d} copies before the drop, not one\n", .{copies});
+    const before = try open_file(arena, dir, "before.db");
+    defer close_db(before);
+    if (opened) {
+        const db = try open_file(arena, dir, "test.db");
+        defer close_db(db);
+        const lost = try lost_any(arena, before, db);
+        if (lost and copies == 0) try w.print("  it dropped, with no copy before\n", .{});
+        if (!lost and copies > 0) try w.print("  it dropped nothing, and copied\n", .{});
+    }
+    const name = copy_name orelse return;
+    const path = try std.fmt.allocPrint(arena, "test.db.before-drop/{s}", .{name});
+    const copy = try open_file(arena, dir, path);
+    defer close_db(copy);
+    const schema_sql = "SELECT type || ' ' || name || char(10) || coalesce(sql, '') " ++
+        "FROM sqlite_schema ORDER BY type, name";
+    const copied = try text_of(arena, copy, schema_sql);
+    if (!std.mem.eql(u8, copied, try text_of(arena, before, schema_sql))) {
+        try w.print("  the copy before the drop has another schema\n", .{});
+    }
+    try check_rows(arena, before, copy, w);
+}
+
+/// Whether `before` had a table or a column of a table `db` has no more.
+fn lost_any(arena: Allocator, before: *c.Db, db: *c.Db) !bool {
+    const tables_sql = "SELECT name FROM sqlite_schema WHERE type = 'table' " ++
+        "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name";
+    const tables = try text_of(arena, before, tables_sql);
+    var names = std.mem.tokenizeScalar(u8, tables, '\n');
+    while (names.next()) |table| {
+        const columns_sql = try std.fmt.allocPrint(arena, "SELECT name FROM " ++
+            "pragma_table_xinfo({s}) WHERE hidden = 0", .{try literal(arena, table)});
+        const columns = try text_of(arena, before, columns_sql);
+        var each = std.mem.tokenizeScalar(u8, columns, '\n');
+        while (each.next()) |column| {
+            const kept_sql = try std.fmt.allocPrint(arena, "SELECT count(*) FROM " ++
+                "pragma_table_xinfo({s}) WHERE hidden = 0 AND name = {s} COLLATE NOCASE", .{
+                try literal(arena, table), try literal(arena, column),
+            });
+            if (std.mem.eql(u8, try text_of(arena, db, kept_sql), "0")) return true;
+        }
+    }
+    return false;
 }
 
 /// A table that keeps AUTOINCREMENT keeps the largest key it handed out,
@@ -377,7 +461,9 @@ fn check_unchanged(arena: Allocator, dir: []const u8, w: *std.Io.Writer) !void {
     const now = try text_of(arena, db, schema_sql);
     const was = try text_of(arena, before, schema_sql);
     if (!std.mem.eql(u8, now, was)) {
-        try w.print("  it did not open, and the schema changed:\n{s}\n  was:\n{s}\n", .{ now, was });
+        try w.print("  it did not open, and the schema changed:\n{s}\n  was:\n{s}\n", .{
+            now, was,
+        });
     }
     try check_rows(arena, before, db, w);
 }
@@ -396,7 +482,9 @@ fn check_rows(arena: Allocator, before: *c.Db, db: *c.Db, w: *std.Io.Writer) !vo
         const was = try text_of(arena, before, sql);
         const now = try text_of(arena, db, sql);
         if (!std.mem.eql(u8, was, now)) {
-            try w.print("  table {s}'s rows by {s}:\n{s}\n  were:\n{s}\n", .{ table, columns, now, was });
+            try w.print("  table {s}'s rows by {s}:\n{s}\n  were:\n{s}\n", .{
+                table, columns, now, was,
+            });
         }
     }
 }

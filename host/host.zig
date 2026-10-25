@@ -648,6 +648,7 @@ export fn hosted_sqlite_open(
     statements: SqliteStatements,
     synchronous: abi.FullOrNormal,
     steps: SqliteSteps,
+    copy_first: bool,
 ) callconv(.c) SqliteOpenResult {
     defer path.decref(host());
     defer schema.decref(host());
@@ -692,6 +693,10 @@ export fn hosted_sqlite_open(
         .migration = migration,
     };
     print_migration(where, migration);
+    if (copy_first) {
+        assert(migration.len > 0);
+        copy_before_drop(gpa, where, &report) catch return open_error(report.message());
+    }
     database = database_module.open(gpa, description, .{}, &report) catch
         return open_error(report.message());
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
@@ -702,6 +707,33 @@ export fn hosted_sqlite_open(
         where, descriptions.len, description.synchronous,
     }) catch "roux: database");
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+/// Copies kept in `<path>.before-drop/`.
+const before_drop_keep = 4;
+
+/// The database as it is, copied before a migration that drops rows on
+/// purpose (host/backup.zig), into `<path>.before-drop/`: what a drop
+/// lost is there to read, and a forward-only migration has its way back.
+fn copy_before_drop(
+    gpa: std.mem.Allocator,
+    where: []const u8,
+    report: *database_module.Report,
+) error{Failed}!void {
+    const io = init_io.?; // Sqlite.open! runs in init!
+    var directory_buffer: [512]u8 = undefined;
+    const directory = std.fmt.bufPrint(&directory_buffer, "{s}.before-drop", .{where}) catch
+        return report.fail(.failed, "{s}: a path too long to copy beside", .{where});
+    std.Io.Dir.cwd().createDirPath(io, directory) catch |err|
+        return report.fail(.failed, "{s}: {t}", .{ directory, err });
+    const source = try database_module.open_copy_source(gpa, where, report);
+    defer database_module.close_connection(gpa, source);
+    const name = try backup_module.backup(source, io, .{
+        .directory = directory,
+        .keep = before_drop_keep,
+        .now_s = std.Io.Timestamp.now(io, .real).toSeconds(),
+    }, report);
+    write_parts(1, &.{ "roux: copied ", where, " to ", directory, "/", &name });
 }
 
 /// What a migration will do, step by step, before it runs: why, then the

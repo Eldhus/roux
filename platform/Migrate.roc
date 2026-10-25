@@ -14,7 +14,8 @@
 ##   DEFAULT, a narrower type, a CHECK) is SQLite's to say as it copies
 ##   them.
 ## - What would lose rows, a table or a column schema.sql no longer makes,
-##   is refused unless dropped on purpose (`Drop`).
+##   is refused unless dropped on purpose (`Drop`); the host copies the
+##   database before such a plan (`loses`).
 ## - Indexes, views and triggers hold no rows: one that changed is dropped
 ##   and made again, one gone is dropped. What goes with a table or view
 ##   that is dropped (its indexes, its triggers) is made again after it.
@@ -54,21 +55,32 @@ Migrate := [].{
 		if (refusals.is_empty()) Ok(planned(live, pristine)) else Err(refusals)
 	}
 
+	## Whether the plan loses rows or values (dropped on purpose: `plan`
+	## refuses any other loss).
+	loses : Schema, Schema -> Bool
+	loses = |live, pristine| {
+		lost = |table| !lost_columns(live, pristine, table.name).is_empty()
+		!live.objects.is_empty()
+			and (!gone_tables(live, pristine).is_empty() or rebuilt_tables(live, pristine).any(lost))
+	}
+
 	refuse : Schema, Schema, List(Drop) -> List(Str)
 	refuse = |live, pristine, drops| {
 		tables = gone_tables(live, pristine)
 			.keep_if(|table| !drops.any(|drop| drops_table(drop, table.name)))
 			.map(|table| lost("table `${table.name}`", "rows", "table ${quote_word(table.name)}"))
 		columns = rebuilt_tables(live, pristine).join_map(
-			|table|
+			|table| {
+				dropped = |column| drops.any(|drop| drops_column(drop, table.name, column.name))
 				lost_columns(live, pristine, table.name)
-					.keep_if(|column| !drops.any(|drop| drops_column(drop, table.name, column.name)))
+					.drop_if(dropped)
 					.map(
 						|column| {
-							drop = "column ${quote_word(table.name)} ${quote_word(column.name)}"
-							lost("column `${table.name}.${column.name}`", "values", drop)
+							what = "column `${table.name}.${column.name}`"
+							lost(what, "values", "column ${quote_word(table.name)} ${quote_word(column.name)}")
 						},
-					),
+					)
+			},
 		)
 		kept = drops.keep_if(|drop| still_made(pristine, drop)).map(
 			|drop|
@@ -76,12 +88,12 @@ Migrate := [].{
 					Table(table) =>
 						"`-- @drop table ${table}`, but schema.sql makes table `${table}`"
 					Column(table, column) =>
-						"`-- @drop column ${table} ${column}`, but schema.sql makes column `${table}.${column}`"
+						"`-- @drop column ${table} ${column}`, but schema.sql makes `${table}.${column}`"
 				},
 		)
 		aside = pristine.objects.concat(live.objects)
 			.keep_if(|object| folded(object.name).starts_with(aside_prefix))
-			.map(|object| "`${object.name}`: names starting `${aside_prefix}` are roux's, for a table being rebuilt")
+			.map(|object| "`${object.name}`: names starting `${aside_prefix}` are roux's, for rebuilding")
 		tables.concat(columns).concat(kept).concat(aside)
 	}
 
@@ -105,15 +117,10 @@ Migrate := [].{
 		# or view is not dropped again: a table's indexes, a view's triggers.
 		changed = live.objects.keep_if(|object| object.kind != "table" and !identical(pristine, object))
 		remade_views = changed.keep_if(|object| object.kind == "view")
-		unmade = changed
-			.keep_if(|object| !(object.kind == "index" and has_named(replaced, object.table)))
-			.keep_if(|object| !(object.kind == "trigger" and has_named(remade_views, object.table)))
-			.map(
-				|object| {
-					what = if (has_named(pristine.objects, object.name)) "changed in schema.sql" else "not in schema.sql"
-					{ sql: "DROP ${keyword(object.kind)} ${quote(object.name)}", why: "${object.kind} `${object.name}`: ${what}" }
-				},
-			)
+		goes_with = |object|
+			(object.kind == "index" and has_named(replaced, object.table))
+			or (object.kind == "trigger" and has_named(remade_views, object.table))
+		unmade = changed.drop_if(goes_with).map(|object| unmake(pristine, object))
 		dropped = gone_tables(live, pristine).map(
 			|table| { sql: "DROP TABLE ${quote(table.name)}", why: "table `${table.name}`: dropped on purpose" },
 		)
@@ -123,16 +130,24 @@ Migrate := [].{
 			.map(|table| { sql: table.sql, why: "table `${table.name}`: new in schema.sql" })
 		# In schema.sql's order: what each refers to is made by then. A view
 		# of a rebuilt table needs nothing: the rename aside left it as it was.
+		made_again = |object|
+			!identical(live, object)
+			or (object.kind != "view" and has_named(rebuilt, object.table))
+			or (object.kind == "trigger" and has_named(remade_views, object.table))
 		derived = pristine.objects
-			.keep_if(|object| object.kind != "table")
-			.keep_if(
-				|object|
-					!identical(live, object)
-					or (object.kind != "view" and has_named(rebuilt, object.table))
-					or (object.kind == "trigger" and has_named(remade_views, object.table)),
-			)
+			.keep_if(|object| object.kind != "table" and made_again(object))
 			.map(|object| { sql: object.sql, why: "${object.kind} `${object.name}`: as schema.sql makes it" })
 		unmade.concat(dropped).concat(remade).concat(created).concat(derived)
+	}
+
+	## An index, view or trigger of the database dropped: changed, or gone.
+	unmake : Schema, Object -> Step
+	unmake = |pristine, object| {
+		what = if (has_named(pristine.objects, object.name)) "changed in schema.sql" else "not in schema.sql"
+		{
+			sql: "DROP ${keyword(object.kind)} ${quote(object.name)}",
+			why: "${object.kind} `${object.name}`: ${what}",
+		}
 	}
 
 	## SQLite's twelve steps, as the host frames them (foreign keys off,
@@ -170,7 +185,10 @@ Migrate := [].{
 			[{ sql: sequence, why: why("AUTOINCREMENT goes on from where it was") }]
 		} else []
 		[
-			{ sql: "ALTER TABLE ${quote(old)} RENAME TO ${quote(aside)}", why: why("aside, to make it anew") },
+			{
+				sql: "ALTER TABLE ${quote(old)} RENAME TO ${quote(aside)}",
+				why: why("aside, to make it anew"),
+			},
 			{ sql: table.sql, why: why("as schema.sql makes it") },
 		]
 			.concat(counted)
@@ -199,8 +217,10 @@ Migrate := [].{
 
 	## Columns of the database's `table` that schema.sql's no longer has.
 	lost_columns : Schema, Schema, Str -> List(TableColumn)
-	lost_columns = |live, pristine, table|
-		data_columns(live, table).keep_if(|column| find_column(data_columns(pristine, table), column.name).is_err())
+	lost_columns = |live, pristine, table| {
+		kept = data_columns(pristine, table)
+		data_columns(live, table).keep_if(|column| find_column(kept, column.name).is_err())
+	}
 
 	## The columns that hold values: not generated.
 	data_columns : Schema, Str -> List(TableColumn)
@@ -215,7 +235,8 @@ Migrate := [].{
 	find_column = |columns, name| columns.find_first(|column| same_name(column.name, name))
 
 	find : List(Object), Str, Str -> Try(Object, [NotFound])
-	find = |objects, kind, name| objects.find_first(|object| object.kind == kind and same_name(object.name, name))
+	find = |objects, kind, name|
+		objects.find_first(|object| object.kind == kind and same_name(object.name, name))
 
 	has_table : Schema, Str -> Bool
 	has_table = |schema, name| find(schema.objects, "table", name).is_ok()
@@ -253,7 +274,7 @@ Migrate := [].{
 			Column(table, column) => find_column(data_columns(pristine, table), column).is_ok()
 		}
 
-	## What drops an index, view or trigger: tables are never in `unmade`.
+	## What drops an index, view or trigger: tables are never unmade.
 	keyword : Str -> Str
 	keyword = |kind|
 		match kind {
@@ -272,9 +293,10 @@ Migrate := [].{
 	quote_word : Str -> Str
 	quote_word = |name| {
 		bytes = name.to_utf8()
-		plain = |byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or byte == '_'
+		letter = |byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or byte == '_'
+		word_byte = |byte| letter(byte) or (byte >= '0' and byte <= '9')
 		word = match bytes.first() {
-			Ok(first) => plain(first) and bytes.all(|byte| plain(byte) or (byte >= '0' and byte <= '9'))
+			Ok(first) => letter(first) and bytes.all(word_byte)
 			Err(ListWasEmpty) => Bool.False
 		}
 		if (word) name else quote(name)
@@ -289,8 +311,10 @@ Migrate := [].{
 
 	## ASCII letters lowered, as SQLite compares names.
 	folded : Str -> Str
-	folded = |name|
-		Str.from_utf8_lossy(name.to_utf8().map(|byte| if (byte >= 'A' and byte <= 'Z') byte + 32 else byte))
+	folded = |name| {
+		lowered = |byte| if (byte >= 'A' and byte <= 'Z') byte + 32 else byte
+		Str.from_utf8_lossy(name.to_utf8().map(lowered))
+	}
 }
 
 expect Migrate.quote("dish") == "\"dish\""

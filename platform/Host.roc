@@ -60,17 +60,20 @@ Host := [].{
 
 	## Opens the app's one database, in `init!` (path, schema.sql, the
 	## statements, when a commit is durable, the migration Migrate.roc
-	## planned); `Err` says why not.
-	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous, List(SqliteStep) => Try({}, Str)
+	## planned, and whether to copy the database before it, as it loses
+	## rows on purpose); `Err` says why not.
+	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous, List(SqliteStep), Bool => Try({}, Str)
 
-	## A statement of a migration, and why it runs.
+	## A statement of a migration, and why it runs: `Migrate.Step`, as the
+	## host reads it.
 	SqliteStep : { sql : Str, why : Str }
 
 	## What a migration is planned from: host/database.zig's listings,
 	## over the database at the path, and over what schema.sql makes.
 	sqlite_inspect! : Str, Str => Try({ live : SqliteListings, pristine : SqliteListings }, Str)
 
-	## `objects`: type, name, tbl_name, sql. `columns`: table, name, hidden.
+	## `objects`: type, name, tbl_name, sql. `columns`: table, name, hidden,
+	## autoincrement.
 	SqliteListings : { objects : List(List(SqliteValue)), columns : List(List(SqliteValue)) }
 
 	## As host/database.zig's `Synchronous`.

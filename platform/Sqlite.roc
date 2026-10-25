@@ -34,7 +34,8 @@ import Migrate
 ## makes now, in one transaction, before any request (Migrate.roc). A
 ## table or column `schema.sql` no longer makes is refused, its rows kept,
 ## unless `schema.sql` drops it on purpose: `-- @drop table meal`,
-## `-- @drop column dish note`.
+## `-- @drop column dish note`. Before such a drop the database is copied
+## into `<path>.before-drop/` (the last four copies kept).
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
 	Database : { path : Str, schema : Str, statements : List(Statement), drops : List(Drop) }
@@ -97,9 +98,12 @@ Sqlite := [].{
 	## `schema.sql` changed; the host prints each step as it runs it.
 	open! : Database, Settings => Try(Db, [DbErr(Err)])
 	open! = |database, { synchronous }| {
-		{ live, pristine } = Host.sqlite_inspect!(database.path, database.schema) ? |message| DbErr(Failed(message))
-		steps = Migrate.plan(schema_of(live), schema_of(pristine), database.drops) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
-		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps) {
+		listed = Host.sqlite_inspect!(database.path, database.schema) ? |message| DbErr(Failed(message))
+		live = schema_of(listed.live)
+		pristine = schema_of(listed.pristine)
+		steps = Migrate.plan(live, pristine, database.drops) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
+		copy_first = Migrate.loses(live, pristine)
+		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps, copy_first) {
 			Ok({}) => Ok(Db.{ opened: Bool.True })
 			Err(message) => Err(DbErr(Failed(message)))
 		}
