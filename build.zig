@@ -100,7 +100,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(vm_tests).step);
 
     platform_step(b, fourneau);
-    tools_step(b, target, fourneau);
+    tools_step(b, target, fourneau, test_step);
     floor_step(b, target);
     db_floor_step(b, fourneau);
 }
@@ -205,11 +205,12 @@ const example_databases = [_][]const u8{
 };
 
 /// `zig build tools`: roux, which builds apps (zig-out/bin/roux build),
-/// roux-db and roux-load.
+/// roux-db and roux-load. roux's own tests join `test_step`.
 fn tools_step(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     fourneau: *std.Build.Dependency,
+    test_step: *std.Build.Step,
 ) void {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
     // roux runs the pinned Roc nightly `.roc-version` names: here, where
@@ -236,6 +237,16 @@ fn tools_step(
         },
     });
     const roux = b.addExecutable(.{ .name = "roux", .root_module = roux_module });
+    const roux_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/roux/tests.zig"),
+        .target = target,
+        .optimize = .debug,
+        .imports = &.{
+            .{ .name = "rocstache", .module = rocstache },
+            .{ .name = "roux_options", .module = roux_options.createModule() },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(roux_tests).step);
     const tools = b.step("tools", "Build roux, roux-db and roux-load");
     tools.dependOn(&b.addInstallArtifact(roux, .{}).step);
     const roux_db = b.addExecutable(.{

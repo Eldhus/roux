@@ -73,8 +73,8 @@ const trees = [_]tidy.Tree{
     },
     .{
         .dir = "tools/roux",
-        .roots = &.{"main.zig"},
-        .untested = &.{"main.zig"},
+        .roots = &.{ "tests.zig", "main.zig" },
+        .untested = &.{ "tests.zig", "main.zig" },
         .generated = &.{},
         .interfaces = &.{},
     },
