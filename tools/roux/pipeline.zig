@@ -174,21 +174,44 @@ pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App) !void {
     if (linux.errno(opened) != .SUCCESS) return error.AttachFailed;
     const fd: i32 = @intCast(opened);
     defer _ = linux.close(fd);
-    // roc's executable, copied in the kernel, a gigabyte at most a call.
+    errdefer _ = linux.unlink(attached);
+    // roc's executable, copied in the kernel, a gigabyte at most a call; to
+    // another filesystem (an output in tmpfs) the kernel refuses with EXDEV,
+    // so through a buffer.
     for (0..copies_max) |_| {
         const copied = linux.copy_file_range(@intCast(source), null, fd, null, 1 << 30, 0);
-        if (linux.errno(copied) != .SUCCESS) return error.AttachFailed;
-        if (copied == 0) break;
-    } else return error.AttachFailed;
-    for ([_][]const u8{ program, &trailer }) |part| {
-        var done: usize = 0;
-        while (done < part.len) {
-            const wrote = linux.write(fd, part[done..].ptr, part.len - done);
-            if (linux.errno(wrote) != .SUCCESS or wrote == 0) return error.AttachFailed;
-            done += wrote;
+        switch (linux.errno(copied)) {
+            .SUCCESS => if (copied == 0) break,
+            .XDEV => break try copy_buffered(@intCast(source), fd),
+            else => return error.AttachFailed,
         }
-    }
+    } else return error.AttachFailed;
+    for ([_][]const u8{ program, &trailer }) |part| try write_all(fd, part);
     try cwd.rename(attached, cwd, app.output, io);
+}
+
+/// The rest of `source` written to `fd`, 64 KiB a read.
+fn copy_buffered(source: i32, fd: i32) error{AttachFailed}!void {
+    const reads_max = 1 << 18; // 16 GiB: no executable is
+    const linux = std.os.linux;
+    var buffer: [64 * 1024]u8 = undefined;
+    for (0..reads_max) |_| {
+        const read = linux.read(source, &buffer, buffer.len);
+        if (linux.errno(read) != .SUCCESS) return error.AttachFailed;
+        if (read == 0) return;
+        try write_all(fd, buffer[0..read]);
+    }
+    return error.AttachFailed;
+}
+
+fn write_all(fd: i32, bytes: []const u8) error{AttachFailed}!void {
+    const linux = std.os.linux;
+    var done: usize = 0;
+    while (done < bytes.len) {
+        const wrote = linux.write(fd, bytes[done..].ptr, bytes.len - done);
+        if (linux.errno(wrote) != .SUCCESS or wrote == 0) return error.AttachFailed;
+        done += wrote;
+    }
 }
 
 pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
