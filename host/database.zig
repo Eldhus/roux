@@ -729,7 +729,8 @@ fn ensure_schema(db: *c.Db, description: Description, report: *Report) error{Fai
 pub fn release_of(db: *c.Db, report: *Report) error{Failed}!u32 {
     const value = try pragma_integer(db, "PRAGMA user_version", report);
     // roux writes only releases, from 1; anything else is another tool's.
-    if (value < 0) return report.fail(.failed, "user_version {d}: not a release", .{value});
+    if (value < 0) return report.fail(.failed, "user_version {d}: not a release (another " ++
+        "tool set it; roux keeps the database's release there)", .{value});
     return @intCast(value);
 }
 

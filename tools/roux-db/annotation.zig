@@ -14,8 +14,8 @@
 //!   -- @param id : I64
 //!   -- @column n : I64
 //!
-//! and in schema.sql, the release it is, and the oldest a database may be
-//! at to be migrated by it (the lines of releases before were deleted):
+//! and in schema.sql, the release it is, and the oldest release every
+//! database has finished (its lines, and those before, were deleted):
 //!
 //!   -- @release 9
 //!   -- @oldest 6
