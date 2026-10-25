@@ -915,9 +915,16 @@ fn migrate_in_transaction(
     for (migration) |step| {
         verdict.reset();
         authorizer.install(db, &verdict);
-        const ran = sqlite.exec(db, step.sql);
+        const ran = sqlite.exec_one(db, step.sql);
         authorizer.uninstall(db);
-        ran catch {
+        ran catch |err| {
+            switch (err) {
+                error.NotOneStatement => return report.fail(.misuse, "migrating {s}: {s}: " ++
+                    "more than one statement (an @from's expression is one expression)", .{
+                    path, step.why,
+                }),
+                error.Sqlite => {},
+            }
             if (verdict.refused) |action| {
                 return report.fail(.misuse, "migrating {s}: {s}: a migration may not hold {s}", .{
                     path, step.why, authorizer.describe(action),

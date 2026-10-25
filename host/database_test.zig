@@ -431,7 +431,13 @@ test "database: a migration that fails changes nothing, and says which step and 
     pragma[0] = .{ .sql = "PRAGMA foreign_keys = ON", .why = "a pragma" };
     var update = good;
     update[3] = .{ .sql = "UPDATE \"roux_old_dish\" SET note = 'x'", .why = "an update" };
+    // An @from's expression closing the copy and starting a statement of its own.
+    var two = good;
+    two[2].sql = "INSERT INTO \"dish\" (\"id\", \"name\", \"price_kr\") SELECT \"id\", " ++
+        "\"name\", (\"price_kr\") FROM \"roux_old_dish\"; INSERT INTO \"dish\" (\"id\", " ++
+        "\"name\", \"price_kr\") VALUES (9, 'smuggled', 1)";
     const cases = [_]Case{
+        .{ .case = "two statements in a step", .steps = &two, .says = "more than one statement" },
         .{ .case = "short of schema.sql", .steps = short, .says = "roux_old_dish" },
         .{ .case = "a NOT NULL left empty", .steps = &wrong, .says = "dish's rows: NOT NULL" },
         .{ .case = "a PRAGMA", .steps = &pragma, .says = "may not hold a PRAGMA" },
