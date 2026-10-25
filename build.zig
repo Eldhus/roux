@@ -61,11 +61,18 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tools/roux-db/tests.zig"),
             .target = target,
             .optimize = .debug,
-            .imports = &.{.{ .name = "sqlite", .module = sqlite_module(b, .{
-                .target = target,
-                .optimize = .debug,
-                .pic = null,
-            }) }},
+            .imports = &.{
+                .{ .name = "sqlite", .module = sqlite_module(b, .{
+                    .target = target,
+                    .optimize = .debug,
+                    .pic = null,
+                }) },
+                .{ .name = "rocstache", .module = b.createModule(.{
+                    .root_source_file = b.path("tools/rocstache/root.zig"),
+                    .target = target,
+                    .optimize = .debug,
+                }) },
+            },
         }),
     });
     test_step.dependOn(&b.addRunArtifact(roux_db_tests).step);
@@ -237,11 +244,14 @@ fn tools_step(
             .root_source_file = b.path("tools/roux-db/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "sqlite", .module = sqlite_module(b, .{
-                .target = target,
-                .optimize = optimize,
-                .pic = null,
-            }) }},
+            .imports = &.{
+                .{ .name = "sqlite", .module = sqlite_module(b, .{
+                    .target = target,
+                    .optimize = optimize,
+                    .pic = null,
+                }) },
+                .{ .name = "rocstache", .module = rocstache },
+            },
         }),
     });
     tools.dependOn(&b.addInstallArtifact(roux_db, .{}).step);

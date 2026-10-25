@@ -282,6 +282,22 @@ const refusals = [_]Refusal{
         .says = "snake_case",
     },
     .{
+        .case = "a column named as a header keyword",
+        .query = "-- name: q :one\nSELECT name AS provides FROM dish;",
+        .says = "snake_case",
+    },
+    .{
+        .case = "a query named as a keyword",
+        .query = "-- name: with :exec\nDELETE FROM tag;",
+        .says = "not a Roc keyword",
+    },
+    .{
+        .case = "a parameter named as a keyword",
+        .query = "-- name: q :one\n-- @param requires : I64\n" ++
+            "SELECT name FROM dish WHERE id = :requires;",
+        .says = "not a Roc keyword",
+    },
+    .{
         .case = "two queries of one name",
         .query = "-- name: q :exec\nDELETE FROM tag;\n-- name: q :exec\nDELETE FROM tag;",
         .says = "a second query named q",

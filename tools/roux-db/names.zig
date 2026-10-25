@@ -4,17 +4,10 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const rocstache = @import("rocstache");
 
 /// The longest name roux-db accepts: a field, a function, a module.
 pub const name_bytes_max = 64;
-
-/// Words Roc reserves; a field or function so named would not parse.
-const roc_keywords = [_][]const u8{
-    "and",      "as",       "break", "continue", "crash",  "dbg",    "else",
-    "expect",   "exposing", "for",   "if",       "import", "in",     "match",
-    "or",       "return",   "var",   "where",    "while",  "module", "app",
-    "platform", "package",
-};
 
 /// `[a-z][a-z0-9_]*`, no `__`, not ending in `_`, at most
 /// `name_bytes_max`: a Roc field or function name.
@@ -40,11 +33,10 @@ pub fn is_pascal(name: []const u8) bool {
     return true;
 }
 
+/// Words Roc reserves; a field or function so named would not parse. The
+/// template compiler's list, the pinned nightly's, so the two never differ.
 pub fn is_roc_keyword(name: []const u8) bool {
-    for (roc_keywords) |keyword| {
-        if (std.mem.eql(u8, keyword, name)) return true;
-    }
-    return false;
+    return rocstache.parse.is_keyword(name);
 }
 
 /// `by_id` as `ById`: a query's row type. `snake` is `is_snake`.
@@ -87,7 +79,10 @@ test "names: PascalCase modules, and keywords refused" {
     try std.testing.expect(!is_pascal("dishes"));
     try std.testing.expect(!is_pascal("My_Dishes"));
     try std.testing.expect(is_roc_keyword("match"));
+    try std.testing.expect(is_roc_keyword("provides"));
+    try std.testing.expect(is_roc_keyword("with"));
     try std.testing.expect(!is_roc_keyword("matches"));
+    try std.testing.expect(!is_roc_keyword("continue"));
 }
 
 test "names: a query's row type is its name in PascalCase" {
