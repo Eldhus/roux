@@ -693,12 +693,16 @@ export fn hosted_sqlite_open(
         .migration = migration,
     };
     print_migration(where, migration);
+    var copy: ?BeforeDrop = null;
     if (copy_first) {
         assert(migration.len > 0);
-        copy_before_drop(gpa, where, &report) catch return open_error(report.message());
+        copy = BeforeDrop.make(gpa, where, &report) catch return open_error(report.message());
     }
-    database = database_module.open(gpa, description, .{}, &report) catch
+    database = database_module.open(gpa, description, .{}, &report) catch {
+        if (copy) |*made| made.discard();
         return open_error(report.message());
+    };
+    if (copy) |*made| made.keep(where);
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
         return open_error("out of memory");
     var banner: [256]u8 = undefined;
@@ -709,32 +713,79 @@ export fn hosted_sqlite_open(
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
 }
 
-/// Copies kept in `<path>.before-drop/`.
-const before_drop_keep = 4;
-
-/// The database as it is, copied before a migration that drops rows on
+/// The database as it was, copied before a migration that drops rows on
 /// purpose (host/backup.zig), into `<path>.before-drop/`: what a drop
 /// lost is there to read, and a forward-only migration has its way back.
-fn copy_before_drop(
-    gpa: std.mem.Allocator,
-    where: []const u8,
-    report: *database_module.Report,
-) error{Failed}!void {
-    const io = init_io.?; // Sqlite.open! runs in init!
-    var directory_buffer: [512]u8 = undefined;
-    const directory = std.fmt.bufPrint(&directory_buffer, "{s}.before-drop", .{where}) catch
-        return report.fail(.failed, "{s}: a path too long to copy beside", .{where});
-    std.Io.Dir.cwd().createDirPath(io, directory) catch |err|
-        return report.fail(.failed, "{s}: {t}", .{ directory, err });
-    const source = try database_module.open_copy_source(gpa, where, report);
-    defer database_module.close_connection(gpa, source);
-    const name = try backup_module.backup(source, io, .{
-        .directory = directory,
-        .keep = before_drop_keep,
-        .now_s = std.Io.Timestamp.now(io, .real).toSeconds(),
-    }, report);
-    write_parts(1, &.{ "roux: copied ", where, " to ", directory, "/", &name });
-}
+/// A copy there is always of a database that then lost rows: one made
+/// before a migration that failed is deleted, and the oldest past `kept`
+/// go only once the migration committed.
+const BeforeDrop = struct {
+    directory_buffer: [512]u8,
+    directory_length: u32,
+    name: backup_module.Name,
+
+    /// Copies kept.
+    const kept = 4;
+
+    fn make(
+        gpa: std.mem.Allocator,
+        where: []const u8,
+        report: *database_module.Report,
+    ) error{Failed}!BeforeDrop {
+        const io = init_io.?; // Sqlite.open! runs in init!
+        var made: BeforeDrop = undefined;
+        const directory = std.fmt.bufPrint(&made.directory_buffer, "{s}.before-drop", .{
+            where,
+        }) catch return report.fail(.failed, "copying {s} before the drop: a path too long", .{
+            where,
+        });
+        made.directory_length = @intCast(directory.len);
+        std.Io.Dir.cwd().createDirPath(io, directory) catch |err|
+            return report.fail(.failed, "copying {s} before the drop: {s}: {t}", .{
+                where, directory, err,
+            });
+        const source = try database_module.open_copy_source(gpa, where, report);
+        defer database_module.close_connection(gpa, source);
+        // No rotation yet: the oldest copies stay until the drop is done.
+        made.name = backup_module.backup(source, io, .{
+            .directory = directory,
+            .keep = backup_module.keep_max,
+            .now_s = std.Io.Timestamp.now(io, .real).toSeconds(),
+        }, report) catch {
+            var said: @TypeOf(report.buffer) = undefined;
+            const message = said[0..report.length];
+            @memcpy(message, report.message());
+            return report.fail(.failed, "copying {s} before the drop into {s}: {s}", .{
+                where, directory, message,
+            });
+        };
+        return made;
+    }
+
+    /// `<path>.before-drop`.
+    fn path(made: *const BeforeDrop) []const u8 {
+        return made.directory_buffer[0..made.directory_length];
+    }
+
+    /// The migration did not commit: nothing was lost, the copy goes.
+    fn discard(made: *const BeforeDrop) void {
+        const io = init_io.?;
+        var dir = std.Io.Dir.cwd().openDir(io, made.path(), .{}) catch return;
+        defer dir.close(io);
+        dir.deleteFile(io, &made.name) catch {};
+    }
+
+    /// The migration committed: the copy is kept, and the oldest past
+    /// `kept` go. A failure to prune is said, and the app starts anyway.
+    fn keep(made: *const BeforeDrop, where: []const u8) void {
+        const io = init_io.?;
+        const into = made.path();
+        write_parts(1, &.{ "roux: copied ", where, " before the drop to ", into, "/", &made.name });
+        var report: database_module.Report = .{};
+        backup_module.prune(io, into, kept, &report) catch
+            write_parts(2, &.{ "roux: ", report.message() });
+    }
+};
 
 /// What a migration will do, step by step, before it runs: why, then the
 /// statement, indented. One transaction: a failure after names its step.

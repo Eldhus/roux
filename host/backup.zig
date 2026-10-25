@@ -85,6 +85,16 @@ pub fn backup(
     return name;
 }
 
+/// Deletes the oldest copies in `directory` past `keep`, and partial
+/// ones: for a copy made with no rotation, kept only once what it was
+/// made for went through (the copy before a migration's drop).
+pub fn prune(io: Io, directory: []const u8, keep: u32, report: *Report) error{Failed}!void {
+    var dir = Io.Dir.cwd().openDir(io, directory, .{ .iterate = true }) catch |err|
+        return report.fail(.failed, "backup: {s}: {t}", .{ directory, err });
+    defer dir.close(io);
+    try rotate(io, dir, keep, report);
+}
+
 /// The copy, under its dated name, synced.
 fn make(
     source: *Connection,

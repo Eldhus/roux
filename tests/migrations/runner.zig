@@ -15,7 +15,8 @@
 //!   and its foreign keys hold; opening again plans nothing;
 //! - not opened: nothing changed, schema or rows;
 //! - a migration that lost a table or a column copied the database first,
-//!   whole (`test.db.before-drop/`), and one that lost nothing did not.
+//!   whole (`test.db.before-drop/`); one that lost nothing, or failed, left
+//!   no copy.
 //!
 //! `== before` runs as plain SQL, with no policy: it may make what
 //! schema.sql never could (`ANALYZE`'s `sqlite_stat1`), as a database
@@ -336,8 +337,8 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
 }
 
 /// A migration that lost a table or a column copied the database first,
-/// whole, into `test.db.before-drop/`; one that lost nothing copied
-/// nothing. One that failed may have copied it (the copy comes first).
+/// whole, into `test.db.before-drop/`; one that lost nothing, or failed,
+/// left no copy (one made before a failure is deleted).
 fn check_copied(
     arena: Allocator,
     io: Io,
@@ -369,6 +370,8 @@ fn check_copied(
         const lost = try lost_any(arena, before, db);
         if (lost and copies == 0) try w.print("  it dropped, with no copy before\n", .{});
         if (!lost and copies > 0) try w.print("  it dropped nothing, and copied\n", .{});
+    } else if (copies > 0) {
+        try w.print("  it did not open, and left a copy before the drop\n", .{});
     }
     const name = copy_name orelse return;
     const path = try std.fmt.allocPrint(arena, "test.db.before-drop/{s}", .{name});
