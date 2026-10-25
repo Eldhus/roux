@@ -87,9 +87,10 @@ const Compiler = struct {
     oldest: ?annotation.Mark = null,
     views: std.ArrayList(Made),
     triggers: std.ArrayList(Made),
+    tables: std.ArrayList(Made),
 };
 
-/// A view or trigger of schema.sql, and where its CREATE begins.
+/// A table, view or trigger of schema.sql, and where its CREATE begins.
 const Made = struct { name: []const u8, offset: u32 };
 
 /// Compiles `queries` against `schema`; what is wrong goes to
@@ -114,11 +115,12 @@ pub fn compile(
         .froms = try .initCapacity(arena, drops_max),
         .views = try .initCapacity(arena, file_statements_max),
         .triggers = try .initCapacity(arena, file_statements_max),
+        .tables = try .initCapacity(arena, file_statements_max),
     };
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
     try check_views(&compiler);
-    try check_triggers(&compiler, schema.text);
+    try check_probed(&compiler, schema.text);
     check_drops(&compiler);
     check_froms(&compiler);
     check_releases(&compiler);
@@ -350,24 +352,23 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
         return;
     }
     const created = verdict.created.?;
-    if (created == .create_view or created == .create_trigger) {
-        const what = if (created == .create_view) "view" else "trigger";
-        // A name at the verdict's bound may have been cut: never read.
-        const name = verdict.created_name();
-        if (name.len >= authorizer.Verdict.created_bytes_max) {
-            const bound = authorizer.Verdict.created_bytes_max;
-            return compiler.diagnostics.add(0, start, "a {s}'s name of {d} bytes or more", .{
-                what, bound,
-            });
-        }
-        const kept = compiler.arena.dupe(u8, name) catch
-            return compiler.diagnostics.add(0, start, "out of memory", .{});
-        const list = if (created == .create_view) &compiler.views else &compiler.triggers;
-        list.appendAssumeCapacity(.{ .name = kept, .offset = start });
-        return;
+    const list = switch (created) {
+        .create_view => &compiler.views,
+        .create_trigger => &compiler.triggers,
+        .create_table => &compiler.tables,
+        else => return,
+    };
+    // A name at the verdict's bound may have been cut: never read.
+    const name = verdict.created_name();
+    if (name.len >= authorizer.Verdict.created_bytes_max) {
+        const bound = authorizer.Verdict.created_bytes_max;
+        return compiler.diagnostics.add(0, start, "a name of {d} bytes or more", .{bound});
     }
-    if (verdict.created.? != .create_table) return;
-    const table = verdict.created_name();
+    const kept = compiler.arena.dupe(u8, name) catch
+        return compiler.diagnostics.add(0, start, "out of memory", .{});
+    list.appendAssumeCapacity(.{ .name = kept, .offset = start });
+    if (created != .create_table) return;
+    const table = kept;
     if (!is_strict(compiler.db, table)) {
         compiler.diagnostics.add(0, start, "table {s} is not STRICT: roux types a column by " ++
             "its declared type, which only a STRICT table enforces", .{table});
@@ -408,8 +409,12 @@ fn check_views(compiler: *Compiler) !void {
 /// given a do-nothing INSTEAD OF trigger for each write, so each prepares.
 /// (A trigger the body's writes fire is compiled too: a broken one is also
 /// told under each trigger that fires it.)
-fn check_triggers(compiler: *Compiler, schema: []const u8) !void {
-    if (compiler.triggers.items.len == 0) return;
+///
+/// Then each table's REFERENCES, the same way: SQLite makes a table whose
+/// foreign key names a table or column not there (one renamed), or a parent
+/// column that is not unique, and fails only at the write; preparing an
+/// insert with foreign keys on says it, the triggers dropped first.
+fn check_probed(compiler: *Compiler, schema: []const u8) !void {
     const probe = try open_memory();
     defer _ = c.sqlite3_close_v2(probe);
     // It loaded once already, under the schema policy.
@@ -420,6 +425,31 @@ fn check_triggers(compiler: *Compiler, schema: []const u8) !void {
         try sqlite.exec(probe, "ROLLBACK TO probe; RELEASE probe");
         try checked;
     }
+    for (compiler.triggers.items) |trigger| {
+        try sqlite.exec(probe, try std.fmt.allocPrint(compiler.arena, "DROP TRIGGER {s}", .{
+            try sql_identifier(compiler.arena, trigger.name),
+        }));
+    }
+    try sqlite.exec(probe, "PRAGMA foreign_keys = ON");
+    for (compiler.tables.items) |table| try check_references(compiler, probe, table);
+}
+
+fn check_references(compiler: *Compiler, probe: *c.Db, table: Made) !void {
+    const arena = compiler.arena;
+    const keys = try first_rows(arena, probe, try std.fmt.allocPrint(arena, "SELECT count(*) " ++
+        "FROM pragma_foreign_key_list({s})", .{try sql_literal(arena, table.name)}), 1);
+    if (std.mem.eql(u8, keys[0], "0")) return;
+    const write = try std.fmt.allocPrint(arena, "INSERT INTO {s} DEFAULT VALUES", .{
+        try sql_identifier(arena, table.name),
+    });
+    var statement: ?*c.Stmt = null;
+    const length: c_int = @intCast(write.len);
+    const result = c.sqlite3_prepare_v3(probe, write.ptr, length, 0, &statement, null);
+    _ = c.sqlite3_finalize(statement);
+    if (result == c.ok) return;
+    compiler.diagnostics.add(0, table.offset, "table {s}'s REFERENCES: {s}", .{
+        table.name, c.sqlite3_errmsg(probe),
+    });
 }
 
 fn check_trigger(compiler: *Compiler, probe: *c.Db, trigger: Made) !void {
@@ -442,14 +472,22 @@ fn check_trigger(compiler: *Compiler, probe: *c.Db, trigger: Made) !void {
     const events = [_][]const u8{ "INSERT", "UPDATE", "DELETE" };
     if (std.mem.eql(u8, on[1], "view")) {
         for (events) |event| {
-            try sqlite.exec(probe, try std.fmt.allocPrint(arena, "CREATE TRIGGER " ++
+            const probe_trigger = try std.fmt.allocPrint(arena, "CREATE TRIGGER " ++
                 "\"roux probe {s}\" INSTEAD OF {s} ON {s} BEGIN SELECT 1; END", .{
                 event, event, target,
-            }));
+            });
+            sqlite.exec(probe, probe_trigger) catch {
+                return compiler.diagnostics.add(0, trigger.offset, "trigger {s}: names " ++
+                    "starting `roux probe` are roux-db's, for checking a view's triggers", .{
+                    trigger.name,
+                });
+            };
         }
     }
-    const columns = try first_rows(arena, probe, try std.fmt.allocPrint(arena, "SELECT name " ++
-        "FROM pragma_table_xinfo({s}) WHERE hidden = 0", .{try sql_literal(arena, on[0])}), 1);
+    // A view SQLite cannot read was told already (check_views).
+    const columns = first_rows(arena, probe, try std.fmt.allocPrint(arena, "SELECT name " ++
+        "FROM pragma_table_xinfo({s}) WHERE hidden = 0", .{try sql_literal(arena, on[0])}), 1) catch
+        return;
     var set: std.Io.Writer.Allocating = .init(arena);
     for (columns, 0..) |column, index| {
         const quoted = try sql_identifier(arena, column);

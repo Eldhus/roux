@@ -288,6 +288,39 @@ const refusals = [_]Refusal{
         .says = "trigger broken: no such column: nope",
     },
     .{
+        .case = "a REFERENCES to a table the schema no longer makes (one renamed)",
+        .schema = schema_text ++ "CREATE TABLE course (id INTEGER PRIMARY KEY, " ++
+            "menu_id INTEGER REFERENCES menu (id)) STRICT;\n",
+        .says = "table course's REFERENCES: no such table: main.menu",
+    },
+    .{
+        .case = "a REFERENCES to a column the parent does not have",
+        .schema = schema_text ++ "CREATE TABLE plate (id INTEGER PRIMARY KEY, " ++
+            "dish_id INTEGER REFERENCES dish (nope)) STRICT;\n",
+        .says = "table plate's REFERENCES: foreign key mismatch",
+    },
+    .{
+        .case = "a REFERENCES to a parent column that is not unique",
+        .schema = schema_text ++ "CREATE TABLE plate (id INTEGER PRIMARY KEY, " ++
+            "dish_name TEXT REFERENCES dish (name)) STRICT;\n",
+        .says = "table plate's REFERENCES: foreign key mismatch",
+    },
+    .{
+        .case = "a trigger on a view SQLite cannot read: the view's error alone",
+        .schema = schema_text ++ "CREATE VIEW notes AS SELECT id, photo FROM dish;\n" ++
+            "CREATE TRIGGER add_note INSTEAD OF INSERT ON notes BEGIN SELECT 1; END;\n",
+        .says = "view notes: no such column: photo",
+    },
+    .{
+        .case = "a trigger named like roux-db's own probes",
+        .schema = schema_text ++ "CREATE VIEW dishes AS SELECT id, name FROM dish;\n" ++
+            "CREATE TRIGGER \"roux probe INSERT\" INSTEAD OF INSERT ON dishes " ++
+            "BEGIN SELECT 1; END;\n" ++
+            "CREATE VIEW names AS SELECT name FROM dish;\n" ++
+            "CREATE TRIGGER add_name INSTEAD OF INSERT ON names BEGIN SELECT 1; END;\n",
+        .says = "names starting `roux probe` are roux-db's",
+    },
+    .{
         .case = "a drop's quoted name not closed",
         .schema = released ++ "-- @drop 3 table \"dish of the day\n",
         .says = "write `-- @drop N table name`",
