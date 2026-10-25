@@ -15,9 +15,14 @@
 //! answers `/_dev/events` and adds the reload script to HTML (host/dev.zig):
 //! a restart drops the browser's stream, it reconnects to the new build
 //! and reloads. It also gets `ROUX_DEV_TEMPLATES`, `ROUX_DEV_ERRORS`,
-//! `ROUX_DEV_STATS` and `ROUX_DEV_STATIC` (files in the build directory)
-//! and `ROUX_DEV_LOAD` (roux-load beside roux, when there). A failed build
-//! leaves the last good one serving.
+//! `ROUX_DEV_STATS`, `ROUX_DEV_STATIC` and `ROUX_DEV_LISTENING` (files in
+//! the build directory) and `ROUX_DEV_LOAD` (roux-load beside roux, when
+//! there). A failed build leaves the last good one serving.
+//!
+//! A restart holds its requests: roux dev keeps a socket where the app
+//! listens, as systemd does in production, and hands it to each build
+//! (`ROUX_DEV_LISTEN`, its descriptor); a client connecting while one
+//! build stops and the next starts waits in its queue (`State.hold`).
 //!
 //! The app is built into the build directory (`.roux/main/main`), never
 //! beside `main.roc`: a binary there comes only from `roux build`, so a
@@ -58,6 +63,11 @@ const stats_name = "dev-stats.json";
 /// The app's static directory, as its `init!` returned it, written by the
 /// host as it starts (`ROUX_DEV_STATIC`; empty: none).
 const static_name = "dev-static.txt";
+/// Where the app listens, as the host chose it (`ROUX_DEV_LISTENING`:
+/// `127.0.0.1:8080`; empty until it has).
+const listening_name = "dev-listening.txt";
+/// The held socket's queue: the host's own (host.zig, `listen_on`).
+const held_backlog = 4096;
 
 /// The exit code of an app asking roux dev to start it again (the host's
 /// `/_dev/restart`; host/dev.zig's `restart_code`, the same).
@@ -111,6 +121,7 @@ pub fn run(
         .cache = .init(gpa),
     };
     defer state.cache.deinit();
+    defer state.release(io); // after the app has stopped
     defer state.stop(io);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
@@ -119,6 +130,7 @@ pub fn run(
     while (!stopping.load(.monotonic)) {
         _ = arena_state.reset(.retain_capacity);
         if (watch.static_told) try state.static_said(arena_state.allocator(), io, &watch, stderr);
+        if (watch.listening_told) try state.listening_said(arena_state.allocator(), io, &watch);
         const changed = watch.changed;
         watch.changed.reset();
         var names: [16][]const u8 = undefined;
@@ -205,6 +217,8 @@ const State = struct {
     child: ?std.process.Child = null,
     /// The child's pidfd, readable when it exits; -1 with no child.
     child_fd: i32 = -1,
+    /// The socket where the app listens, held across its restarts (`hold`).
+    held: ?Io.net.Server = null,
     /// The last pass failed: the next that finds nothing to build says so.
     failing: bool = false,
     /// The running app shows a failure over its pages (`tell_page`).
@@ -424,6 +438,9 @@ const State = struct {
         state.child_fd = -1;
         state.child = null;
         const term = child.wait(io) catch return false;
+        // Asked to start again, its socket stays held for the next; down
+        // until an edit, its clients are refused rather than kept waiting.
+        if (term != .exited or term.exited != restart_code) state.release(io);
         switch (term) {
             .exited => |code| {
                 if (code == restart_code) return true;
@@ -462,6 +479,7 @@ const State = struct {
     /// shard_count: development needs no more, and two rings fit the locked
     /// memory while the old process's are still being freed).
     fn restart(state: *State, arena: Allocator, io: Io, paths: pipeline.Paths) !void {
+        state.hold(io, try std.fs.path.join(arena, &.{ paths.out_path, listening_name }));
         state.stop(io);
         var environ = try state.environ.clone(arena);
         try environ.put("ROUX_DEV", try std.fmt.allocPrint(arena, "{d}", .{state.build}));
@@ -488,6 +506,17 @@ const State = struct {
         // or a failure fixed by this build is shown over its pages again.
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = errors, .data = "" });
         state.page_told = false;
+        // Where it listens is said by this build, not an earlier one.
+        const listening = try std.fs.path.join(arena, &.{ out, listening_name });
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = listening, .data = "" });
+        try environ.put("ROUX_DEV_LISTENING", listening);
+        _ = environ.swapRemove("ROUX_DEV_LISTEN");
+        var held: [1]Io.File = undefined;
+        if (state.held) |server| {
+            held[0] = .{ .handle = server.socket.handle, .flags = .{ .nonblocking = false } };
+            const fd = try std.fmt.allocPrint(arena, "{d}", .{server.socket.handle});
+            try environ.put("ROUX_DEV_LISTEN", fd);
+        }
         if (state.options.port) |port| try environ.put("ROUX_PORT", port);
         if (environ.get("ROUX_SHARDS") == null) try environ.put("ROUX_SHARDS", "2");
         // From the build directory, in the app's: where a built app runs.
@@ -497,9 +526,49 @@ const State = struct {
             .cwd = .{ .path = state.options.app.dir },
             .environ_map = &environ,
             .stdin = .ignore,
+            .inherit_files = if (state.held != null) &held else &.{},
         });
         state.child = child;
         state.child_fd = @intCast(try syscall(linux.pidfd_open(child.id.?, 0)));
+    }
+
+    /// Before the running build stops, its socket held here too, so a
+    /// client connecting while the next one starts waits in the queue
+    /// rather than being refused. The address is the one the build said
+    /// (`listening_path`), bound beside its own (SO_REUSEPORT, which the
+    /// host sets as Zig's `reuse_address` does); once held, the next builds
+    /// listen on this one (host.zig, `dev_listener`). Held until the address
+    /// moves or a build exits on its own. Without one (no build running,
+    /// nothing said yet, a bind refused) a restart refuses for its while.
+    fn hold(state: *State, io: Io, listening_path: []const u8) void {
+        if (state.child == null) return; // a build that asked to start again keeps its own
+        const address = listening_address(io, listening_path) orelse return;
+        if (state.held) |held| {
+            if (held.socket.address.eql(&address)) return;
+            state.release(io);
+        }
+        assert(state.held == null);
+        state.held = address.listen(io, .{
+            .reuse_address = true,
+            .kernel_backlog = held_backlog,
+        }) catch null;
+    }
+
+    /// The build said where it listens: a socket held at another address
+    /// (its port changed) is let go now, so clients there are refused rather
+    /// than kept waiting; the next restart holds the new one.
+    fn listening_said(state: *State, arena: Allocator, io: Io, watch: *Watch) !void {
+        watch.listening_told = false;
+        const held = state.held orelse return;
+        const path = try std.fs.path.join(arena, &.{ watch.out_path, listening_name });
+        const address = listening_address(io, path) orelse return;
+        if (!held.socket.address.eql(&address)) state.release(io);
+    }
+
+    fn release(state: *State, io: Io) void {
+        var held = state.held orelse return;
+        held.deinit(io);
+        state.held = null;
     }
 
     fn stop(state: *State, io: Io) void {
@@ -511,6 +580,31 @@ const State = struct {
         state.child = null;
     }
 };
+
+/// Where the build said it listens (`listening_name`); null until it has
+/// (still in `init!`: roux dev empties the file before each start).
+fn listening_address(io: Io, path: []const u8) ?Io.net.IpAddress {
+    var buffer: [96]u8 = undefined;
+    return address_said(Io.Dir.cwd().readFile(io, path, &buffer) catch return null);
+}
+
+/// The address as the host writes it (`{f}`, host.zig's `dev_listen_start`).
+fn address_said(said: []const u8) ?Io.net.IpAddress {
+    const text = std.mem.trimEnd(u8, said, "\n");
+    if (text.len == 0) return null;
+    return Io.net.IpAddress.parseLiteral(text) catch null;
+}
+
+test address_said {
+    var buffer: [96]u8 = undefined;
+    for ([_][]const u8{ "127.0.0.1", "0.0.0.0", "::1", "fd7a:115c:a1e0::1" }) |host| {
+        const address = try Io.net.IpAddress.parse(host, 8080);
+        const said = try std.fmt.bufPrint(&buffer, "{f}", .{address});
+        try std.testing.expect(address_said(said).?.eql(&address));
+    }
+    try std.testing.expect(address_said("") == null); // not yet said
+    try std.testing.expect(address_said("localhost:8080") == null);
+}
 
 /// roux-db on the app's queries, its messages into the pass's report (and
 /// so over the page when it refuses one), as roc's are.
@@ -647,6 +741,8 @@ const Watch = struct {
     static_wds: std.AutoHashMapUnmanaged(i32, void) = .empty,
     /// The host wrote `static_name` since the last pass.
     static_told: bool = false,
+    /// The host wrote `listening_name` since the last pass.
+    listening_told: bool = false,
     /// What the events named since the last pass.
     changed: Changed = .{},
     /// Where events are read (a field: a safe build fills a local
@@ -882,11 +978,15 @@ const Watch = struct {
                 watch.changed.other = true;
                 watch.changed.listing = true;
                 watch.static_told = true;
+                watch.listening_told = true;
                 source = true;
             } else if (event.wd == watch.out_wd) {
                 // The build's own files: only the host's word counts.
                 if (std.mem.eql(u8, name, static_name)) {
                     watch.static_told = true;
+                    source = true;
+                } else if (std.mem.eql(u8, name, listening_name)) {
+                    watch.listening_told = true;
                     source = true;
                 }
             } else if (event.mask & linux.IN.ISDIR != 0) {

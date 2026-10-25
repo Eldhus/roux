@@ -1312,6 +1312,7 @@ fn run() !void {
     const app_port = if (started.port == 0) port_default else started.port;
     const port = port_from(environment("ROUX_PORT")) orelse app_port;
     dev_port = port; // roux-load races it, in development
+    dev_listen_start(port);
     assert(shards >= 1);
     assert(shards <= shards_max);
 
@@ -1458,7 +1459,45 @@ var dev_stats_path: ?[:0]const u8 = null;
 /// an edit there restarts the app. A failure costs only the watching.
 fn dev_static_tell(static_dir: []const u8) void {
     if (dev_build == null) return;
-    const path = std.c.getenv("ROUX_DEV_STATIC") orelse return;
+    dev_file_write(std.c.getenv("ROUX_DEV_STATIC") orelse return, static_dir);
+}
+
+/// In development, the socket roux dev holds (`ROUX_DEV_LISTEN` names its
+/// descriptor), as systemd holds one in production: a restart is a stop,
+/// then a start, and a client connecting between waits in its queue rather
+/// than being refused. -1: none, or one at another address.
+var dev_listen_fd: std.os.linux.fd_t = -1;
+
+/// Before any shard: roux dev told where the app listens, and the socket it
+/// handed over taken if it is there (`dev_listener`). A failure costs only
+/// the holding.
+fn dev_listen_start(port: u16) void {
+    if (dev_build == null) return;
+    const address = std.Io.net.IpAddress.parse(listen_address(), port) catch return;
+    if (std.c.getenv("ROUX_DEV_LISTENING")) |path| {
+        var buffer: [96]u8 = undefined;
+        dev_file_write(path, std.fmt.bufPrint(&buffer, "{f}", .{address}) catch return);
+    }
+    assert(dev_listen_fd == -1);
+    dev_listen_fd = dev_inherited(address);
+}
+
+/// The descriptor roux dev handed over, if it listens at `address`; one at
+/// another (the app's port changed) is closed, so nothing listens there
+/// that no one accepts on, and roux dev follows the address said.
+fn dev_inherited(address: std.Io.net.IpAddress) std.os.linux.fd_t {
+    const text = environment("ROUX_DEV_LISTEN") orelse return -1;
+    const fd = std.fmt.parseInt(std.os.linux.fd_t, text, 10) catch return -1;
+    if (fd < 0) return -1;
+    const server = fourneau.listen.server_from(fd) catch return -1;
+    _ = std.os.linux.close(server.socket.handle); // a copy, to read its address
+    if (server.socket.address.eql(&address)) return fd;
+    _ = std.os.linux.close(fd);
+    return -1;
+}
+
+/// `data` as the whole of the file at `path`; a failure is left unsaid.
+fn dev_file_write(path: [*:0]const u8, data: []const u8) void {
     const linux = std.os.linux;
     const how: linux.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
     const opened = linux.open(path, how, 0o644);
@@ -1466,8 +1505,8 @@ fn dev_static_tell(static_dir: []const u8) void {
     const fd: i32 = @intCast(opened);
     defer _ = linux.close(fd);
     var done: usize = 0;
-    while (done < static_dir.len) {
-        const wrote = linux.write(fd, static_dir[done..].ptr, static_dir.len - done);
+    while (done < data.len) {
+        const wrote = linux.write(fd, data[done..].ptr, data.len - done);
         if (linux.errno(wrote) != .SUCCESS or wrote == 0) return;
         done += wrote;
     }
@@ -1615,8 +1654,19 @@ fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator, fibers_max: u32) !voi
 /// listen.zig: held across a restart, so none is refused); else one bound
 /// now.
 fn listen_on(io: std.Io, name: []const u8, address: std.Io.net.IpAddress) !std.Io.net.Server {
+    if (dev_listener(address)) |server| return server;
     if (fourneau.listen.inherited(activation(), name)) |fd| return fourneau.listen.server_from(fd);
     return address.listen(io, .{ .reuse_address = true, .kernel_backlog = 4096 });
+}
+
+/// A shard's copy of roux dev's socket (`dev_listen_fd`), for the app's
+/// address only (not the redirect's).
+fn dev_listener(address: std.Io.net.IpAddress) ?std.Io.net.Server {
+    if (dev_listen_fd < 0) return null;
+    const server = fourneau.listen.server_from(dev_listen_fd) catch return null;
+    if (server.socket.address.eql(&address)) return server;
+    _ = std.os.linux.close(server.socket.handle);
+    return null;
 }
 
 /// What systemd says it passed this process, if it did.

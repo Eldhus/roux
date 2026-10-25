@@ -17,7 +17,7 @@ main.roc`; it fetches roux and the Roc compiler it needs. By hand, take `roux` f
 nightly it needs); its notes give the line that names the platform in your app's header.
 
 ```sh
-roux dev main.roc     # served, rebuilt as you save
+roux dev main.roc     # served, rebuilt as you save; a request during a restart waits for it
 roux build main.roc   # the executable, beside it
 ```
 
