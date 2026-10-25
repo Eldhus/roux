@@ -363,6 +363,21 @@ test "roux-db: every refusal, by name" {
     }
 }
 
+test "roux-db: a drop of what holds rows no more: a table now a view, a column now generated" {
+    const schema = schema_text ++
+        \\-- @drop table menu
+        \\CREATE VIEW menu AS SELECT id, name FROM dish;
+        \\-- @drop column plate twice
+        \\CREATE TABLE plate (id INTEGER PRIMARY KEY, n INTEGER NOT NULL,
+        \\  twice INTEGER GENERATED ALWAYS AS (n * 2)) STRICT;
+        \\
+    ;
+    const run = try run_generator(schema, "Dishes.sql", "-- name: q :exec\nDELETE FROM dish;");
+    defer free(run);
+    for (run.diagnostics.items()) |d| std.debug.print("  {s}\n", .{d.message});
+    try testing.expect(run.diagnostics.ok());
+}
+
 const sqlite = @import("sqlite");
 const compile = @import("compile.zig");
 

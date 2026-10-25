@@ -393,6 +393,11 @@ fn lost_any(arena: Allocator, before: *c.Db, db: *c.Db) !bool {
     const tables = try text_of(arena, before, tables_sql);
     var names = std.mem.tokenizeScalar(u8, tables, '\n');
     while (names.next()) |table| {
+        // A view of its name holds none of its rows.
+        const still_sql = try std.fmt.allocPrint(arena, "SELECT count(*) FROM " ++
+            "pragma_table_list WHERE schema = 'main' AND type = 'table' AND " ++
+            "name = {s} COLLATE NOCASE", .{try literal(arena, table)});
+        if (std.mem.eql(u8, try text_of(arena, db, still_sql), "0")) return true;
         const columns_sql = try std.fmt.allocPrint(arena, "SELECT name FROM " ++
             "pragma_table_xinfo({s}) WHERE hidden = 0", .{try literal(arena, table)});
         const columns = try text_of(arena, before, columns_sql);

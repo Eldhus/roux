@@ -328,11 +328,13 @@ fn check_drops(compiler: *Compiler) void {
     }
 }
 
-// NOCASE folds ASCII letters alone, as SQLite does names.
+// NOCASE folds ASCII letters alone, as SQLite does names. What a drop
+// loses is rows and values: a view of the table's name holds none, nor
+// does a generated column of the column's (as Migrate.roc counts them).
 const table_lookup = "SELECT count(*) FROM pragma_table_list WHERE schema = 'main' " ++
-    "AND name = ?1 COLLATE NOCASE AND ?2 = ''";
+    "AND type = 'table' AND name = ?1 COLLATE NOCASE AND ?2 = ''";
 const column_lookup = "SELECT count(*) FROM pragma_table_xinfo(?1) " ++
-    "WHERE name = ?2 COLLATE NOCASE";
+    "WHERE hidden = 0 AND name = ?2 COLLATE NOCASE";
 
 fn count_of(db: *c.Db, sql: []const u8, first: []const u8, second: []const u8) i64 {
     const lookup = prepare_own(db, sql) catch unreachable;
