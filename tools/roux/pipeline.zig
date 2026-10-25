@@ -82,7 +82,7 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
     };
     try wait_roc(io, &roc);
     const compiled_at = Io.Timestamp.now(io, .awake);
-    try attach(arena, io, paths, app);
+    try attach(arena, io, paths, app, stderr);
     const attached_at = Io.Timestamp.now(io, .awake);
     const line = "roux: {d} templates ({d} ms{s}), roc and glue {d} ms, attach {d} ms: ";
     try stderr.print(line, .{
@@ -153,9 +153,9 @@ pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode, log: ?Io.File) !std
 /// roc's executable with the templates' program attached after it, then
 /// the trailer the host looks for (host/templates.zig's `load_attached`):
 /// the program's length and a magic. Written beside the output and renamed
-/// over it, so a running binary is not overwritten.
-pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App) !void {
-    const copies_max = 16; // 16 GiB: no executable is
+/// over it, so a running binary is not overwritten. A call that fails is
+/// named on `stderr`, with its file and errno.
+pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App, stderr: *Io.Writer) !void {
     const cwd = Io.Dir.cwd();
     const built = try std.fs.path.joinZ(arena, &.{ app.dir, paths.executable });
     const program_path = try std.fs.path.join(arena, &.{
@@ -165,13 +165,62 @@ pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App) !void {
     const program = try cwd.readFileAlloc(io, program_path, arena, .limited(1 << 30));
     const trailer = rocstache.program.trailer(program.len);
     const attached = try std.fmt.allocPrintSentinel(arena, "{s}.new", .{app.output}, 0);
+    var failure: Failure = .{};
+    write_attached(built, attached, &.{ program, &trailer }, &failure) catch |err| {
+        failure.say(stderr);
+        return err;
+    };
+    cwd.rename(attached, cwd, app.output, io) catch |err| {
+        _ = std.os.linux.unlink(attached);
+        return err;
+    };
+}
+
+/// The call that failed in an attach, its file and why: roux's one line.
+const Failure = struct {
+    call: []const u8 = "",
+    path: []const u8 = "",
+    why: []const u8 = "",
+
+    fn set(
+        failure: *Failure,
+        call: []const u8,
+        path: []const u8,
+        why: []const u8,
+    ) error{AttachFailed} {
+        assert(failure.call.len == 0);
+        assert(call.len > 0);
+        failure.* = .{ .call = call, .path = path, .why = why };
+        return error.AttachFailed;
+    }
+
+    fn say(failure: *const Failure, stderr: *Io.Writer) void {
+        assert(failure.call.len > 0);
+        const line = "roux: the templates not attached: {s} {s}: {s}\n";
+        stderr.print(line, .{ failure.call, failure.path, failure.why }) catch {};
+    }
+};
+
+/// `attached` made: `built` (roc's executable), then `parts`. Removed again
+/// if any call fails.
+fn write_attached(
+    built: [:0]const u8,
+    attached: [:0]const u8,
+    parts: []const []const u8,
+    failure: *Failure,
+) error{AttachFailed}!void {
+    const copies_max = 16; // 16 GiB: no executable is
     const linux = std.os.linux;
     const source = linux.open(built, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
-    if (linux.errno(source) != .SUCCESS) return error.AttachFailed;
+    if (linux.errno(source) != .SUCCESS) {
+        return failure.set("open", built, @tagName(linux.errno(source)));
+    }
     defer _ = linux.close(@intCast(source));
     const how: linux.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .CLOEXEC = true };
     const opened = linux.open(attached, how, 0o755);
-    if (linux.errno(opened) != .SUCCESS) return error.AttachFailed;
+    if (linux.errno(opened) != .SUCCESS) {
+        return failure.set("open", attached, @tagName(linux.errno(opened)));
+    }
     const fd: i32 = @intCast(opened);
     defer _ = linux.close(fd);
     errdefer _ = linux.unlink(attached);
@@ -182,34 +231,49 @@ pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App) !void {
         const copied = linux.copy_file_range(@intCast(source), null, fd, null, 1 << 30, 0);
         switch (linux.errno(copied)) {
             .SUCCESS => if (copied == 0) break,
-            .XDEV => break try copy_buffered(@intCast(source), fd),
-            else => return error.AttachFailed,
+            .XDEV => break try copy_buffered(@intCast(source), fd, built, attached, failure),
+            else => |errno| return failure.set("copy_file_range", attached, @tagName(errno)),
         }
-    } else return error.AttachFailed;
-    for ([_][]const u8{ program, &trailer }) |part| try write_all(fd, part);
-    try cwd.rename(attached, cwd, app.output, io);
+    } else return failure.set("copy_file_range", attached, "past 16 GiB");
+    for (parts) |part| try write_all(fd, part, attached, failure);
 }
 
 /// The rest of `source` written to `fd`, 64 KiB a read.
-fn copy_buffered(source: i32, fd: i32) error{AttachFailed}!void {
+fn copy_buffered(
+    source: i32,
+    fd: i32,
+    built: []const u8,
+    attached: []const u8,
+    failure: *Failure,
+) error{AttachFailed}!void {
     const reads_max = 1 << 18; // 16 GiB: no executable is
     const linux = std.os.linux;
     var buffer: [64 * 1024]u8 = undefined;
     for (0..reads_max) |_| {
         const read = linux.read(source, &buffer, buffer.len);
-        if (linux.errno(read) != .SUCCESS) return error.AttachFailed;
+        if (linux.errno(read) != .SUCCESS) {
+            return failure.set("read", built, @tagName(linux.errno(read)));
+        }
         if (read == 0) return;
-        try write_all(fd, buffer[0..read]);
+        try write_all(fd, buffer[0..read], attached, failure);
     }
-    return error.AttachFailed;
+    return failure.set("read", built, "past 16 GiB");
 }
 
-fn write_all(fd: i32, bytes: []const u8) error{AttachFailed}!void {
+fn write_all(
+    fd: i32,
+    bytes: []const u8,
+    attached: []const u8,
+    failure: *Failure,
+) error{AttachFailed}!void {
     const linux = std.os.linux;
     var done: usize = 0;
     while (done < bytes.len) {
         const wrote = linux.write(fd, bytes[done..].ptr, bytes.len - done);
-        if (linux.errno(wrote) != .SUCCESS or wrote == 0) return error.AttachFailed;
+        if (linux.errno(wrote) != .SUCCESS) {
+            return failure.set("write", attached, @tagName(linux.errno(wrote)));
+        }
+        if (wrote == 0) return failure.set("write", attached, "nothing written");
         done += wrote;
     }
 }
@@ -242,4 +306,28 @@ fn spawn_to(
 
 pub fn milliseconds(from: Io.Timestamp, to: Io.Timestamp) i64 {
     return @intCast(@divTrunc(from.durationTo(to).nanoseconds, std.time.ns_per_ms));
+}
+
+test "attach: a failed call is named, with its file and errno" {
+    var failure: Failure = .{};
+    const parts: []const []const u8 = &.{"program"};
+    const missing = "/nonexistent/roux-attach/app";
+    const opened = write_attached(missing, "/nonexistent/roux-attach/app.new", parts, &failure);
+    try std.testing.expectError(error.AttachFailed, opened);
+    var buffer: [128]u8 = undefined;
+    var stderr: Io.Writer = .fixed(&buffer);
+    failure.say(&stderr);
+    try std.testing.expectEqualStrings(
+        "roux: the templates not attached: open /nonexistent/roux-attach/app: NOENT\n",
+        stderr.buffered(),
+    );
+    // Roc's executable read, the attached file not made: its directory is
+    // missing.
+    failure = .{};
+    const attached = "/nonexistent/roux-attach/app.new";
+    const made = write_attached("/proc/self/exe", attached, parts, &failure);
+    try std.testing.expectError(error.AttachFailed, made);
+    try std.testing.expectEqualStrings("open", failure.call);
+    try std.testing.expectEqualStrings(attached, failure.path);
+    try std.testing.expectEqualStrings("NOENT", failure.why);
 }

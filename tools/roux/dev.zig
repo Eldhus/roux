@@ -324,7 +324,9 @@ const State = struct {
         // The app reads its program from `templates.bin` in development, so
         // only Roc (or no binary yet) needs the program attached again.
         if (roc or state.build == 0) {
-            pipeline.attach(arena, io, paths, app) catch |err| return state.failed(stderr, err);
+            pipeline.attach(arena, io, paths, app, stderr) catch |err| {
+                return state.failed(stderr, err);
+            };
         }
         state.built = now;
         state.build += 1;
@@ -467,7 +469,7 @@ const State = struct {
         state.failing = true;
         stderr.print("roux dev: build {d} failed", .{state.build + 1}) catch {};
         switch (err) {
-            error.Invalid, error.ChildFailed => {},
+            error.Invalid, error.ChildFailed, error.AttachFailed => {},
             else => stderr.print(" ({t})", .{err}) catch {},
         }
         stderr.print("; build {d} still serving\n", .{state.build}) catch {};
