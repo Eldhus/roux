@@ -1,5 +1,5 @@
 A column's type widened, INTEGER to TEXT: SQLite converts each value as it
-is copied (95 becomes '95'). The runner counts that as the same value.
+is copied (95 becomes '95'), the same value.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, price INTEGER NOT NULL) STRICT;

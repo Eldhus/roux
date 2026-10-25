@@ -6,22 +6,14 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 95);
 
 == after
-CREATE TABLE dish (
-  id INTEGER PRIMARY KEY,
-  price_kr INTEGER NOT NULL,
-  price_eur REAL GENERATED ALWAYS AS (price_kr / 11.5) VIRTUAL
-) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL, price_eur REAL GENERATED ALWAYS AS (price_kr / 11.5) VIRTUAL) STRICT;
 
 == plan
 roux: migrating test.db, 4 steps
   table `dish`: aside, to make it anew
     ALTER TABLE "dish" RENAME TO "roux_old_dish"
   table `dish`: as schema.sql makes it
-    CREATE TABLE dish (
-      id INTEGER PRIMARY KEY,
-      price_kr INTEGER NOT NULL,
-      price_eur REAL GENERATED ALWAYS AS (price_kr / 11.5) VIRTUAL
-    ) STRICT
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL, price_eur REAL GENERATED ALWAYS AS (price_kr / 11.5) VIRTUAL) STRICT
   table `dish`: its rows, by id, price_kr
     INSERT INTO "dish" ("id", "price_kr") SELECT "id", "price_kr" FROM "roux_old_dish"
   table `dish`: the old one

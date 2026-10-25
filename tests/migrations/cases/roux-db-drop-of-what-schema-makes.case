@@ -6,8 +6,8 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == after
 -- @release 1
-CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 -- @drop 1 table Dish
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
 roux-db: @drop table Dish, but schema.sql makes it

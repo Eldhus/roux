@@ -1,7 +1,7 @@
 A table renamed, `menu` to `meal`: dropped on purpose, and the new one
-made from its rows. Its AUTOINCREMENT goes on, its index is made for the
-new name, and the table whose rows refer to it (rebuilt, since its CREATE
-now names `meal`) keeps every row.
+made from its rows. Its AUTOINCREMENT goes on, its index (renamed with it
+in schema.sql) is made, and the table whose rows refer to it (rebuilt,
+since its CREATE now names `meal`) keeps every row.
 
 == before
 CREATE TABLE menu (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL) STRICT;

@@ -1,31 +1,20 @@
 A new NOT NULL column without a DEFAULT, on a table with rows: the plan is
 made, and SQLite refuses the copy. Nothing changes, and the error names
-the step. (Give it a DEFAULT, or let it be NULL.)
+the step. (Give it a DEFAULT, let it be NULL, or fill it `@from`.)
 
 == before
-CREATE TABLE dish (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL
-) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'soup');
 
 == after
-CREATE TABLE dish (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  price_kr INTEGER NOT NULL
-) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
 
 == plan
 roux: migrating test.db, 4 steps
   table `dish`: aside, to make it anew
     ALTER TABLE "dish" RENAME TO "roux_old_dish"
   table `dish`: as schema.sql makes it
-    CREATE TABLE dish (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      price_kr INTEGER NOT NULL
-    ) STRICT
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT
   table `dish`: its rows, by id, name
     INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
   table `dish`: the old one

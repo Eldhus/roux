@@ -1,6 +1,6 @@
 A table with AUTOINCREMENT keeps its next id through a rebuild, though the
 largest one handed out (2, bread) is no longer in a row: copied alone, the
-rows would hand 2 out again. The runner checks `sqlite_sequence`.
+rows would hand 2 out again.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT;

@@ -492,7 +492,13 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
 
 /// An opened database is at schema.sql's release, or the newer one it was
 /// at: a release is never lowered.
-fn check_release(arena: Allocator, dir: []const u8, release: u32, step: usize, w: *std.Io.Writer) !void {
+fn check_release(
+    arena: Allocator,
+    dir: []const u8,
+    release: u32,
+    step: usize,
+    w: *std.Io.Writer,
+) !void {
     const db = try open_file(arena, dir, "test.db");
     defer close_db(db);
     const before = try open_file(arena, dir, "before.db");

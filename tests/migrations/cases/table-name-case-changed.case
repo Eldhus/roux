@@ -1,20 +1,24 @@
 SQLite's names ignore the case of ASCII letters: `Dish` and `dish` are one
-table. Its CREATE changed, so it is rebuilt under schema.sql's spelling,
-its rows kept.
+table, `Name` and `name` one column. Its CREATE changed, so it is rebuilt
+under schema.sql's spelling, its rows kept, and its AUTOINCREMENT goes on
+from where it was under the new spelling (2, bread, was deleted).
 
 == before
-CREATE TABLE Dish (id INTEGER PRIMARY KEY, Name TEXT NOT NULL) STRICT;
-INSERT INTO Dish VALUES (1, 'soup');
+CREATE TABLE Dish (id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL) STRICT;
+INSERT INTO Dish (Name) VALUES ('soup'), ('bread');
+DELETE FROM Dish WHERE Name = 'bread';
 
 == after
-CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT;
 
 == plan
-roux: migrating test.db, 4 steps
+roux: migrating test.db, 5 steps
   table `dish`: aside, to make it anew
     ALTER TABLE "Dish" RENAME TO "roux_old_Dish"
   table `dish`: as schema.sql makes it
-    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT
+    CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT
+  table `dish`: AUTOINCREMENT goes on from where it was
+    INSERT INTO sqlite_sequence (name, seq) SELECT 'dish', seq FROM sqlite_sequence WHERE name = 'roux_old_Dish'
   table `dish`: its rows, by id, name
     INSERT INTO "dish" ("id", "name") SELECT "id", "Name" FROM "roux_old_Dish"
   table `dish`: the old one

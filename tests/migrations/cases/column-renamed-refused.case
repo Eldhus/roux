@@ -1,6 +1,6 @@
-A column renamed is, to SQLite's listings, one column gone and another
-new: refused, since the old one's values would go. There is no rename;
-drop the old one on purpose (its values go), or keep it beside the new.
+A column renamed in schema.sql and nothing more: to SQLite's listings, one
+column gone and another new. Refused, since the old one's values would
+go; the error gives the two lines a rename takes, a @drop and a @from.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;

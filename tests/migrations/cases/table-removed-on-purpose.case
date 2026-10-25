@@ -8,8 +8,8 @@ INSERT INTO menu VALUES (1, 'lunch');
 
 == after
 -- @release 1
-CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 -- @drop 1 table menu
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == plan
 roux: migrating test.db, 1 step
