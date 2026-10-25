@@ -24,9 +24,6 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT
 -- @oldest 2
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
 
-== query
-SELECT id, name, slug FROM dish
-
 == plan
 -- after 1
 -- after 2
@@ -45,9 +42,12 @@ migrated from release 1
 -- after 3
 migrated from release 2
 
-== rows
-1 | Pea Soup | pea-soup
-
 == error
 -- after 1
 the database is at release 1, before `-- @oldest 2`: the @drop and @from lines it needs were deleted. Open it first with an executable of a release that still had them, or put them back.
+
+== query
+SELECT id, name, slug FROM dish
+
+== rows
+1 | Pea Soup | pea-soup

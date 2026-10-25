@@ -19,9 +19,6 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 -- @from 2 column dish name = title
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
-== query
-SELECT id, name FROM dish
-
 == plan
 -- after 1
 -- after 2
@@ -38,9 +35,12 @@ roux: migrating test.db, 4 steps
     DROP TABLE "roux_old_dish"
 migrated from release 1
 
-== rows
-1 | soup
-
 == error
 -- after 1
 the database is at release 1, before `-- @oldest 2`: the @drop and @from lines it needs were deleted. Open it first with an executable of a release that still had them, or put them back.
+
+== query
+SELECT id, name FROM dish
+
+== rows
+1 | soup

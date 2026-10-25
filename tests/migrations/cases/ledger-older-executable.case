@@ -20,9 +20,6 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
 -- @release 4
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
-== query
-PRAGMA user_version
-
 == plan
 -- after 1
 migrated from release 5
@@ -39,9 +36,12 @@ roux: migrating test.db, 4 steps
 migrated from release 5
 -- after 3
 
-== rows
-6
-
 == error
 -- after 3
 the database is at release 6, newer than schema.sql's 4, and its schema differs: an older executable over a newer database opens it only as it is.
+
+== query
+PRAGMA user_version
+
+== rows
+6

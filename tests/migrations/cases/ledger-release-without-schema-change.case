@@ -10,11 +10,11 @@ PRAGMA user_version = 3;
 -- @release 4
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
-== query
-PRAGMA user_version
-
 == plan
 migrated from release 3
+
+== query
+PRAGMA user_version
 
 == rows
 4

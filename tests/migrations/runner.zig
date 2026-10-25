@@ -17,11 +17,16 @@
 //! (Migrate.roc plans, the host migrates), then the runner checks what must
 //! hold whatever the plan was:
 //!
+//! - rehearsed first (`ROUX_REHEARSE`): the rehearsal foretells the plan,
+//!   the outcome and the error, and leaves the database and its directory
+//!   as they were;
 //! - opened: the schema is what schema.sql makes, to the byte; every row
-//!   of every table both have is there, by the columns both have; an
-//!   AUTOINCREMENT kept goes on from where it was; the database is whole
-//!   and its foreign keys hold; opening again plans nothing;
-//! - not opened: nothing changed, schema or rows;
+//!   of every table both have is there, by the columns both have, and of
+//!   every table made `@from` another, the other's; an AUTOINCREMENT kept
+//!   goes on from where it was; the database is whole and its foreign keys
+//!   hold; it is at schema.sql's release, or the newer one it was at;
+//!   opening again plans nothing;
+//! - not opened: nothing changed, schema, rows or release;
 //! - a migration that lost a table or a column copied the database first,
 //!   whole (`test.db.before-drop/`); one that lost nothing, or failed, left
 //!   no copy.
@@ -136,7 +141,7 @@ const Verdict = union(enum) { pass, failure: []const u8 };
 
 /// In a file's order. `after` may come again: each a schema.sql the same
 /// database is opened with in turn, as deploys follow one another.
-const Section = enum { before, after, query, plan, rows, @"error" };
+const Section = enum { before, after, plan, @"error", query, rows };
 
 /// `== after` sections in one case, at most.
 const afters_max = 16;
@@ -266,6 +271,7 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
         if (opened.opened) {
             try check_opened(arena, dir, after, w);
             try check_release(arena, dir, opened.release, step, w);
+            try check_moved(arena, dir, opened.froms, w);
             const again = try open(arena, io, app, dir, after);
             // What the app says of where it came from is no plan.
             if (!again.opened or std.mem.indexOf(u8, again.plan, "roux: migrating") != null) {
@@ -351,6 +357,8 @@ const Opened = struct {
     @"error": []const u8,
     /// schema.sql's `@release`, 0 for none.
     release: u32 = 0,
+    /// schema.sql's `@from`s.
+    froms: []const roux_db.From = &.{},
 };
 
 const Run = enum { real, rehearsal };
@@ -433,6 +441,7 @@ fn open_as(
         .plan = try plan_of(arena, ran.stdout),
         .@"error" = std.mem.trim(u8, ran.stderr, "\n"),
         .release = compiled.release,
+        .froms = compiled.froms,
     };
 }
 
@@ -647,7 +656,51 @@ fn check_unchanged(arena: Allocator, dir: []const u8, w: *std.Io.Writer) !void {
             now, was,
         });
     }
+    const release_now = try text_of(arena, db, "PRAGMA user_version");
+    const release_was = try text_of(arena, before, "PRAGMA user_version");
+    if (!std.mem.eql(u8, release_now, release_was)) {
+        try w.print("  it did not open, and the release moved: {s}, was {s}\n", .{
+            release_now, release_was,
+        });
+    }
     try check_rows(arena, before, db, w);
+}
+
+/// A table made `@from` another holds the other's rows, by the columns
+/// both have: a rename is the same rows under a new name.
+fn check_moved(
+    arena: Allocator,
+    dir: []const u8,
+    froms: []const roux_db.From,
+    w: *std.Io.Writer,
+) !void {
+    const db = try open_file(arena, dir, "test.db");
+    defer close_db(db);
+    const before = try open_file(arena, dir, "before.db");
+    defer close_db(before);
+    for (froms) |from| {
+        if (from.column != null) continue;
+        // Moved in this step: the old table was here, the new one was not.
+        if (!try has_table(arena, before, from.source)) continue;
+        if (try has_table(arena, before, from.table)) continue;
+        const columns = try common_columns_of(arena, before, from.source, db, from.table);
+        if (columns.len == 0) continue;
+        const was = try text_of(arena, before, try rows_sql(arena, from.source, columns));
+        const now = try text_of(arena, db, try rows_sql(arena, from.table, columns));
+        if (!std.mem.eql(u8, was, now)) {
+            try w.print("  table {s} made from {s}, by {s}:\n{s}\n  were:\n{s}\n", .{
+                from.table, from.source, columns, now, was,
+            });
+        }
+    }
+}
+
+fn has_table(arena: Allocator, db: *c.Db, table: []const u8) !bool {
+    const sql = try std.fmt.allocPrint(arena, "SELECT count(*) FROM pragma_table_list " ++
+        "WHERE schema = 'main' AND type = 'table' AND name = {s} COLLATE NOCASE", .{
+        try literal(arena, table),
+    });
+    return !std.mem.eql(u8, try text_of(arena, db, sql), "0");
 }
 
 /// Every table of `before` that `db` has (by SQLite's name rules), row for
@@ -673,10 +726,22 @@ fn check_rows(arena: Allocator, before: *c.Db, db: *c.Db, w: *std.Io.Writer) !vo
 
 /// `"a", "b"`: the columns holding values in both, as `before` names them.
 fn common_columns(arena: Allocator, before: *c.Db, db: *c.Db, table: []const u8) ![]const u8 {
-    const sql = try std.fmt.allocPrint(arena, "SELECT name FROM pragma_table_xinfo({s}) " ++
-        "WHERE hidden = 0 ORDER BY cid", .{try literal(arena, table)});
-    const had = try text_of(arena, before, sql);
-    const has = try text_of(arena, db, sql);
+    return common_columns_of(arena, before, table, db, table);
+}
+
+/// The same, of `old` in `before` and `new` in `db`.
+fn common_columns_of(
+    arena: Allocator,
+    before: *c.Db,
+    old: []const u8,
+    db: *c.Db,
+    new: []const u8,
+) ![]const u8 {
+    const columns_sql = "SELECT name FROM pragma_table_xinfo({s}) WHERE hidden = 0 ORDER BY cid";
+    const had_sql = try std.fmt.allocPrint(arena, columns_sql, .{try literal(arena, old)});
+    const has_sql = try std.fmt.allocPrint(arena, columns_sql, .{try literal(arena, new)});
+    const had = try text_of(arena, before, had_sql);
+    const has = try text_of(arena, db, has_sql);
     var out: std.Io.Writer.Allocating = .init(arena);
     var columns = std.mem.tokenizeScalar(u8, had, '\n');
     while (columns.next()) |column| {

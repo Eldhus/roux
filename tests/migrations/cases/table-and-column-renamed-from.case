@@ -12,9 +12,6 @@ INSERT INTO menu VALUES (1, 'lunch', 'noon');
 -- @from 1 column meal name = title
 CREATE TABLE meal (id INTEGER PRIMARY KEY, name TEXT NOT NULL, served TEXT) STRICT;
 
-== query
-SELECT id, name, served FROM meal
-
 == plan
 roux: migrating test.db, 4 steps
   table `meal`: `menu` aside, to make it from
@@ -28,6 +25,9 @@ roux: migrating test.db, 4 steps
   table `meal`: the old one
     DROP TABLE "roux_old_menu"
 migrated from release 0
+
+== query
+SELECT id, name, served FROM meal
 
 == rows
 1 | lunch | noon

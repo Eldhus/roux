@@ -7,11 +7,11 @@ where it came from hears that release: it has no older rows.
 -- @release 4
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
-== query
-PRAGMA user_version
-
 == plan
 migrated from release 4
+
+== query
+PRAGMA user_version
 
 == rows
 4
