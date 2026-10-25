@@ -34,6 +34,7 @@ pub const file_bytes_max = 1 << 20;
 const file_statements_max = 4096;
 
 pub const Field = annotation.Field;
+pub const Drop = annotation.Drop;
 
 pub const Statement = struct {
     /// The query file's index in the run (0 is schema.sql).
@@ -60,7 +61,12 @@ pub const Input = struct {
 pub const Compiled = struct {
     /// Every statement, by file in the order given, then by position.
     statements: []const Statement,
+    /// schema.sql's `-- @drop`s, in its order.
+    drops: []const annotation.Drop = &.{},
 };
+
+/// `-- @drop`s in schema.sql, in all.
+pub const drops_max = 256;
 
 const Compiler = struct {
     arena: Allocator,
@@ -68,6 +74,7 @@ const Compiler = struct {
     diagnostics: *Diagnostics,
     verdict: authorizer.Verdict,
     statements: std.ArrayList(Statement),
+    drops: std.ArrayList(annotation.Drop),
 };
 
 /// Compiles `queries` against `schema`; what is wrong goes to
@@ -88,14 +95,16 @@ pub fn compile(
         .diagnostics = diagnostics,
         .verdict = .{ .policy = .schema },
         .statements = try .initCapacity(arena, statements_max),
+        .drops = try .initCapacity(arena, drops_max),
     };
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
+    check_drops(&compiler);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
         compile_file(&compiler, @intCast(file), query);
     }
-    return .{ .statements = compiler.statements.items };
+    return .{ .statements = compiler.statements.items, .drops = compiler.drops.items };
 }
 
 fn open_memory() !*c.Db {
@@ -222,6 +231,13 @@ fn load_schema(compiler: *Compiler, text: []const u8) void {
             compiler.diagnostics.add(0, next.start, "annotations belong to query files, " ++
                 "not schema.sql", .{});
         }
+        for (annotations.drop_list()) |drop| {
+            if (compiler.drops.items.len == drops_max) {
+                compiler.diagnostics.add(0, drop.offset, "more than {d} @drop", .{drops_max});
+                break;
+            }
+            compiler.drops.appendAssumeCapacity(drop);
+        }
         const statement = next.statement orelse continue;
         defer _ = c.sqlite3_finalize(statement);
         load_schema_statement(compiler, statement, next.start);
@@ -253,6 +269,37 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
     }
 }
 
+/// A drop names what schema.sql no longer makes, by SQLite's own lookup
+/// of the name (any case of an ASCII letter is the same name).
+fn check_drops(compiler: *Compiler) void {
+    for (compiler.drops.items) |drop| {
+        if (drop.column) |column| {
+            if (count_of(compiler.db, column_lookup, drop.table, column) > 0) {
+                compiler.diagnostics.add(0, drop.offset, "@drop column {s} {s}, but " ++
+                    "schema.sql makes it", .{ drop.table, column });
+            }
+        } else if (count_of(compiler.db, table_lookup, drop.table, "") > 0) {
+            compiler.diagnostics.add(0, drop.offset, "@drop table {s}, but schema.sql " ++
+                "makes it", .{drop.table});
+        }
+    }
+}
+
+// NOCASE folds ASCII letters alone, as SQLite does names.
+const table_lookup = "SELECT count(*) FROM pragma_table_list WHERE schema = 'main' " ++
+    "AND name = ?1 COLLATE NOCASE AND ?2 = ''";
+const column_lookup = "SELECT count(*) FROM pragma_table_xinfo(?1) " ++
+    "WHERE name = ?2 COLLATE NOCASE";
+
+fn count_of(db: *c.Db, sql: []const u8, first: []const u8, second: []const u8) i64 {
+    const lookup = prepare_own(db, sql) catch unreachable;
+    defer _ = c.sqlite3_finalize(lookup);
+    assert(c.sqlite3_bind_text64(lookup, 1, first.ptr, first.len, null, c.utf8) == c.ok);
+    assert(c.sqlite3_bind_text64(lookup, 2, second.ptr, second.len, null, c.utf8) == c.ok);
+    assert(c.sqlite3_step(lookup) == c.row);
+    return c.sqlite3_column_int64(lookup, 0);
+}
+
 fn is_strict(db: *c.Db, table: []const u8) bool {
     const lookup = prepare_own(db,
         \\SELECT strict FROM pragma_table_list WHERE schema = 'main' AND name = ?1
@@ -279,6 +326,9 @@ fn compile_file(compiler: *Compiler, file: u16, input: Input) void {
     for (0..file_statements_max) |_| {
         var annotations: annotation.Annotations = .{};
         const next = next_statement(compiler, file, input.text, &at, &annotations) orelse break;
+        for (annotations.drop_list()) |drop| {
+            compiler.diagnostics.add(file, drop.offset, "`-- @drop` belongs to schema.sql", .{});
+        }
         const statement = next.statement orelse {
             if (annotations.name != null) {
                 compiler.diagnostics.add(file, annotations.name_offset, "`-- name:` with " ++

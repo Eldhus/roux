@@ -6,11 +6,19 @@ import pf.Sqlite
 ## `Sqlite.open!(Database.at(path), settings)`.
 Database :: [].{
 	at : Str -> Sqlite.Database
-	at = |path| { path, schema, statements }
+	at = |path| { path, schema, statements, drops }
 }
 
 schema : Str
-schema = "-- The golden test's database (tests.zig): `roux-db gen` on this\n-- directory writes the expected Roc beside it.\nCREATE TABLE dish (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL,\n  price_kr INTEGER NOT NULL,\n  note TEXT,\n  vegetarian INTEGER NOT NULL DEFAULT 0\n) STRICT;\n\nCREATE INDEX dish_by_name ON dish (name);\n\nCREATE TABLE tag (\n  dish_id INTEGER NOT NULL REFERENCES dish (id),\n  label TEXT NOT NULL,\n  PRIMARY KEY (dish_id, label)\n) STRICT, WITHOUT ROWID;\n"
+schema = "-- The golden test's database (tests.zig): `roux-db gen` on this\n-- directory writes the expected Roc beside it.\nCREATE TABLE dish (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL,\n  price_kr INTEGER NOT NULL,\n  note TEXT,\n  vegetarian INTEGER NOT NULL DEFAULT 0\n) STRICT;\n\nCREATE INDEX dish_by_name ON dish (name);\n\nCREATE TABLE tag (\n  dish_id INTEGER NOT NULL REFERENCES dish (id),\n  label TEXT NOT NULL,\n  PRIMARY KEY (dish_id, label)\n) STRICT, WITHOUT ROWID;\n\n-- Gone on purpose, with their rows, when a database is migrated:\n-- @drop table menu\n-- @drop column dish photo\n"
+
+drops : List(Sqlite.Drop)
+drops = [
+	# schema.sql:20
+	Table("menu"),
+	# schema.sql:21
+	Column("dish", "photo"),
+]
 
 statements : List(Sqlite.Statement)
 statements = [

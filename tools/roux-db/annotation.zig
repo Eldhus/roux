@@ -14,6 +14,12 @@
 //!   -- @param id : I64
 //!   -- @column n : I64
 //!
+//! and in schema.sql, what it no longer makes and whose rows may go when
+//! a database is migrated (Migrate.roc refuses to lose them otherwise):
+//!
+//!   -- @drop table meal
+//!   -- @drop column dish note
+//!
 //! Any other comment is prose. A `--` comment beginning with `@` that is
 //! not one of these is an error, so a misspelt annotation is never prose.
 
@@ -29,6 +35,8 @@ pub const fields_max = 64;
 pub const rows_max_limit = 100_000;
 /// Words on an annotation line: `@param id : Nullable(I64)` has four.
 const words_max = 8;
+/// `@drop` lines before one statement of schema.sql.
+pub const drops_max = 64;
 
 pub const Kind = enum {
     /// At most one row: the function returns it, or `NotFound`.
@@ -46,6 +54,13 @@ pub const Field = struct {
     offset: u32,
 };
 
+/// `@drop table meal` (`column` null), or `@drop column dish note`.
+pub const Drop = struct {
+    table: []const u8,
+    column: ?[]const u8,
+    offset: u32,
+};
+
 pub const Annotations = struct {
     name: ?[]const u8 = null,
     name_offset: u32 = 0,
@@ -56,6 +71,12 @@ pub const Annotations = struct {
     params_count: u32 = 0,
     columns: [fields_max]Field = undefined,
     columns_count: u32 = 0,
+    drops: [drops_max]Drop = undefined,
+    drops_count: u32 = 0,
+
+    pub fn drop_list(annotations: *const Annotations) []const Drop {
+        return annotations.drops[0..annotations.drops_count];
+    }
 
     pub fn param_list(annotations: *const Annotations) []const Field {
         return annotations.params[0..annotations.params_count];
@@ -133,8 +154,32 @@ fn parse_line(line: []const u8, offset: u32, sink: Sink) void {
     if (words[0][0] != '@') return; // prose
     if (std.mem.eql(u8, words[0], "@param")) return parse_field(words, offset, sink, .param);
     if (std.mem.eql(u8, words[0], "@column")) return parse_field(words, offset, sink, .column);
+    if (std.mem.eql(u8, words[0], "@drop")) return parse_drop(words, offset, sink);
     sink.diagnostics.add(sink.file, offset, "unknown annotation {s}: roux-db knows " ++
-        "`-- name:`, `-- @param` and `-- @column`", .{words[0]});
+        "`-- name:`, `-- @param`, `-- @column` and `-- @drop`", .{words[0]});
+}
+
+/// A name as SQLite keeps it, one word: what a drop names is compared with
+/// the database's own names, never parsed as SQL.
+fn parse_drop(words: []const []const u8, offset: u32, sink: Sink) void {
+    const table_form = words.len == 3 and std.mem.eql(u8, words[1], "table");
+    const column_form = words.len == 4 and std.mem.eql(u8, words[1], "column");
+    if (!table_form and !column_form) {
+        sink.diagnostics.add(sink.file, offset, "write `-- @drop table name` or " ++
+            "`-- @drop column table name`", .{});
+        return;
+    }
+    const annotations = sink.annotations;
+    if (annotations.drops_count == drops_max) {
+        sink.diagnostics.add(sink.file, offset, "more than {d} @drop together", .{drops_max});
+        return;
+    }
+    annotations.drops[annotations.drops_count] = .{
+        .table = words[2],
+        .column = if (column_form) words[3] else null,
+        .offset = offset,
+    };
+    annotations.drops_count += 1;
 }
 
 fn parse_name(words: []const []const u8, offset: u32, sink: Sink) void {

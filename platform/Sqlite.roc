@@ -1,5 +1,6 @@
 import Host
 import Server
+import Migrate
 
 ## The app's one SQLite database, queried through the typed modules
 ## `roux-db gen db` writes from `db/schema.sql` and `db/*.sql`
@@ -28,11 +29,19 @@ import Server
 ## committed when `respond!` returns is rolled back: an error answer stays
 ## as it is (a constraint the handler made a 400), a success becomes a
 ## 500, since what it did was undone. `ROUX_DATABASE` overrides the path.
-## No migrations yet: an existing database must hold exactly the schema
-## `schema.sql` makes, or `open!` fails.
+##
+## `open!` migrates: an existing database is brought to what `schema.sql`
+## makes now, in one transaction, before any request (Migrate.roc). A
+## table or column `schema.sql` no longer makes is refused, its rows kept,
+## unless `schema.sql` drops it on purpose: `-- @drop table meal`,
+## `-- @drop column dish note`.
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
-	Database : { path : Str, schema : Str, statements : List(Statement) }
+	Database : { path : Str, schema : Str, statements : List(Statement), drops : List(Drop) }
+
+	## What `schema.sql` drops on purpose (`-- @drop`): a table, or a
+	## table's column, and its rows.
+	Drop : Migrate.Drop
 
 	Statement : Host.SqliteStatement
 
@@ -84,13 +93,36 @@ Sqlite := [].{
 	## One request's transaction on the writer.
 	Write :: { request : U64 }
 
-	## Opens the database, once, in `init!`.
+	## Opens the database, once, in `init!`, migrating it first if
+	## `schema.sql` changed; the host prints each step as it runs it.
 	open! : Database, Settings => Try(Db, [DbErr(Err)])
-	open! = |database, { synchronous }|
-		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous) {
+	open! = |database, { synchronous }| {
+		{ live, pristine } = Host.sqlite_inspect!(database.path, database.schema) ? |message| DbErr(Failed(message))
+		steps = Migrate.plan(schema_of(live), schema_of(pristine), database.drops) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
+		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps) {
 			Ok({}) => Ok(Db.{ opened: Bool.True })
 			Err(message) => Err(DbErr(Failed(message)))
 		}
+	}
+
+	## The host's listings (host/database.zig, `Listing`) as Migrate.roc's.
+	schema_of : Host.SqliteListings -> Migrate.Schema
+	schema_of = |{ objects, columns }| {
+		objects: objects.map(
+			|row|
+				match row {
+					[Text(kind), Text(name), Text(table), Text(sql)] => { kind, name, table, sql }
+					_ => crash "Sqlite.schema_of: the host lists objects as text"
+				},
+		),
+		columns: columns.map(
+			|row|
+				match row {
+					[Text(table), Text(name), Integer(hidden)] => { table, name, hidden }
+					_ => crash "Sqlite.schema_of: the host lists columns as text and an integer"
+				},
+		),
+	}
 
 	read : Db, Server.Request -> Read
 	read = |_db, request| Read.{ request: request.body, writer: Bool.False }

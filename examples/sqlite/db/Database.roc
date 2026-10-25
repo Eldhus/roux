@@ -6,11 +6,14 @@ import pf.Sqlite
 ## `Sqlite.open!(Database.at(path), settings)`.
 Database :: [].{
 	at : Str -> Sqlite.Database
-	at = |path| { path, schema, statements }
+	at = |path| { path, schema, statements, drops }
 }
 
 schema : Str
 schema = "-- The example's database: dishes and their reviews. STRICT, as roux-db\n-- requires: a column's declared type is what it holds.\nCREATE TABLE dish (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL UNIQUE,\n  price_kr INTEGER NOT NULL CHECK (price_kr > 0),\n  note TEXT\n) STRICT;\n\nCREATE TABLE review (\n  id INTEGER PRIMARY KEY,\n  dish_id INTEGER NOT NULL REFERENCES dish (id),\n  stars INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5)\n) STRICT;\n\nCREATE INDEX review_by_dish ON review (dish_id);\n"
+
+drops : List(Sqlite.Drop)
+drops = []
 
 statements : List(Sqlite.Statement)
 statements = [

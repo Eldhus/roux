@@ -155,6 +155,7 @@ pub const limit_trigger_steps = 14;
 pub extern fn sqlite3_db_config(db: *Db, op: c_int, ...) c_int;
 pub const dbconfig_enable_trigger = 1003;
 pub const dbconfig_defensive = 1010;
+pub const dbconfig_legacy_alter_table = 1012;
 pub const dbconfig_dqs_dml = 1013;
 pub const dbconfig_dqs_ddl = 1014;
 pub const dbconfig_enable_view = 1015;

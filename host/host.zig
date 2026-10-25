@@ -557,6 +557,10 @@ fn request_from(handle: u64) ?*Server.Request {
 
 const SqliteOpenResult = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".return_type.?;
 const SqliteStatements = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[2].?;
+const SqliteSteps = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[4].?;
+const SqliteInspectResult = @typeInfo(@TypeOf(abi.hosted_sqlite_inspect)).@"fn".return_type.?;
+const SqliteInspected = @FieldType(@FieldType(SqliteInspectResult, "payload"), "ok");
+const SqliteListings = @FieldType(SqliteInspected, "live");
 const SqliteRunResult = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".return_type.?;
 const SqliteParams = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".param_types[3].?;
 const SqliteWriteResult = @typeInfo(@TypeOf(abi.hosted_sqlite_write_begin)).@"fn".return_type.?;
@@ -576,23 +580,93 @@ fn ListItem(comptime List: type) type {
     return @typeInfo(pointer).pointer.child;
 }
 
-/// `Sqlite.open!`: the database, in `init!` only, once. Every allocation
-/// here is the process's for its life (startup).
+/// `Sqlite.open!`'s first look, in `init!`: the database at the path and
+/// what schema.sql makes, listed for Migrate.roc to plan from.
+export fn hosted_sqlite_inspect(
+    path: abi.RocStr,
+    schema: abi.RocStr,
+) callconv(.c) SqliteInspectResult {
+    defer path.decref(host());
+    defer schema.decref(host());
+    if (serving or database != null) return inspect_error("Sqlite.open! belongs to init!, once");
+    const gpa = std.heap.page_allocator;
+    const where = environment("ROUX_DATABASE") orelse path.asSlice();
+    var report: database_module.Report = .{};
+    var inspection = database_module.Inspection.open(gpa, where, schema.asSlice(), &report) catch
+        return inspect_error(report.message());
+    defer inspection.close(gpa);
+    const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch
+        return inspect_error("out of memory");
+    defer gpa.free(rows);
+    const live = listings(inspection.live.db, rows, &report) catch
+        return inspect_error(report.message());
+    const pristine = listings(inspection.pristine, rows, &report) catch {
+        live.objects.deinit(host());
+        live.columns.deinit(host());
+        return inspect_error(report.message());
+    };
+    return .{ .tag = .Ok, .payload = .{ .ok = .{ .live = live, .pristine = pristine } } };
+}
+
+/// Both listings of one database, through `rows`, a buffer each reuses.
+fn listings(
+    db: *sqlite.c.Db,
+    rows: []RocRow,
+    report: *database_module.Report,
+) error{Failed}!SqliteListings {
+    comptime assert(@FieldType(SqliteListings, "objects") == RocRows);
+    const objects = try listing(db, .objects, rows, report);
+    errdefer objects.deinit(host());
+    const columns = try listing(db, .columns, rows, report);
+    return .{ .objects = objects, .columns = columns };
+}
+
+fn listing(
+    db: *sqlite.c.Db,
+    which: database_module.Listing,
+    rows: []RocRow,
+    report: *database_module.Report,
+) error{Failed}!RocRows {
+    var sink: RowsToRoc = .{ .rows = rows, .columns = which.width() };
+    database_module.list(db, which, &sink, report) catch |err| {
+        sink.discard();
+        return err;
+    };
+    return sink.finish();
+}
+
+fn inspect_error(message: []const u8) SqliteInspectResult {
+    return .{ .tag = .Err, .payload = .{ .err = .fromSlice(message, host()) } };
+}
+
+/// `Sqlite.open!`: the database, in `init!` only, once, migrated by the
+/// steps Migrate.roc planned (each printed before it runs). Every
+/// allocation here is the process's for its life (startup).
 export fn hosted_sqlite_open(
     path: abi.RocStr,
     schema: abi.RocStr,
     statements: SqliteStatements,
     synchronous: abi.FullOrNormal,
+    steps: SqliteSteps,
 ) callconv(.c) SqliteOpenResult {
     defer path.decref(host());
     defer schema.decref(host());
     defer statements.deinit(host());
+    defer steps.deinit(host());
     if (serving or database != null) return open_error("Sqlite.open! belongs to init!, once");
     const gpa = std.heap.page_allocator;
     const roc_statements = statements.items();
     const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch
         return open_error("out of memory");
     defer gpa.free(descriptions);
+    const roc_steps = steps.items();
+    const migration = gpa.alloc(database_module.Step, roc_steps.len) catch
+        return open_error("out of memory");
+    defer gpa.free(migration);
+    // By pointer, as the statements below.
+    for (roc_steps, migration) |*step, *into| {
+        into.* = .{ .sql = step.sql.asSlice(), .why = step.why.asSlice() };
+    }
     // By pointer: a small string's bytes live inside the record.
     for (roc_statements, descriptions) |*statement, *description| {
         description.* = .{
@@ -615,7 +689,9 @@ export fn hosted_sqlite_open(
             .full => .full,
             .normal => .normal,
         },
+        .migration = migration,
     };
+    print_migration(where, migration);
     database = database_module.open(gpa, description, .{}, &report) catch
         return open_error(report.message());
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
@@ -626,6 +702,31 @@ export fn hosted_sqlite_open(
         where, descriptions.len, description.synchronous,
     }) catch "roux: database");
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+/// What a migration will do, step by step, before it runs: why, then the
+/// statement, indented. One transaction: a failure after names its step.
+fn print_migration(where: []const u8, migration: []const database_module.Step) void {
+    if (migration.len == 0) return;
+    var banner: [256]u8 = undefined;
+    write_line(1, std.fmt.bufPrint(&banner, "roux: migrating {s}, {d} steps", .{
+        where, migration.len,
+    }) catch "roux: migrating");
+    for (migration) |step| {
+        write_parts(1, &.{ "  ", step.why });
+        var lines = std.mem.splitScalar(u8, step.sql, '\n');
+        while (lines.next()) |line| write_parts(1, &.{ "    ", line });
+    }
+}
+
+fn write_parts(fd: i32, parts: []const []const u8) void {
+    var vectors: [8]std.posix.iovec_const = undefined;
+    assert(parts.len < vectors.len);
+    for (parts, vectors[0..parts.len]) |part, *vector| {
+        vector.* = .{ .base = part.ptr, .len = part.len };
+    }
+    vectors[parts.len] = .{ .base = "\n", .len = 1 };
+    _ = std.os.linux.writev(fd, &vectors, parts.len + 1);
 }
 
 fn open_error(message: []const u8) SqliteOpenResult {

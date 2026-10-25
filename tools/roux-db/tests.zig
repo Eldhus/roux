@@ -187,6 +187,26 @@ const refusals = [_]Refusal{
         .says = "annotations belong",
     },
     .{
+        .case = "a drop of a table the schema makes (any case is the same name)",
+        .schema = schema_text ++ "-- @drop table DISH\n",
+        .says = "@drop table DISH, but schema.sql makes it",
+    },
+    .{
+        .case = "a drop of a column the schema makes",
+        .schema = schema_text ++ "-- @drop column dish note\n",
+        .says = "@drop column dish note, but schema.sql makes it",
+    },
+    .{
+        .case = "a drop misspelt",
+        .schema = schema_text ++ "-- @drop dish note\n",
+        .says = "write `-- @drop table name`",
+    },
+    .{
+        .case = "a drop in a query file",
+        .query = "-- @drop table menu\n-- name: q :exec\nDELETE FROM tag;",
+        .says = "belongs to schema.sql",
+    },
+    .{
         .case = "bad SQL in the schema",
         .schema = "CREATE TABLE (;",
         .says = "syntax error",

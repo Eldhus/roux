@@ -15,3 +15,7 @@ CREATE TABLE tag (
   label TEXT NOT NULL,
   PRIMARY KEY (dish_id, label)
 ) STRICT, WITHOUT ROWID;
+
+-- Gone on purpose, with their rows, when a database is migrated:
+-- @drop table menu
+-- @drop column dish photo

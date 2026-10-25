@@ -24,6 +24,7 @@ platform "roux"
 		"hosted_response_stream_flush": Host.response_stream_flush!,
 		"hosted_response_stream_end": Host.response_stream_end!,
 		"hosted_sqlite_open": Host.sqlite_open!,
+		"hosted_sqlite_inspect": Host.sqlite_inspect!,
 		"hosted_sqlite_run": Host.sqlite_run!,
 		"hosted_sqlite_write_begin": Host.sqlite_write_begin!,
 		"hosted_sqlite_commit": Host.sqlite_commit!,

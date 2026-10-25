@@ -3,16 +3,18 @@
 //! table, read a column, begin a transaction, ...), so roux never reads
 //! SQL to classify it. An interface file: the callback is C's.
 //!
-//! Two policies. `schema.sql` creates tables, indices, views and triggers,
+//! Three policies. `schema.sql` creates tables, indices, views and triggers,
 //! nothing else. A query reads and writes rows; transactions, PRAGMAs,
 //! ATTACH and every change to the schema are the platform's, never a
-//! query's. Anything SQLite adds later is refused until named here.
+//! query's. A migration (Migrate.roc's plan) creates, drops and renames,
+//! and copies rows into a table it rebuilds; the host begins and ends it.
+//! Anything SQLite adds later is refused until named here.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const c = @import("c.zig");
 
-pub const Policy = enum { schema, query };
+pub const Policy = enum { schema, query, migration };
 
 /// SQLite's action codes (sqlite3.h, "Authorizer Action Codes").
 pub const Action = enum(c_int) {
@@ -67,6 +69,10 @@ pub const Verdict = struct {
     created: ?Action = null,
     created_name_buffer: [created_bytes_max]u8 = undefined,
     created_name_length: u32 = 0,
+    /// The table a migration's DROP TABLE names: SQLite then asks to
+    /// delete its rows, which is allowed of that table alone.
+    dropped_name_buffer: [created_bytes_max]u8 = undefined,
+    dropped_name_length: ?u32 = null,
 
     pub const created_bytes_max = 128;
 
@@ -110,6 +116,7 @@ fn authorize(
     const allowed = switch (verdict.policy) {
         .schema => allowed_in_schema(action, first),
         .query => allowed_in_query(action),
+        .migration => allowed_in_migration(verdict, action, first),
     };
     if (!allowed) {
         if (verdict.refused == null) verdict.refused = action;
@@ -154,6 +161,37 @@ fn allowed_in_query(action: Action) bool {
     };
 }
 
+/// A migration also drops, and renames a table aside to rebuild it
+/// (SQLite rewrites `sqlite_schema` for that); the only rows it writes
+/// are the ones it copies into a table (an insert from a select), and the
+/// rows of a table it drops (SQLite asks for that delete after the drop).
+fn allowed_in_migration(verdict: *Verdict, action: Action, first: ?[*:0]const u8) bool {
+    return switch (action) {
+        .create_table, .create_index, .create_view, .create_trigger => true,
+        .drop_index, .drop_view, .drop_trigger, .alter_table => true,
+        .drop_table => record_dropped(verdict, first),
+        .read, .select, .insert, .function, .recursive, .reindex => true,
+        .update => is_schema_table(first),
+        .delete => is_schema_table(first) or is_dropped(verdict, first),
+        else => false,
+    };
+}
+
+/// False for a name too long to keep: its delete is then refused.
+fn record_dropped(verdict: *Verdict, name: ?[*:0]const u8) bool {
+    const text = std.mem.span(name orelse return false);
+    if (text.len > Verdict.created_bytes_max) return false;
+    @memcpy(verdict.dropped_name_buffer[0..text.len], text);
+    verdict.dropped_name_length = @intCast(text.len);
+    return true;
+}
+
+fn is_dropped(verdict: *const Verdict, name: ?[*:0]const u8) bool {
+    const length = verdict.dropped_name_length orelse return false;
+    const text = std.mem.span(name orelse return false);
+    return std.mem.eql(u8, text, verdict.dropped_name_buffer[0..length]);
+}
+
 /// The tables SQLite records the schema in; a TEMP object goes to the
 /// temporary one, and is refused by its own action (`create_temp_*`).
 fn is_schema_table(name: ?[*:0]const u8) bool {
@@ -177,9 +215,10 @@ pub fn describe(action: Action) []const u8 {
         .create_temp_view,
         => "a TEMP object",
         .create_index, .create_table, .create_trigger, .create_view => "a change to the schema",
-        .drop_index, .drop_table, .drop_trigger, .drop_view => "a DROP (no migrations yet)",
+        .drop_index, .drop_table, .drop_trigger, .drop_view => "a DROP (schema.sql holds what " ++
+            "is; what goes is declared in Sqlite.open!'s drops)",
         .drop_temp_index, .drop_temp_table, .drop_temp_trigger, .drop_temp_view => "a DROP",
-        .alter_table => "ALTER TABLE (no migrations yet)",
+        .alter_table => "ALTER TABLE (migrations are planned from schema.sql)",
         .create_vtable, .drop_vtable => "a virtual table",
         .analyze, .reindex => "ANALYZE or REINDEX (maintenance is the platform's)",
         .insert, .update, .delete => "a write to a table (schema.sql only creates)",

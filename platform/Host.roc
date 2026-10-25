@@ -59,8 +59,19 @@ Host := [].{
 	SqliteErr : { code : U8, message : Str }
 
 	## Opens the app's one database, in `init!` (path, schema.sql, the
-	## statements, when a commit is durable); `Err` says why not.
-	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous => Try({}, Str)
+	## statements, when a commit is durable, the migration Migrate.roc
+	## planned); `Err` says why not.
+	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous, List(SqliteStep) => Try({}, Str)
+
+	## A statement of a migration, and why it runs.
+	SqliteStep : { sql : Str, why : Str }
+
+	## What a migration is planned from: host/database.zig's listings,
+	## over the database at the path, and over what schema.sql makes.
+	sqlite_inspect! : Str, Str => Try({ live : SqliteListings, pristine : SqliteListings }, Str)
+
+	## `objects`: type, name, tbl_name, sql. `columns`: table, name, hidden.
+	SqliteListings : { objects : List(List(SqliteValue)), columns : List(List(SqliteValue)) }
 
 	## As host/database.zig's `Synchronous`.
 	SqliteSynchronous : [Full, Normal]
