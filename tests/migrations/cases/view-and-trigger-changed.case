@@ -1,0 +1,22 @@
+A view and its INSTEAD OF trigger both change. The trigger goes with the
+view's DROP, so it is not dropped again on its own.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE VIEW dishes AS SELECT id, name FROM dish;
+CREATE TRIGGER add_dish INSTEAD OF INSERT ON dishes BEGIN INSERT INTO dish (name) VALUES (new.name); END;
+INSERT INTO dish (name) VALUES ('soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE VIEW dishes AS SELECT id, name FROM dish ORDER BY name;
+CREATE TRIGGER add_dish INSTEAD OF INSERT ON dishes BEGIN INSERT INTO dish (name) VALUES (upper(new.name)); END;
+
+== plan
+roux: migrating test.db, 3 steps
+  view `dishes`: changed in schema.sql
+    DROP VIEW "dishes"
+  view `dishes`: as schema.sql makes it
+    CREATE VIEW dishes AS SELECT id, name FROM dish ORDER BY name
+  trigger `add_dish`: as schema.sql makes it
+    CREATE TRIGGER add_dish INSTEAD OF INSERT ON dishes BEGIN INSERT INTO dish (name) VALUES (upper(new.name)); END

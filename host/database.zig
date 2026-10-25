@@ -725,7 +725,9 @@ pub const migration_steps_max = 4 * schema_statements_max;
 pub const Listing = enum {
     /// type, name, tbl_name, sql: `sqlite_schema`.
     objects,
-    /// Table, column, hidden (`pragma_table_xinfo`: 2 and 3 are generated).
+    /// Table, column, hidden (`pragma_table_xinfo`: 2 and 3 are generated),
+    /// and 1 for the key of a table with AUTOINCREMENT, 0 for any other
+    /// (`sqlite3_table_column_metadata`: no pragma says it).
     columns,
 
     /// Not SQLite's own: names starting `sqlite_` are reserved to it.
@@ -741,7 +743,15 @@ pub const Listing = enum {
         };
     }
 
+    /// Cells of each row: the SQL's columns, then the autoincrement flag.
     pub fn width(listing: Listing) u32 {
+        return switch (listing) {
+            .objects => 4,
+            .columns => 4,
+        };
+    }
+
+    fn selected(listing: Listing) u32 {
         return switch (listing) {
             .objects => 4,
             .columns => 3,
@@ -766,15 +776,45 @@ pub fn list(db: *c.Db, listing: Listing, sink: anytype, report: *Report) error{F
             else => return report.fail(.failed, "{t}: {s}", .{ listing, c.sqlite3_errmsg(db) }),
         }
         sink.row() catch return report.fail(.failed, "{t}: out of memory", .{listing});
-        for (0..listing.width()) |column| {
+        for (0..listing.selected()) |column| {
             const value: Value = switch (c.sqlite3_column_type(statement, @intCast(column))) {
                 c.integer => .{ .integer = c.sqlite3_column_int64(statement, @intCast(column)) },
                 else => .{ .text = column_text(statement, @intCast(column)) },
             };
             sink.cell(value) catch return report.fail(.failed, "{t}: out of memory", .{listing});
         }
+        if (listing == .columns) {
+            const value: Value = .{ .integer = try autoincrement(db, statement, report) };
+            sink.cell(value) catch return report.fail(.failed, "{t}: out of memory", .{listing});
+        }
     }
     return report.fail(.failed, "{t}: more than {d} rows", .{ listing, rows_max });
+}
+
+/// 1 when the column the `columns` listing is on is the key of a table with
+/// AUTOINCREMENT: SQLite then keeps the largest key handed out in
+/// `sqlite_sequence`, which a rebuild must carry over.
+fn autoincrement(db: *c.Db, columns: *c.Stmt, report: *Report) error{Failed}!i64 {
+    // SQLite's text results end in a NUL.
+    const table: [*:0]const u8 = @ptrCast(c.sqlite3_column_text(columns, 0) orelse unreachable);
+    const column: [*:0]const u8 = @ptrCast(c.sqlite3_column_text(columns, 1) orelse unreachable);
+    var flag: c_int = 0;
+    const result = c.sqlite3_table_column_metadata(
+        db,
+        "main",
+        table,
+        column,
+        null,
+        null,
+        null,
+        null,
+        &flag,
+    );
+    if (result != c.ok) {
+        return report.fail(.failed, "columns of {s}: {s}", .{ table, c.sqlite3_errmsg(db) });
+    }
+    assert(flag == 0 or flag == 1);
+    return flag;
 }
 
 /// The two schemas a migration is planned from (`list` each): the

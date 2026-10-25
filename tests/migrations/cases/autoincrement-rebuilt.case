@@ -1,6 +1,6 @@
-A table with AUTOINCREMENT keeps its next id through a rebuild: SQLite's
-`sqlite_sequence` follows the copied rows. (The case checks the rows; the
-sequence is SQLite's own.)
+A table with AUTOINCREMENT keeps its next id through a rebuild, though the
+largest one handed out (2, bread) is no longer in a row: copied alone, the
+rows would hand 2 out again. The runner checks `sqlite_sequence`.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT;
@@ -11,11 +11,13 @@ DELETE FROM dish WHERE name = 'bread';
 CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, note TEXT) STRICT;
 
 == plan
-roux: migrating test.db, 4 steps
+roux: migrating test.db, 5 steps
   table `dish`: aside, to make it anew
     ALTER TABLE "dish" RENAME TO "roux_old_dish"
   table `dish`: as schema.sql makes it
     CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: AUTOINCREMENT goes on from where it was
+    INSERT INTO sqlite_sequence (name, seq) SELECT 'dish', seq FROM sqlite_sequence WHERE name = 'roux_old_dish'
   table `dish`: its rows, by id, name
     INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
   table `dish`: the old one

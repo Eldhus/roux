@@ -118,8 +118,9 @@ Sqlite := [].{
 		columns: columns.map(
 			|row|
 				match row {
-					[Text(table), Text(name), Integer(hidden)] => { table, name, hidden }
-					_ => crash "Sqlite.schema_of: the host lists columns as text and an integer"
+					[Text(table), Text(name), Integer(hidden), Integer(autoincrement)] =>
+						{ table, name, hidden, autoincrement: autoincrement == 1 }
+					_ => crash "Sqlite.schema_of: the host lists columns as text, then integers"
 				},
 		),
 	}

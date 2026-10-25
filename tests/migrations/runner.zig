@@ -318,6 +318,53 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     const broken = try text_of(arena, db, "SELECT count(*) FROM pragma_foreign_key_check");
     if (!std.mem.eql(u8, broken, "0")) try w.print("  {s} rows break a foreign key\n", .{broken});
     try check_rows(arena, before, db, w);
+    try check_sequences(arena, before, db, w);
+}
+
+/// A table that keeps AUTOINCREMENT keeps the largest key it handed out,
+/// even one no row holds now: no key is handed out twice.
+fn check_sequences(arena: Allocator, before: *c.Db, db: *c.Db, w: *std.Io.Writer) !void {
+    const has_sequence = "SELECT count(*) FROM sqlite_schema WHERE name = 'sqlite_sequence'";
+    if (std.mem.eql(u8, try text_of(arena, before, has_sequence), "0")) return;
+    const tables = try text_of(arena, before, "SELECT name FROM sqlite_sequence ORDER BY name");
+    var names = std.mem.tokenizeScalar(u8, tables, '\n');
+    while (names.next()) |table| {
+        if (!try autoincrements(arena, db, table)) continue;
+        const sql = try std.fmt.allocPrint(arena, "SELECT seq FROM sqlite_sequence " ++
+            "WHERE name = {s} COLLATE NOCASE", .{try literal(arena, table)});
+        const was = try text_of(arena, before, sql);
+        const now = try text_of(arena, db, sql);
+        if (!std.mem.eql(u8, was, now)) {
+            try w.print("  table {s}'s AUTOINCREMENT: {s}, was {s}\n", .{ table, now, was });
+        }
+    }
+}
+
+/// Whether `db` has `table`, with AUTOINCREMENT on its key.
+fn autoincrements(arena: Allocator, db: *c.Db, table: []const u8) !bool {
+    const table_z = try arena.dupeSentinel(u8, table, 0);
+    const sql = try std.fmt.allocPrint(arena, "SELECT name FROM pragma_table_info({s}) " ++
+        "WHERE pk = 1", .{try literal(arena, table)});
+    const keys = try text_of(arena, db, sql);
+    var each = std.mem.tokenizeScalar(u8, keys, '\n');
+    while (each.next()) |key| {
+        var flag: c_int = 0;
+        const key_z = try arena.dupeSentinel(u8, key, 0);
+        const result = c.sqlite3_table_column_metadata(
+            db,
+            "main",
+            table_z,
+            key_z,
+            null,
+            null,
+            null,
+            null,
+            &flag,
+        );
+        if (result != c.ok) return error.QueryFailed;
+        if (flag != 0) return true;
+    }
+    return false;
 }
 
 fn check_unchanged(arena: Allocator, dir: []const u8, w: *std.Io.Writer) !void {

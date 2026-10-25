@@ -1,0 +1,23 @@
+A table with AUTOINCREMENT whose every row was deleted: nothing is copied,
+and its next id still goes on from where it was.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT;
+INSERT INTO dish (name) VALUES ('soup'), ('bread');
+DELETE FROM dish;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, note TEXT) STRICT;
+
+== plan
+roux: migrating test.db, 5 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: AUTOINCREMENT goes on from where it was
+    INSERT INTO sqlite_sequence (name, seq) SELECT 'dish', seq FROM sqlite_sequence WHERE name = 'roux_old_dish'
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

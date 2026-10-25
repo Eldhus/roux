@@ -1,20 +1,23 @@
 ## Plans the migration of an existing database to what `schema.sql` makes,
-## from what SQLite says of both: `sqlite_schema` and `pragma_table_xinfo`
-## (host/database.zig's listings), never SQL read as text. Pure: the host
-## runs the plan in one transaction, then compares the database's
-## `sqlite_schema` with the pristine one row by row, and rolls it all back
-## on any failure. So each CREATE runs exactly as schema.sql wrote it.
+## from what SQLite says of both: `sqlite_schema`, `pragma_table_xinfo`
+## and which key is AUTOINCREMENT (host/database.zig's listings), never SQL
+## read as text. Pure: the host runs the plan in one transaction, then
+## compares the database's `sqlite_schema` with the pristine one row by
+## row, and rolls it all back on any failure. So each CREATE runs exactly
+## as schema.sql wrote it.
 ##
 ## - A table schema.sql makes and the database lacks is created.
 ## - A table whose CREATE changed by a byte is rebuilt, SQLite's way:
-##   renamed aside, made anew, its rows copied by the columns both have,
-##   the old one dropped. Whether the rows fit the new table (a NOT NULL
-##   column without a DEFAULT, a narrower type, a CHECK) is SQLite's to say
-##   as it copies them.
+##   renamed aside, made anew, its rows copied by the columns both have
+##   (its AUTOINCREMENT going on from where it was), the old one dropped.
+##   Whether the rows fit the new table (a NOT NULL column without a
+##   DEFAULT, a narrower type, a CHECK) is SQLite's to say as it copies
+##   them.
 ## - What would lose rows, a table or a column schema.sql no longer makes,
 ##   is refused unless dropped on purpose (`Drop`).
 ## - Indexes, views and triggers hold no rows: one that changed is dropped
-##   and made again, one gone is dropped.
+##   and made again, one gone is dropped. What goes with a table or view
+##   that is dropped (its indexes, its triggers) is made again after it.
 ## - Names are SQLite's: ASCII letters in any case are the same name.
 Migrate := [].{
 
@@ -22,7 +25,8 @@ Migrate := [].{
 	Object : { kind : Str, name : Str, table : Str, sql : Str }
 
 	## A column of a table; `hidden` 2 and 3 are generated, never copied.
-	TableColumn : { table : Str, name : Str, hidden : I64 }
+	## `autoincrement`: the key of a table with AUTOINCREMENT.
+	TableColumn : { table : Str, name : Str, hidden : I64, autoincrement : Bool }
 
 	## A database's schema, in the order SQLite made it.
 	Schema : { objects : List(Object), columns : List(TableColumn) }
@@ -54,22 +58,25 @@ Migrate := [].{
 	refuse = |live, pristine, drops| {
 		tables = gone_tables(live, pristine)
 			.keep_if(|table| !drops.any(|drop| drops_table(drop, table.name)))
-			.map(
-				|table| "table `${table.name}` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop table ${table.name}` in schema.sql",
-			)
+			.map(|table| lost("table `${table.name}`", "rows", "table ${quote_word(table.name)}"))
 		columns = rebuilt_tables(live, pristine).join_map(
 			|table|
 				lost_columns(live, pristine, table.name)
 					.keep_if(|column| !drops.any(|drop| drops_column(drop, table.name, column.name)))
 					.map(
-						|column| "column `${table.name}.${column.name}` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column ${table.name} ${column.name}` in schema.sql",
+						|column| {
+							drop = "column ${quote_word(table.name)} ${quote_word(column.name)}"
+							lost("column `${table.name}.${column.name}`", "values", drop)
+						},
 					),
 		)
 		kept = drops.keep_if(|drop| still_made(pristine, drop)).map(
 			|drop|
 				match drop {
-					Table(table) => "`-- @drop table ${table}`, but schema.sql makes table `${table}`"
-					Column(table, column) => "`-- @drop column ${table} ${column}`, but schema.sql makes column `${table}.${column}`"
+					Table(table) =>
+						"`-- @drop table ${table}`, but schema.sql makes table `${table}`"
+					Column(table, column) =>
+						"`-- @drop column ${table} ${column}`, but schema.sql makes column `${table}.${column}`"
 				},
 		)
 		aside = pristine.objects.concat(live.objects)
@@ -78,14 +85,29 @@ Migrate := [].{
 		tables.concat(columns).concat(kept).concat(aside)
 	}
 
+	## Why a table or column would be lost, and the line that loses it.
+	lost : Str, Str, Str -> Str
+	lost = |what, held, drop|
+		Str.join_with(
+			[
+				"${what} is in the database, not in schema.sql: its ${held} would go.",
+				" Keep it, or drop it on purpose: `-- @drop ${drop}` in schema.sql.",
+				" (A rename is a drop and a new one: the ${held} do not follow.)",
+			],
+			"",
+		)
+
 	planned : Schema, Schema -> List(Step)
 	planned = |live, pristine| {
 		rebuilt = rebuilt_tables(live, pristine)
 		replaced = rebuilt.concat(gone_tables(live, pristine))
-		# What holds no rows and changed goes first; a table's own go with it.
-		unmade = live.objects
-			.keep_if(|object| object.kind != "table" and !identical(pristine, object))
+		# What holds no rows and changed goes first. What goes with a table
+		# or view is not dropped again: a table's indexes, a view's triggers.
+		changed = live.objects.keep_if(|object| object.kind != "table" and !identical(pristine, object))
+		remade_views = changed.keep_if(|object| object.kind == "view")
+		unmade = changed
 			.keep_if(|object| !(object.kind == "index" and has_named(replaced, object.table)))
+			.keep_if(|object| !(object.kind == "trigger" and has_named(remade_views, object.table)))
 			.map(
 				|object| {
 					what = if (has_named(pristine.objects, object.name)) "changed in schema.sql" else "not in schema.sql"
@@ -99,10 +121,16 @@ Migrate := [].{
 		created = pristine.objects
 			.keep_if(|object| object.kind == "table" and !has_table(live, object.name))
 			.map(|table| { sql: table.sql, why: "table `${table.name}`: new in schema.sql" })
-		# In schema.sql's order: what each refers to is made by then.
+		# In schema.sql's order: what each refers to is made by then. A view
+		# of a rebuilt table needs nothing: the rename aside left it as it was.
 		derived = pristine.objects
 			.keep_if(|object| object.kind != "table")
-			.keep_if(|object| !identical(live, object) or (object.kind != "view" and has_named(rebuilt, object.table)))
+			.keep_if(
+				|object|
+					!identical(live, object)
+					or (object.kind != "view" and has_named(rebuilt, object.table))
+					or (object.kind == "trigger" and has_named(remade_views, object.table)),
+			)
 			.map(|object| { sql: object.sql, why: "${object.kind} `${object.name}`: as schema.sql makes it" })
 		unmade.concat(dropped).concat(remade).concat(created).concat(derived)
 	}
@@ -116,21 +144,38 @@ Migrate := [].{
 			Err(NotFound) => crash "Migrate.rebuild: a rebuilt table is in the database"
 		}
 		aside = "${aside_prefix}${old}"
+		why = |what| "table `${table.name}`: ${what}"
 		pairs = data_columns(live, old).keep_oks(
-			|column| find_column(data_columns(pristine, table.name), column.name).map_ok(|new| { new: new.name, old: column.name }),
+			|column|
+				find_column(data_columns(pristine, table.name), column.name)
+					.map_ok(|new| { new: new.name, old: column.name }),
 		)
 		copied = if (pairs.is_empty()) [] else {
 			into = Str.join_with(pairs.map(|pair| quote(pair.new)), ", ")
 			from = Str.join_with(pairs.map(|pair| quote(pair.old)), ", ")
 			names = Str.join_with(pairs.map(|pair| pair.new), ", ")
-			[{ sql: "INSERT INTO ${quote(table.name)} (${into}) SELECT ${from} FROM ${quote(aside)}", why: "table `${table.name}`: its rows, by ${names}" }]
+			insert = "INSERT INTO ${quote(table.name)} (${into}) SELECT ${from} FROM ${quote(aside)}"
+			[{ sql: insert, why: why("its rows, by ${names}") }]
 		}
+		# The largest key ever handed out, which the copied rows may no
+		# longer hold: the rename moved its row of `sqlite_sequence` aside.
+		counted = if (autoincremented(live, old) and autoincremented(pristine, table.name)) {
+			sequence = Str.join_with(
+				[
+					"INSERT INTO sqlite_sequence (name, seq) SELECT ${literal(table.name)}, seq",
+					" FROM sqlite_sequence WHERE name = ${literal(aside)}",
+				],
+				"",
+			)
+			[{ sql: sequence, why: why("AUTOINCREMENT goes on from where it was") }]
+		} else []
 		[
-			{ sql: "ALTER TABLE ${quote(old)} RENAME TO ${quote(aside)}", why: "table `${table.name}`: aside, to make it anew" },
-			{ sql: table.sql, why: "table `${table.name}`: as schema.sql makes it" },
+			{ sql: "ALTER TABLE ${quote(old)} RENAME TO ${quote(aside)}", why: why("aside, to make it anew") },
+			{ sql: table.sql, why: why("as schema.sql makes it") },
 		]
+			.concat(counted)
 			.concat(copied)
-			.concat([{ sql: "DROP TABLE ${quote(aside)}", why: "table `${table.name}`: the old one" }])
+			.concat([{ sql: "DROP TABLE ${quote(aside)}", why: why("the old one") }])
 	}
 
 	## Tables in the database that schema.sql no longer makes.
@@ -162,6 +207,10 @@ Migrate := [].{
 	data_columns = |schema, table|
 		schema.columns.keep_if(|column| same_name(column.table, table) and column.hidden == 0)
 
+	autoincremented : Schema, Str -> Bool
+	autoincremented = |schema, table|
+		schema.columns.any(|column| same_name(column.table, table) and column.autoincrement)
+
 	find_column : List(TableColumn), Str -> Try(TableColumn, [NotFound])
 	find_column = |columns, name| columns.find_first(|column| same_name(column.name, name))
 
@@ -171,6 +220,7 @@ Migrate := [].{
 	has_table : Schema, Str -> Bool
 	has_table = |schema, name| find(schema.objects, "table", name).is_ok()
 
+	## Of any kind: a view that became a table of its name was changed.
 	has_named : List(Object), Str -> Bool
 	has_named = |objects, name| objects.any(|object| same_name(object.name, name))
 
@@ -203,18 +253,36 @@ Migrate := [].{
 			Column(table, column) => find_column(data_columns(pristine, table), column).is_ok()
 		}
 
+	## What drops an index, view or trigger: tables are never in `unmade`.
 	keyword : Str -> Str
 	keyword = |kind|
 		match kind {
 			"index" => "INDEX"
 			"view" => "VIEW"
 			"trigger" => "TRIGGER"
-			_ => "TABLE"
+			_ => crash "Migrate.keyword: an index, view or trigger"
 		}
 
 	## An identifier as SQL writes one: in double quotes, its own doubled.
 	quote : Str -> Str
 	quote = |name| "\"${name.replace_each("\"", "\"\"")}\""
+
+	## A name as a `-- @drop` line writes it: bare when it is a plain word
+	## (letters, digits, `_`, not starting with a digit), quoted otherwise.
+	quote_word : Str -> Str
+	quote_word = |name| {
+		bytes = name.to_utf8()
+		plain = |byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or byte == '_'
+		word = match bytes.first() {
+			Ok(first) => plain(first) and bytes.all(|byte| plain(byte) or (byte >= '0' and byte <= '9'))
+			Err(ListWasEmpty) => Bool.False
+		}
+		if (word) name else quote(name)
+	}
+
+	## A string as SQL writes one: in single quotes, its own doubled.
+	literal : Str -> Str
+	literal = |text| "'${text.replace_each("'", "''")}'"
 
 	same_name : Str, Str -> Bool
 	same_name = |a, b| folded(a) == folded(b)
@@ -227,6 +295,10 @@ Migrate := [].{
 
 expect Migrate.quote("dish") == "\"dish\""
 expect Migrate.quote("say \"hi\"") == "\"say \"\"hi\"\"\""
+expect Migrate.literal("it's") == "'it''s'"
+expect Migrate.quote_word("dish_2") == "dish_2"
+expect Migrate.quote_word("dish of the day") == "\"dish of the day\""
+expect Migrate.quote_word("2dish") == "\"2dish\""
 expect Migrate.same_name("Dish", "dISH")
 expect !Migrate.same_name("dish", "dishes")
 expect Migrate.plan({ objects: [], columns: [] }, { objects: [], columns: [] }, []) == Ok([])

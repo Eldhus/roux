@@ -95,6 +95,19 @@ pub extern fn sqlite3_column_decltype(stmt: *Stmt, column: c_int) ?[*:0]const u8
 /// Our patch (vendor/sqlite/README.md): 1 when the result column can be
 /// NULL, 0 when it never is, -1 for an expression SQLite cannot prove.
 pub extern fn sqlite3_column_nullable(stmt: *Stmt, column: c_int) c_int;
+/// A table's column as declared (`SQLITE_ENABLE_COLUMN_METADATA`); each
+/// out-pointer may be null.
+pub extern fn sqlite3_table_column_metadata(
+    db: *Db,
+    database: ?[*:0]const u8,
+    table: [*:0]const u8,
+    column: ?[*:0]const u8,
+    declared_type: ?*?[*:0]const u8,
+    collation: ?*?[*:0]const u8,
+    not_null: ?*c_int,
+    primary_key: ?*c_int,
+    autoincrement: ?*c_int,
+) c_int;
 
 pub const interrupt = 9;
 pub const constraint = 19;
