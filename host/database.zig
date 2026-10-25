@@ -728,8 +728,10 @@ pub const Listing = enum {
     /// Table, column, hidden (`pragma_table_xinfo`: 2 and 3 are generated).
     columns,
 
+    /// Not SQLite's own: names starting `sqlite_` are reserved to it.
+    pub const own = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\'";
+
     pub fn sql(listing: Listing) []const u8 {
-        const own = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\'";
         return switch (listing) {
             .objects => "SELECT type, name, tbl_name, coalesce(sql, '') FROM sqlite_schema " ++
                 "WHERE " ++ own ++ " ORDER BY rowid",
@@ -756,10 +758,11 @@ pub fn list(db: *c.Db, listing: Listing, sink: anytype, report: *Report) error{F
     const statement = try prepare_own(db, listing.sql(), report);
     defer _ = c.sqlite3_finalize(statement);
     const rows_max = listing_rows_max;
-    for (0..rows_max) |_| {
+    // One more step than rows: the last says done.
+    for (0..rows_max + 1) |index| {
         switch (c.sqlite3_step(statement)) {
             c.done => return,
-            c.row => {},
+            c.row => if (index == rows_max) break,
             else => return report.fail(.failed, "{t}: {s}", .{ listing, c.sqlite3_errmsg(db) }),
         }
         sink.row() catch return report.fail(.failed, "{t}: out of memory", .{listing});
@@ -770,7 +773,8 @@ pub fn list(db: *c.Db, listing: Listing, sink: anytype, report: *Report) error{F
             };
             sink.cell(value) catch return report.fail(.failed, "{t}: out of memory", .{listing});
         }
-    } else return report.fail(.failed, "{t}: more than {d} rows", .{ listing, rows_max });
+    }
+    return report.fail(.failed, "{t}: more than {d} rows", .{ listing, rows_max });
 }
 
 /// The two schemas a migration is planned from (`list` each): the
@@ -822,10 +826,17 @@ fn migrate(
     try set_foreign_keys(db, false, report);
     try set_legacy_alter_table(db, true, report);
     const outcome = migrate_in_transaction(db, pristine, migration, path, report);
-    // Restored whatever happened; a failure to is the one reported.
-    try set_legacy_alter_table(db, false, report);
-    try set_foreign_keys(db, true, report);
-    return outcome;
+    // Restored whatever happened. After a failure the migration's is the
+    // one reported, and the connection is closed anyway.
+    if (outcome) |_| {
+        try set_legacy_alter_table(db, false, report);
+        try set_foreign_keys(db, true, report);
+    } else |failed| {
+        var ignored: Report = .{};
+        set_legacy_alter_table(db, false, &ignored) catch {};
+        set_foreign_keys(db, true, &ignored) catch {};
+        return failed;
+    }
 }
 
 fn migrate_in_transaction(
@@ -866,7 +877,10 @@ fn migrate_in_transaction(
         return report.fail(.failed, "COMMIT: {s}", .{c.sqlite3_errmsg(db)});
 }
 
+/// Outside a transaction only: inside one SQLite ignores the PRAGMA, and a
+/// rebuild would then cascade the old table's DROP into other tables.
 fn set_foreign_keys(db: *c.Db, on: bool, report: *Report) error{Failed}!void {
+    assert(c.sqlite3_get_autocommit(db) != 0);
     const sql = if (on) "PRAGMA foreign_keys = ON" else "PRAGMA foreign_keys = OFF";
     sqlite.exec(db, sql) catch return report.fail(.failed, "{s}: {s}", .{
         sql, c.sqlite3_errmsg(db),
@@ -907,6 +921,9 @@ fn create_schema(db: *c.Db, schema: []const u8, report: *Report) error{Failed}!v
 
 /// `sqlite_schema` row by row: SQLite keeps each CREATE as it was written,
 /// so two databases made by the same `schema.sql` hold the same rows.
+/// SQLite's own are left out, as the listings leave them: a key's index
+/// follows from its CREATE; `sqlite_sequence` outlives the last
+/// AUTOINCREMENT, and ANALYZE (a `sqlite3` shell's) leaves `sqlite_stat1`.
 fn compare_schemas(
     db: *c.Db,
     expected: *c.Db,
@@ -914,18 +931,19 @@ fn compare_schemas(
     report: *Report,
 ) error{Failed}!void {
     const sql = "SELECT type, name, tbl_name, coalesce(sql, '') FROM sqlite_schema " ++
-        "ORDER BY type, name";
+        "WHERE " ++ Listing.own ++ " ORDER BY type, name";
     const actual_rows = try prepare_own(db, sql, report);
     defer _ = c.sqlite3_finalize(actual_rows);
     const expected_rows = try prepare_own(expected, sql, report);
     defer _ = c.sqlite3_finalize(expected_rows);
-    for (0..schema_statements_max * 4) |_| {
+    for (0..schema_statements_max * 4 + 1) |index| {
         const actual_step = c.sqlite3_step(actual_rows);
         const expected_step = c.sqlite3_step(expected_rows);
         if (actual_step == c.done and expected_step == c.done) return;
         if (actual_step != c.row or expected_step != c.row) {
             return schema_differs(expected_rows, actual_rows, path, report);
         }
+        if (index == schema_statements_max * 4) break;
         for (0..4) |column| {
             const actual = column_text(actual_rows, @intCast(column));
             const wanted = column_text(expected_rows, @intCast(column));
@@ -933,9 +951,8 @@ fn compare_schemas(
                 return schema_differs(expected_rows, actual_rows, path, report);
             }
         }
-    } else return report.fail(.failed, "more than {d} schema objects", .{
-        schema_statements_max * 4,
-    });
+    }
+    return report.fail(.failed, "more than {d} schema objects", .{schema_statements_max * 4});
 }
 
 /// What differs. The migration was planned for this very database, so

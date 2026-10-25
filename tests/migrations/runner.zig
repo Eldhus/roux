@@ -303,8 +303,11 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     const pristine = try open_memory();
     defer close_db(pristine);
     try sqlite.exec(pristine, after);
+    // SQLite's own tables aside (`sqlite_sequence`, `sqlite_stat1`): what
+    // ran on the database before may leave them. A key's index is kept.
     const schema_sql = "SELECT type || ' ' || name || ' ' || tbl_name || char(10) || " ++
-        "coalesce(sql, '') FROM sqlite_schema ORDER BY type, name";
+        "coalesce(sql, '') FROM sqlite_schema " ++
+        "WHERE type != 'table' OR name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY type, name";
     const made = try text_of(arena, db, schema_sql);
     const wanted = try text_of(arena, pristine, schema_sql);
     if (!std.mem.eql(u8, made, wanted)) {

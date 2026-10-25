@@ -162,25 +162,28 @@ fn allowed_in_query(action: Action) bool {
 }
 
 /// A migration also drops, and renames a table aside to rebuild it
-/// (SQLite rewrites `sqlite_schema` for that, and `sqlite_sequence` for a
-/// table with AUTOINCREMENT); the only rows it writes are the ones it
-/// copies into a table (an insert from a select), and the rows of a table
-/// or view it drops (SQLite asks for that delete after the drop).
+/// (SQLite rewrites `sqlite_schema` for that, and its own tables:
+/// `sqlite_sequence` for a table with AUTOINCREMENT, `sqlite_stat1` and
+/// `sqlite_stat4` once ANALYZE ran); the only rows it writes are the ones
+/// it copies into a table (an insert from a select), and the rows of a
+/// table or view it drops (SQLite asks for that delete after the drop).
 fn allowed_in_migration(verdict: *Verdict, action: Action, first: ?[*:0]const u8) bool {
     return switch (action) {
         .create_table, .create_index, .create_view, .create_trigger => true,
         .drop_index, .drop_trigger, .alter_table => true,
         .drop_table, .drop_view => record_dropped(verdict, first),
         .read, .select, .insert, .function, .recursive, .reindex => true,
-        .update => is_schema_table(first) or is_named(first, "sqlite_sequence"),
-        .delete => is_schema_table(first) or is_named(first, "sqlite_sequence") or
+        .update => is_schema_table(first) or is_sqlite_own(first),
+        .delete => is_schema_table(first) or is_sqlite_own(first) or
             is_dropped(verdict, first),
         else => false,
     };
 }
 
-fn is_named(name: ?[*:0]const u8, wanted: []const u8) bool {
-    return std.mem.eql(u8, std.mem.span(name orelse return false), wanted);
+/// SQLite's own tables, which only SQLite writes: no CREATE may name one
+/// starting `sqlite_`.
+fn is_sqlite_own(name: ?[*:0]const u8) bool {
+    return std.mem.startsWith(u8, std.mem.span(name orelse return false), "sqlite_");
 }
 
 /// False for a name too long to keep: its delete is then refused.
@@ -222,7 +225,7 @@ pub fn describe(action: Action) []const u8 {
         => "a TEMP object",
         .create_index, .create_table, .create_trigger, .create_view => "a change to the schema",
         .drop_index, .drop_table, .drop_trigger, .drop_view => "a DROP (schema.sql holds what " ++
-            "is; what goes is declared in Sqlite.open!'s drops)",
+            "is; a table or column that goes is `-- @drop`ped there)",
         .drop_temp_index, .drop_temp_table, .drop_temp_trigger, .drop_temp_view => "a DROP",
         .alter_table => "ALTER TABLE (migrations are planned from schema.sql)",
         .create_vtable, .drop_vtable => "a virtual table",

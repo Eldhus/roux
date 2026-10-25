@@ -708,10 +708,14 @@ export fn hosted_sqlite_open(
 /// statement, indented. One transaction: a failure after names its step.
 fn print_migration(where: []const u8, migration: []const database_module.Step) void {
     if (migration.len == 0) return;
-    var banner: [256]u8 = undefined;
-    write_line(1, std.fmt.bufPrint(&banner, "roux: migrating {s}, {d} step{s}", .{
-        where, migration.len, if (migration.len == 1) "" else "s",
-    }) catch "roux: migrating");
+    var count: [32]u8 = undefined;
+    write_parts(1, &.{
+        "roux: migrating ",
+        where,
+        std.fmt.bufPrint(&count, ", {d} step{s}", .{
+            migration.len, if (migration.len == 1) "" else "s",
+        }) catch unreachable,
+    });
     for (migration) |step| {
         write_parts(1, &.{ "  ", step.why });
         var lines = std.mem.splitScalar(u8, step.sql, '\n');
