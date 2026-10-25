@@ -207,6 +207,38 @@ const refusals = [_]Refusal{
         .says = "view photos: no such column: photo",
     },
     .{
+        .case = "a trigger writing a table schema.sql does not make",
+        .schema = schema_text ++ "CREATE TRIGGER logged AFTER INSERT ON dish " ++
+            "BEGIN INSERT INTO log (what) VALUES ('x'); END;\n",
+        .says = "trigger logged: no such table: main.log (where an INSERT on dish fires it)",
+    },
+    .{
+        .case = "a trigger setting a column its table does not have",
+        .schema = schema_text ++ "CREATE TRIGGER renamed AFTER UPDATE OF name ON dish " ++
+            "BEGIN UPDATE dish SET photo = NULL WHERE id = new.id; END;\n",
+        .says = "trigger renamed: no such column: photo (where an UPDATE on dish fires it)",
+    },
+    .{
+        .case = "a trigger's WHEN naming a column the row does not have",
+        .schema = schema_text ++ "CREATE TRIGGER gone BEFORE DELETE ON dish " ++
+            "WHEN old.photo IS NOT NULL BEGIN SELECT 1; END;\n",
+        .says = "trigger gone: no such column: old.photo (where a DELETE on dish fires it)",
+    },
+    .{
+        .case = "an INSTEAD OF trigger on a view writing a column not there",
+        .schema = schema_text ++ "CREATE VIEW dishes AS SELECT id, name FROM dish;\n" ++
+            "CREATE TRIGGER add_dish INSTEAD OF INSERT ON dishes " ++
+            "BEGIN INSERT INTO dish (name, photo) VALUES (new.name, 1); END;\n",
+        .says = "trigger add_dish: table dish has no column named photo",
+    },
+    .{
+        .case = "a trigger's sibling broken: the error is the sibling's alone",
+        .schema = schema_text ++
+            "CREATE TRIGGER fine AFTER INSERT ON dish BEGIN SELECT 1; END;\n" ++
+            "CREATE TRIGGER broken AFTER INSERT ON dish BEGIN SELECT nope FROM dish; END;\n",
+        .says = "trigger broken: no such column: nope",
+    },
+    .{
         .case = "a drop's quoted name not closed",
         .schema = schema_text ++ "-- @drop table \"dish of the day\n",
         .says = "write `-- @drop table name`",
@@ -366,6 +398,24 @@ test "roux-db: every refusal, by name" {
         }
         try testing.expectEqual(0, run.outputs.len);
     }
+}
+
+test "roux-db: triggers that compile are accepted, a view's and one firing another's" {
+    const schema = schema_text ++
+        \\CREATE TABLE log (what TEXT NOT NULL) STRICT;
+        \\CREATE VIEW dishes AS SELECT id, name FROM dish;
+        \\CREATE TRIGGER add_dish INSTEAD OF INSERT ON dishes
+        \\  BEGIN INSERT INTO dish (name, price_kr) VALUES (new.name, 1); END;
+        \\CREATE TRIGGER logged AFTER INSERT ON dish
+        \\  BEGIN INSERT INTO log (what) VALUES (new.name); END;
+        \\CREATE TRIGGER renamed AFTER UPDATE OF name ON dish WHEN old.name != new.name
+        \\  BEGIN INSERT INTO log (what) VALUES ('renamed'); END;
+        \\
+    ;
+    const run = try run_generator(schema, "Dishes.sql", "-- name: q :exec\nDELETE FROM dish;");
+    defer free(run);
+    for (run.diagnostics.items()) |d| std.debug.print("  {s}\n", .{d.message});
+    try testing.expect(run.diagnostics.ok());
 }
 
 test "roux-db: a drop of what holds rows no more: a table now a view, a column now generated" {

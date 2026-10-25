@@ -1,0 +1,17 @@
+A table goes on purpose, and a trigger still writes it. SQLite would make
+the trigger and fail at the first write that fires it; roux-db compiles
+every trigger, so the build says it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE log (what TEXT NOT NULL) STRICT;
+CREATE TRIGGER logged AFTER INSERT ON dish BEGIN INSERT INTO log (what) VALUES (new.name); END;
+INSERT INTO dish (name) VALUES ('soup');
+
+== after
+-- @drop table log
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TRIGGER logged AFTER INSERT ON dish BEGIN INSERT INTO log (what) VALUES (new.name); END;
+
+== error
+roux-db: trigger logged: no such table: main.log (where an INSERT on dish fires it)

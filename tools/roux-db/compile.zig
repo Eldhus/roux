@@ -75,11 +75,12 @@ const Compiler = struct {
     verdict: authorizer.Verdict,
     statements: std.ArrayList(Statement),
     drops: std.ArrayList(annotation.Drop),
-    views: std.ArrayList(View),
+    views: std.ArrayList(Made),
+    triggers: std.ArrayList(Made),
 };
 
-/// A view of schema.sql, and where its CREATE begins.
-const View = struct { name: []const u8, offset: u32 };
+/// A view or trigger of schema.sql, and where its CREATE begins.
+const Made = struct { name: []const u8, offset: u32 };
 
 /// Compiles `queries` against `schema`; what is wrong goes to
 /// `diagnostics`, and the result means something only when it is ok.
@@ -101,10 +102,12 @@ pub fn compile(
         .statements = try .initCapacity(arena, statements_max),
         .drops = try .initCapacity(arena, drops_max),
         .views = try .initCapacity(arena, file_statements_max),
+        .triggers = try .initCapacity(arena, file_statements_max),
     };
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
     try check_views(&compiler);
+    try check_triggers(&compiler, schema.text);
     check_drops(&compiler);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
@@ -267,18 +270,21 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
         compiler.diagnostics.add(0, start, "{s}", .{c.sqlite3_errmsg(compiler.db)});
         return;
     }
-    if (verdict.created.? == .create_view) {
+    const created = verdict.created.?;
+    if (created == .create_view or created == .create_trigger) {
+        const what = if (created == .create_view) "view" else "trigger";
         // A name at the verdict's bound may have been cut: never read.
         const name = verdict.created_name();
         if (name.len >= authorizer.Verdict.created_bytes_max) {
             const bound = authorizer.Verdict.created_bytes_max;
-            return compiler.diagnostics.add(0, start, "a view's name of {d} bytes or more", .{
-                bound,
+            return compiler.diagnostics.add(0, start, "a {s}'s name of {d} bytes or more", .{
+                what, bound,
             });
         }
         const kept = compiler.arena.dupe(u8, name) catch
             return compiler.diagnostics.add(0, start, "out of memory", .{});
-        compiler.views.appendAssumeCapacity(.{ .name = kept, .offset = start });
+        const list = if (created == .create_view) &compiler.views else &compiler.triggers;
+        list.appendAssumeCapacity(.{ .name = kept, .offset = start });
         return;
     }
     if (verdict.created.? != .create_table) return;
@@ -291,8 +297,7 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
 
 /// Each view read once schema.sql is whole: SQLite makes a view that names
 /// a table or column not there (one `-- @drop`ped, say), and fails only
-/// where it is read, at a request. (A trigger's body likewise, at the
-/// write that fires it; SQLite has no way to check one short of that.)
+/// where it is read, at a request.
 fn check_views(compiler: *Compiler) !void {
     for (compiler.views.items) |view| {
         const quoted = try std.mem.replaceOwned(u8, compiler.arena, view.name, "\"", "\"\"");
@@ -314,6 +319,109 @@ fn check_views(compiler: *Compiler) !void {
             });
         }
     }
+}
+
+/// Each trigger compiled once schema.sql is whole. SQLite makes a trigger
+/// whose body names a table or column not there, and fails only at the
+/// write that fires it; preparing that write compiles the body, and
+/// nothing runs. In a database of its own, one trigger at a time: its
+/// siblings on the same table dropped, so a failure is its own, and a view
+/// given a do-nothing INSTEAD OF trigger for each write, so each prepares.
+/// (A trigger the body's writes fire is compiled too: a broken one is also
+/// told under each trigger that fires it.)
+fn check_triggers(compiler: *Compiler, schema: []const u8) !void {
+    if (compiler.triggers.items.len == 0) return;
+    const probe = try open_memory();
+    defer _ = c.sqlite3_close_v2(probe);
+    // It loaded once already, under the schema policy.
+    sqlite.exec(probe, schema) catch return error.Sqlite;
+    for (compiler.triggers.items) |trigger| {
+        try sqlite.exec(probe, "SAVEPOINT probe");
+        const checked = check_trigger(compiler, probe, trigger);
+        try sqlite.exec(probe, "ROLLBACK TO probe; RELEASE probe");
+        try checked;
+    }
+}
+
+fn check_trigger(compiler: *Compiler, probe: *c.Db, trigger: Made) !void {
+    const arena = compiler.arena;
+    const name = try sql_literal(arena, trigger.name);
+    const on = try first_rows(arena, probe, try std.fmt.allocPrint(arena, "SELECT o.name, " ++
+        "o.type FROM sqlite_schema AS t JOIN sqlite_schema AS o ON o.name = t.tbl_name " ++
+        "WHERE t.type = 'trigger' AND t.name = {s} AND o.type IN ('table', 'view')", .{name}), 2);
+    assert(on.len == 2); // the trigger's table or view, and which
+    const target = try sql_identifier(arena, on[0]);
+    const siblings = try first_rows(arena, probe, try std.fmt.allocPrint(arena, "SELECT name " ++
+        "FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = {s} AND name != {s}", .{
+        try sql_literal(arena, on[0]), name,
+    }), 1);
+    for (siblings) |sibling| {
+        try sqlite.exec(probe, try std.fmt.allocPrint(arena, "DROP TRIGGER {s}", .{
+            try sql_identifier(arena, sibling),
+        }));
+    }
+    const events = [_][]const u8{ "INSERT", "UPDATE", "DELETE" };
+    if (std.mem.eql(u8, on[1], "view")) {
+        for (events) |event| {
+            try sqlite.exec(probe, try std.fmt.allocPrint(arena, "CREATE TRIGGER " ++
+                "\"roux probe {s}\" INSTEAD OF {s} ON {s} BEGIN SELECT 1; END", .{
+                event, event, target,
+            }));
+        }
+    }
+    const columns = try first_rows(arena, probe, try std.fmt.allocPrint(arena, "SELECT name " ++
+        "FROM pragma_table_xinfo({s}) WHERE hidden = 0", .{try sql_literal(arena, on[0])}), 1);
+    var set: std.Io.Writer.Allocating = .init(arena);
+    for (columns, 0..) |column, index| {
+        const quoted = try sql_identifier(arena, column);
+        try set.writer.print("{s}{s} = {s}", .{ if (index == 0) "" else ", ", quoted, quoted });
+    }
+    const writes = [_][]const u8{
+        try std.fmt.allocPrint(arena, "INSERT INTO {s} DEFAULT VALUES", .{target}),
+        try std.fmt.allocPrint(arena, "UPDATE {s} SET {s}", .{ target, set.written() }),
+        try std.fmt.allocPrint(arena, "DELETE FROM {s}", .{target}),
+    };
+    const fired_by = [_][]const u8{ "an INSERT", "an UPDATE", "a DELETE" };
+    for (writes, fired_by) |write, event| {
+        var statement: ?*c.Stmt = null;
+        const length: c_int = @intCast(write.len);
+        const result = c.sqlite3_prepare_v3(probe, write.ptr, length, 0, &statement, null);
+        _ = c.sqlite3_finalize(statement);
+        if (result == c.ok) continue;
+        compiler.diagnostics.add(0, trigger.offset, "trigger {s}: {s} (where {s} on {s} " ++
+            "fires it)", .{ trigger.name, c.sqlite3_errmsg(probe), event, on[0] });
+        return;
+    }
+}
+
+/// The first `columns` cells of each row, as text, in one list.
+fn first_rows(arena: Allocator, db: *c.Db, sql: []const u8, columns: u32) ![]const []const u8 {
+    const statement = try prepare_own(db, sql);
+    defer _ = c.sqlite3_finalize(statement);
+    var cells: std.ArrayList([]const u8) = .empty;
+    for (0..file_statements_max + 1) |_| {
+        switch (c.sqlite3_step(statement)) {
+            c.done => return cells.items,
+            c.row => {},
+            else => return error.Sqlite,
+        }
+        for (0..columns) |column| {
+            const text = c.sqlite3_column_text(statement, @intCast(column)) orelse "";
+            const length: usize = @intCast(c.sqlite3_column_bytes(statement, @intCast(column)));
+            try cells.append(arena, try arena.dupe(u8, text[0..length]));
+        }
+    }
+    return error.Sqlite; // more rows than schema.sql has statements
+}
+
+fn sql_identifier(arena: Allocator, name: []const u8) ![]const u8 {
+    const doubled = try std.mem.replaceOwned(u8, arena, name, "\"", "\"\"");
+    return std.fmt.allocPrint(arena, "\"{s}\"", .{doubled});
+}
+
+fn sql_literal(arena: Allocator, text: []const u8) ![]const u8 {
+    const doubled = try std.mem.replaceOwned(u8, arena, text, "'", "''");
+    return std.fmt.allocPrint(arena, "'{s}'", .{doubled});
 }
 
 /// A drop names what schema.sql no longer makes, by SQLite's own lookup
