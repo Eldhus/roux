@@ -1,0 +1,20 @@
+A table whose rows refer to its own (a dish and the dish it varies) is
+rebuilt: the copy keeps every reference, and they hold after.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, variant_of INTEGER REFERENCES dish (id)) STRICT;
+INSERT INTO dish VALUES (1, 'soup', NULL), (2, 'cold soup', 1);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, variant_of INTEGER REFERENCES dish (id), note TEXT) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, variant_of INTEGER REFERENCES dish (id), note TEXT) STRICT
+  table `dish`: its rows, by id, name, variant_of
+    INSERT INTO "dish" ("id", "name", "variant_of") SELECT "id", "name", "variant_of" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

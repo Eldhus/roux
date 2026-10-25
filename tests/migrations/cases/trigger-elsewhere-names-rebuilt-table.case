@@ -1,0 +1,26 @@
+A trigger on one table writes another, which is rebuilt. The rename aside
+does not rewrite the trigger's body (legacy ALTER TABLE), so it names the
+new table after, as schema.sql wrote it, and is left alone.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, orders INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE sale (id INTEGER PRIMARY KEY, dish_id INTEGER NOT NULL) STRICT;
+CREATE TRIGGER count_sale AFTER INSERT ON sale BEGIN UPDATE dish SET orders = orders + 1 WHERE id = new.dish_id; END;
+INSERT INTO dish (id, name) VALUES (1, 'soup');
+INSERT INTO sale (dish_id) VALUES (1);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, orders INTEGER NOT NULL DEFAULT 0, note TEXT) STRICT;
+CREATE TABLE sale (id INTEGER PRIMARY KEY, dish_id INTEGER NOT NULL) STRICT;
+CREATE TRIGGER count_sale AFTER INSERT ON sale BEGIN UPDATE dish SET orders = orders + 1 WHERE id = new.dish_id; END;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, orders INTEGER NOT NULL DEFAULT 0, note TEXT) STRICT
+  table `dish`: its rows, by id, name, orders
+    INSERT INTO "dish" ("id", "name", "orders") SELECT "id", "name", "orders" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

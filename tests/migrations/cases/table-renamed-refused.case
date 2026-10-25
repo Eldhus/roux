@@ -1,0 +1,12 @@
+A table renamed is, to SQLite's listings, one table gone and another new:
+refused, since the old one's rows would go. There is no rename.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE meal (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== error
+table `dish` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop table dish` in schema.sql. (A rename is a drop and a new one: the rows do not follow.)
