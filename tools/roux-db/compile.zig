@@ -66,6 +66,10 @@ pub const Compiled = struct {
     drops: []const annotation.Drop = &.{},
     /// schema.sql's `-- @from`s, in its order.
     froms: []const annotation.From = &.{},
+    /// `-- @release N`, 0 when schema.sql has none (and then no lines).
+    release: u32 = 0,
+    /// `-- @oldest N`, 0 when schema.sql has none.
+    oldest: u32 = 0,
 };
 
 /// `-- @drop`s in schema.sql, in all; `-- @from`s likewise.
@@ -79,6 +83,8 @@ const Compiler = struct {
     statements: std.ArrayList(Statement),
     drops: std.ArrayList(annotation.Drop),
     froms: std.ArrayList(annotation.From),
+    release: ?annotation.Mark = null,
+    oldest: ?annotation.Mark = null,
     views: std.ArrayList(Made),
     triggers: std.ArrayList(Made),
 };
@@ -115,6 +121,7 @@ pub fn compile(
     try check_triggers(&compiler, schema.text);
     check_drops(&compiler);
     check_froms(&compiler);
+    check_releases(&compiler);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
         compile_file(&compiler, @intCast(file), query);
@@ -123,6 +130,8 @@ pub fn compile(
         .statements = compiler.statements.items,
         .drops = compiler.drops.items,
         .froms = compiler.froms.items,
+        .release = if (compiler.release) |mark| mark.value else 0,
+        .oldest = if (compiler.oldest) |mark| mark.value else 0,
     };
 }
 
@@ -264,11 +273,64 @@ fn load_schema(compiler: *Compiler, text: []const u8) void {
             }
             compiler.froms.appendAssumeCapacity(from);
         }
+        keep_mark(compiler, &compiler.release, annotations.release, "@release");
+        keep_mark(compiler, &compiler.oldest, annotations.oldest, "@oldest");
         const statement = next.statement orelse continue;
         defer _ = c.sqlite3_finalize(statement);
         load_schema_statement(compiler, statement, next.start);
     } else {
         compiler.diagnostics.add(0, at, "more than {d} statements", .{file_statements_max});
+    }
+}
+
+/// One `@release` (or `@oldest`) in all schema.sql.
+fn keep_mark(
+    compiler: *Compiler,
+    kept: *?annotation.Mark,
+    found: ?annotation.Mark,
+    what: []const u8,
+) void {
+    const mark = found orelse return;
+    if (kept.* != null) return compiler.diagnostics.add(0, mark.offset, "a second {s}", .{what});
+    kept.* = mark;
+}
+
+/// Each line's release against schema.sql's: a line needs `@release`, came
+/// in no later than it, and after `@oldest` (every database is at that
+/// release or later, done with it: a line of it applies to none).
+fn check_releases(compiler: *Compiler) void {
+    const release = compiler.release orelse {
+        if (compiler.oldest) |oldest| {
+            compiler.diagnostics.add(0, oldest.offset, "@oldest, but no `-- @release N`", .{});
+        }
+        for (compiler.drops.items) |drop| check_release(compiler, drop.release, drop.offset, 0);
+        for (compiler.froms.items) |from| check_release(compiler, from.release, from.offset, 0);
+        return;
+    };
+    const oldest = if (compiler.oldest) |mark| mark.value else 0;
+    if (oldest > release.value) {
+        compiler.diagnostics.add(0, compiler.oldest.?.offset, "@oldest {d}, but schema.sql " ++
+            "is release {d}", .{ oldest, release.value });
+    }
+    const at = release.value;
+    for (compiler.drops.items) |drop| check_release(compiler, drop.release, drop.offset, at);
+    for (compiler.froms.items) |from| check_release(compiler, from.release, from.offset, at);
+}
+
+fn check_release(compiler: *Compiler, line: u32, offset: u32, release: u32) void {
+    if (release == 0) {
+        return compiler.diagnostics.add(0, offset, "a line of release {d}, but schema.sql " ++
+            "says no release: `-- @release N`", .{line});
+    }
+    if (line > release) {
+        return compiler.diagnostics.add(0, offset, "a line of release {d}, but schema.sql " ++
+            "is release {d}", .{ line, release });
+    }
+    // Every database is at `@oldest` or later, and has finished it.
+    const oldest = if (compiler.oldest) |mark| mark.value else 0;
+    if (line <= oldest) {
+        compiler.diagnostics.add(0, offset, "a line of release {d}, and every database is " ++
+            "past it (`-- @oldest {d}`): delete it", .{ line, oldest });
     }
 }
 
@@ -549,6 +611,11 @@ fn compile_file(compiler: *Compiler, file: u16, input: Input) void {
         }
         for (annotations.from_list()) |from| {
             compiler.diagnostics.add(file, from.offset, "`-- @from` belongs to schema.sql", .{});
+        }
+        for ([_]?annotation.Mark{ annotations.release, annotations.oldest }) |found| {
+            const mark = found orelse continue;
+            compiler.diagnostics.add(file, mark.offset, "`-- @release` and `-- @oldest` " ++
+                "belong to schema.sql", .{});
         }
         const statement = next.statement orelse {
             if (annotations.name != null) {

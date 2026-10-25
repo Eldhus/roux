@@ -10,4 +10,4 @@ INSERT INTO "dish of the day" VALUES (1, 'soup');
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
-table `dish of the day` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop table "dish of the day"` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from table <new> = "dish of the day"`.
+table `dish of the day` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop 1 table "dish of the day"` in schema.sql (with `-- @release 1`). Renamed? Drop it, and fill the new one from it: `-- @from 1 table <new> = "dish of the day"`.

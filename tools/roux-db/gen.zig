@@ -50,8 +50,7 @@ pub fn generate(
         schema,
         queries,
         statements,
-        compiled.drops,
-        compiled.froms,
+        compiled,
     );
     outputs[queries.len] = .{ .name = "Database.roc", .text = database.written() };
     return outputs;

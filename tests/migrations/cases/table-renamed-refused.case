@@ -9,4 +9,4 @@ INSERT INTO dish VALUES (1, 'soup');
 CREATE TABLE meal (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
-table `dish` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop table dish` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from table <new> = dish`.
+table `dish` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop 1 table dish` in schema.sql (with `-- @release 1`). Renamed? Drop it, and fill the new one from it: `-- @from 1 table <new> = dish`.

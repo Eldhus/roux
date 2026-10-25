@@ -265,8 +265,10 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
         if (opened.plan.len > 0) try plans.writer.print("{s}\n", .{opened.plan});
         if (opened.opened) {
             try check_opened(arena, dir, after, w);
+            try check_release(arena, dir, opened.release, step, w);
             const again = try open(arena, io, app, dir, after);
-            if (!again.opened or again.plan.len > 0) {
+            // What the app says of where it came from is no plan.
+            if (!again.opened or std.mem.indexOf(u8, again.plan, "roux: migrating") != null) {
                 try w.print("  after {d}, opened again, it planned or failed:\n{s}\n{s}\n", .{
                     step, again.plan, again.@"error",
                 });
@@ -347,6 +349,8 @@ const Opened = struct {
     opened: bool,
     plan: []const u8,
     @"error": []const u8,
+    /// schema.sql's `@release`, 0 for none.
+    release: u32 = 0,
 };
 
 const Run = enum { real, rehearsal };
@@ -379,6 +383,7 @@ fn open_as(
     }
     var drops: std.Io.Writer.Allocating = .init(arena);
     for (compiled.drops) |drop| {
+        try drops.writer.print("{d}\t", .{drop.release});
         if (drop.column) |column| {
             try drops.writer.print("column\t{s}\t{s}\n", .{ drop.table, column });
         } else {
@@ -389,15 +394,20 @@ fn open_as(
     for (compiled.froms) |from| {
         // A tab separates the fields main.roc reads.
         if (std.mem.indexOfScalar(u8, from.source, '\t') != null) return error.TabInFrom;
+        try froms.writer.print("{d}\t", .{from.release});
         if (from.column) |column| {
             try froms.writer.print("column\t{s}\t{s}\t{s}\n", .{ from.table, column, from.source });
         } else {
             try froms.writer.print("table\t{s}\t{s}\n", .{ from.table, from.source });
         }
     }
+    const releases = try std.fmt.allocPrint(arena, "{d}\t{d}", .{
+        compiled.release, compiled.oldest,
+    });
     var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
     defer case_dir.close(io);
     try case_dir.writeFile(io, .{ .sub_path = "schema.sql", .data = after });
+    try case_dir.writeFile(io, .{ .sub_path = "releases", .data = releases });
     try case_dir.writeFile(io, .{ .sub_path = "drops", .data = drops.written() });
     try case_dir.writeFile(io, .{ .sub_path = "froms", .data = froms.written() });
     var environ: std.process.Environ.Map = .init(arena); // no ROUX_DATABASE
@@ -422,6 +432,7 @@ fn open_as(
         .opened = code == 0,
         .plan = try plan_of(arena, ran.stdout),
         .@"error" = std.mem.trim(u8, ran.stderr, "\n"),
+        .release = compiled.release,
     };
 }
 
@@ -468,6 +479,22 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     if (!std.mem.eql(u8, broken, "0")) try w.print("  {s} rows break a foreign key\n", .{broken});
     try check_rows(arena, before, db, w);
     try check_sequences(arena, before, db, w);
+}
+
+/// An opened database is at schema.sql's release, or the newer one it was
+/// at: a release is never lowered.
+fn check_release(arena: Allocator, dir: []const u8, release: u32, step: usize, w: *std.Io.Writer) !void {
+    const db = try open_file(arena, dir, "test.db");
+    defer close_db(db);
+    const before = try open_file(arena, dir, "before.db");
+    defer close_db(before);
+    const was = try std.fmt.parseInt(u32, try text_of(arena, before, "PRAGMA user_version"), 10);
+    const now = try std.fmt.parseInt(u32, try text_of(arena, db, "PRAGMA user_version"), 10);
+    if (now != @max(was, release)) {
+        try w.print("  after {d}, the database is at release {d}, not {d}\n", .{
+            step, now, @max(was, release),
+        });
+    }
 }
 
 /// A rehearsal leaves nothing behind: no copy of its own, and no copy

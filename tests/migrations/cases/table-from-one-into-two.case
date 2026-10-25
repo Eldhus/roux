@@ -7,9 +7,10 @@ CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 INSERT INTO menu VALUES (1, 'lunch');
 
 == after
--- @drop table menu
--- @from table lunch = menu
--- @from table dinner = menu
+-- @release 1
+-- @drop 1 table menu
+-- @from 1 table lunch = menu
+-- @from 1 table dinner = menu
 CREATE TABLE lunch (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 CREATE TABLE dinner (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 

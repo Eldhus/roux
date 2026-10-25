@@ -165,6 +165,9 @@ pub const Description = struct {
     /// What brings an existing database to `schema` (Migrate.roc's plan,
     /// from `inspect`); empty when it already is, or is new.
     migration: []const Step = &.{},
+    /// The release `schema` is (`-- @release`): the database records it
+    /// in `PRAGMA user_version` when opened, never lowering it.
+    release: u32 = 0,
 };
 
 /// When a commit is durable. `full`: when it returns (the WAL synced at
@@ -709,15 +712,39 @@ fn ensure_schema(db: *c.Db, description: Description, report: *Report) error{Fai
         if (description.migration.len > 0) {
             return report.fail(.misuse, "a migration for a new database", .{});
         }
-        return create_schema(db, description.schema, report);
+        try create_schema(db, description.schema, report);
+        return record_release(db, description.release, report);
     }
     const pristine = try open_pristine(description.schema, report);
     defer close_pristine(pristine);
     const name = description.name orelse description.path;
     if (description.migration.len == 0) {
-        return compare_schemas(db, pristine, name, report);
+        try compare_schemas(db, pristine, name, report);
+        return record_release(db, description.release, report);
     }
-    return migrate(db, pristine, description.migration, name, report);
+    return migrate(db, pristine, description.migration, name, description.release, report);
+}
+
+/// The release the database is at: `PRAGMA user_version`, 0 before any.
+pub fn release_of(db: *c.Db, report: *Report) error{Failed}!u32 {
+    const value = try pragma_integer(db, "PRAGMA user_version", report);
+    // roux writes only releases, from 1; anything else is another tool's.
+    if (value < 0) return report.fail(.failed, "user_version {d}: not a release", .{value});
+    return @intCast(value);
+}
+
+/// `release`, kept in the database if it is past the one there: a
+/// database a newer release migrated keeps that one. Inside a migration's
+/// transaction it commits with it.
+fn record_release(db: *c.Db, release: u32, report: *Report) error{Failed}!void {
+    if (release == 0) return;
+    if (try release_of(db, report) >= release) return;
+    var buffer: [48]u8 = undefined;
+    const sql = std.fmt.bufPrint(&buffer, "PRAGMA user_version = {d}", .{release}) catch
+        unreachable; // a u32 fits
+    sqlite.exec(db, sql) catch return report.fail(.failed, "{s}: {s}", .{
+        sql, c.sqlite3_errmsg(db),
+    });
 }
 
 /// What `schema` makes, in memory, by the same policy as a new database.
@@ -883,6 +910,7 @@ fn migrate(
     pristine: *c.Db,
     migration: []const Step,
     path: []const u8,
+    release: u32,
     report: *Report,
 ) error{Failed}!void {
     assert(migration.len > 0);
@@ -891,7 +919,7 @@ fn migrate(
     }
     try set_foreign_keys(db, false, report);
     try set_legacy_alter_table(db, true, report);
-    const outcome = migrate_in_transaction(db, pristine, migration, path, report);
+    const outcome = migrate_in_transaction(db, pristine, migration, path, release, report);
     // Restored whatever happened. After a failure the migration's is the
     // one reported, and the connection is closed anyway.
     if (outcome) |_| {
@@ -910,6 +938,7 @@ fn migrate_in_transaction(
     pristine: *c.Db,
     migration: []const Step,
     path: []const u8,
+    release: u32,
     report: *Report,
 ) error{Failed}!void {
     sqlite.exec(db, "BEGIN IMMEDIATE") catch
@@ -949,6 +978,8 @@ fn migrate_in_transaction(
     }
     try check_foreign_keys(db, path, report);
     try compare_schemas(db, pristine, path, report);
+    // With the migration, or not at all: lines of this release applied.
+    try record_release(db, release, report);
     sqlite.exec(db, "COMMIT") catch
         return report.fail(.failed, "COMMIT: {s}", .{c.sqlite3_errmsg(db)});
 }

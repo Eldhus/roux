@@ -7,9 +7,11 @@ CREATE INDEX dish_name ON dish (name);
 INSERT INTO dish VALUES (1, 'soup');
 
 == after
--- @drop table dish
+-- @release 1
+-- @drop 1 table dish
 
 == plan
 roux: migrating test.db, 1 step
   table `dish`: dropped on purpose
     DROP TABLE "dish"
+migrated from release 0

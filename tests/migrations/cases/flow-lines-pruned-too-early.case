@@ -1,17 +1,22 @@
-The rename's lines removed while a database (a teammate's) still had
-the old column: it is refused with the line to add back, never migrated
-with its values lost. Putting the lines back, it goes through.
+Release 2 renamed `title`; release 3 deleted its lines (`@oldest 2`)
+while a database (a teammate's) was still at release 1. It is refused, the
+ledger saying why, never migrated with its values lost. Putting release
+2's lines back, it goes through.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'soup');
+PRAGMA user_version = 1;
 
 == after
+-- @release 3
+-- @oldest 2
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == after
--- @drop column dish title
--- @from column dish name = title
+-- @release 3
+-- @drop 2 column dish title
+-- @from 2 column dish name = title
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == query
@@ -31,10 +36,11 @@ roux: migrating test.db, 4 steps
     ) FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
+migrated from release 1
 
 == rows
 1 | soup
 
 == error
 -- after 1
-column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish title` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from column dish <new> = "title"`.
+the database is at release 1, before `-- @oldest 2`: the @drop and @from lines it needs were deleted. Open it first with an executable of a release that still had them, or put them back.

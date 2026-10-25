@@ -857,8 +857,9 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct_a194f1ae3c536da5
-pub const __AnonStruct_a194f1ae3c536da5 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct_21ff592beeae5150
+pub const __AnonStruct_21ff592beeae5150 = if (@sizeOf(usize) == 4) extern struct {
+    @"at": u64,
     @"live": __AnonStruct_14e1a9dc7e907839,
     @"pristine": __AnonStruct_14e1a9dc7e907839,
     /// Recursively decrement Roc-owned fields.
@@ -875,6 +876,7 @@ pub const __AnonStruct_a194f1ae3c536da5 = if (@sizeOf(usize) == 4) extern struct
         value.@"pristine".incref(amount);
     }
 } else extern struct {
+    @"at": u64,
     @"live": __AnonStruct_14e1a9dc7e907839,
     @"pristine": __AnonStruct_14e1a9dc7e907839,
     /// Recursively decrement Roc-owned fields.
@@ -894,12 +896,12 @@ pub const __AnonStruct_a194f1ae3c536da5 = if (@sizeOf(usize) == 4) extern struct
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_a194f1ae3c536da5) != 96) @compileError("__AnonStruct_a194f1ae3c536da5 size mismatch");
-        if (@alignOf(__AnonStruct_a194f1ae3c536da5) != 8) @compileError("__AnonStruct_a194f1ae3c536da5 alignment mismatch");
+        if (@sizeOf(__AnonStruct_21ff592beeae5150) != 104) @compileError("__AnonStruct_21ff592beeae5150 size mismatch");
+        if (@alignOf(__AnonStruct_21ff592beeae5150) != 8) @compileError("__AnonStruct_21ff592beeae5150 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_a194f1ae3c536da5) != 48) @compileError("__AnonStruct_a194f1ae3c536da5 size mismatch");
-        if (@alignOf(__AnonStruct_a194f1ae3c536da5) != 4) @compileError("__AnonStruct_a194f1ae3c536da5 alignment mismatch");
+        if (@sizeOf(__AnonStruct_21ff592beeae5150) != 56) @compileError("__AnonStruct_21ff592beeae5150 size mismatch");
+        if (@alignOf(__AnonStruct_21ff592beeae5150) != 8) @compileError("__AnonStruct_21ff592beeae5150 alignment mismatch");
     }
 }
 
@@ -1562,19 +1564,19 @@ pub const HostSqlite_inspectResultTag = enum(u8) {
 /// Payload union for Try.
 pub const HostSqlite_inspectResultPayload = extern union {
         @"err": RocStr,
-        @"ok": __AnonStruct_a194f1ae3c536da5,
+        @"ok": __AnonStruct_21ff592beeae5150,
 };
 
 /// Tag union: Try
 pub const HostSqlite_inspectResult = if (@sizeOf(usize) == 4) extern struct {
-    payload: [48]u8 align(4),
+    payload: [56]u8 align(8),
     tag: HostSqlite_inspectResultTag,
     pub fn payload_err(self: *const @This()) RocStr {
         const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_ok(self: *const @This()) __AnonStruct_a194f1ae3c536da5 {
-        const ptr: *const __AnonStruct_a194f1ae3c536da5 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_ok(self: *const @This()) __AnonStruct_21ff592beeae5150 {
+        const ptr: *const __AnonStruct_21ff592beeae5150 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -1592,7 +1594,7 @@ pub const HostSqlite_inspectResult = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_err(self: *const @This()) RocStr {
         return self.payload.@"err";
     }
-    pub fn payload_ok(self: *const @This()) __AnonStruct_a194f1ae3c536da5 {
+    pub fn payload_ok(self: *const @This()) __AnonStruct_21ff592beeae5150 {
         return self.payload.@"ok";
     }
     /// Recursively decrement Roc-owned payloads.
@@ -1608,14 +1610,14 @@ pub const HostSqlite_inspectResult = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(HostSqlite_inspectResult) != 104) @compileError("HostSqlite_inspectResult size mismatch");
+        if (@sizeOf(HostSqlite_inspectResult) != 112) @compileError("HostSqlite_inspectResult size mismatch");
         if (@alignOf(HostSqlite_inspectResult) != 8) @compileError("HostSqlite_inspectResult alignment mismatch");
-        if (@offsetOf(HostSqlite_inspectResult, "tag") != 96) @compileError("HostSqlite_inspectResult tag offset mismatch");
+        if (@offsetOf(HostSqlite_inspectResult, "tag") != 104) @compileError("HostSqlite_inspectResult tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(HostSqlite_inspectResult) != 52) @compileError("HostSqlite_inspectResult size mismatch");
-        if (@alignOf(HostSqlite_inspectResult) != 4) @compileError("HostSqlite_inspectResult alignment mismatch");
-        if (@offsetOf(HostSqlite_inspectResult, "tag") != 48) @compileError("HostSqlite_inspectResult tag offset mismatch");
+        if (@sizeOf(HostSqlite_inspectResult) != 64) @compileError("HostSqlite_inspectResult size mismatch");
+        if (@alignOf(HostSqlite_inspectResult) != 8) @compileError("HostSqlite_inspectResult alignment mismatch");
+        if (@offsetOf(HostSqlite_inspectResult, "tag") != 56) @compileError("HostSqlite_inspectResult tag offset mismatch");
     }
 }
 
@@ -2052,7 +2054,7 @@ pub const HostResponse_stream_endArgs = extern struct {
 };
 
 /// Arguments for Host.sqlite_open!
-/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal], List({ sql : Str, why : Str }), Bool => Try({}, Str)
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal], List({ sql : Str, why : Str }), Bool, U64 => Try({}, Str)
 /// Refcounted fields are owned by the hosted function.
 pub const HostSqlite_openArgs = extern struct {
     arg0: RocStr,
@@ -2061,10 +2063,11 @@ pub const HostSqlite_openArgs = extern struct {
     arg3: FullOrNormal,
     arg4: RocList(__AnonStruct_9370477dcadb7685),
     arg5: bool,
+    arg6: u64,
 };
 
 /// Arguments for Host.sqlite_inspect!
-/// Roc signature: Str, Str => Try({ live : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) }, pristine : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) } }, Str)
+/// Roc signature: Str, Str => Try({ at : U64, live : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) }, pristine : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) } }, Str)
 /// Refcounted fields are owned by the hosted function.
 pub const HostSqlite_inspectArgs = extern struct {
     arg0: RocStr,
@@ -2132,7 +2135,7 @@ pub const HostResponse_stream_endResultTag = HostResponse_stream_startResultTag;
 pub const HostResponse_stream_endErr = StreamDisconnectedOrStreamRefused;
 pub const HostSqlite_openArg2 = __AnonStruct_2d568438e96cd20c;
 pub const HostSqlite_openArg4 = __AnonStruct_9370477dcadb7685;
-pub const HostSqlite_inspectOk = __AnonStruct_a194f1ae3c536da5;
+pub const HostSqlite_inspectOk = __AnonStruct_21ff592beeae5150;
 pub const HostSqlite_inspectOkLive = __AnonStruct_14e1a9dc7e907839;
 pub const HostSqlite_inspectOkLiveColumns = BlobOrIntegerOrNullOrRealOrText;
 pub const HostSqlite_inspectOkLiveColumnsPayload = BlobOrIntegerOrNullOrRealOrTextPayload;
@@ -2319,8 +2322,8 @@ pub const HostSqlite_inspectResultRelease = struct {
     }
 };
 
-pub const __AnonStruct_a194f1ae3c536da5Release = struct {
-    pub fn release(value: __AnonStruct_a194f1ae3c536da5, roc_host: *RocHost) void {
+pub const __AnonStruct_21ff592beeae5150Release = struct {
+    pub fn release(value: __AnonStruct_21ff592beeae5150, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -2553,7 +2556,7 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == RocList(__AnonStruct_9370477dcadb7685)) return RocListRelease(RocList(__AnonStruct_9370477dcadb7685), __AnonStruct_9370477dcadb7685Release);
     if (T == __AnonStruct_9370477dcadb7685) return __AnonStruct_9370477dcadb7685Release;
     if (T == HostSqlite_inspectResult) return HostSqlite_inspectResultRelease;
-    if (T == __AnonStruct_a194f1ae3c536da5) return __AnonStruct_a194f1ae3c536da5Release;
+    if (T == __AnonStruct_21ff592beeae5150) return __AnonStruct_21ff592beeae5150Release;
     if (T == __AnonStruct_14e1a9dc7e907839) return __AnonStruct_14e1a9dc7e907839Release;
     if (T == RocList(RocList(BlobOrIntegerOrNullOrRealOrText))) return RocListRelease(RocList(RocList(BlobOrIntegerOrNullOrRealOrText)), RocListRelease(RocList(BlobOrIntegerOrNullOrRealOrText), BlobOrIntegerOrNullOrRealOrTextRelease));
     if (T == RocList(BlobOrIntegerOrNullOrRealOrText)) return RocListRelease(RocList(BlobOrIntegerOrNullOrRealOrText), BlobOrIntegerOrNullOrRealOrTextRelease);
@@ -2648,7 +2651,7 @@ pub extern fn hosted_response_stream_flush(arg0: u64) callconv(.c) HostResponse_
 pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_stream_startResult;
 
 /// Hosted symbol for Host.sqlite_open!
-/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal], List({ sql : Str, why : Str }), Bool => Try({}, Str)
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal], List({ sql : Str, why : Str }), Bool, U64 => Try({}, Str)
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
 ///     arg0.decref(roc_host);
@@ -2657,10 +2660,10 @@ pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_st
 ///     arg3.decref(roc_host);
 ///     decrefListOf__AnonStruct_9370477dcadb7685(arg4, roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
-pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c), arg3: FullOrNormal, arg4: RocList(__AnonStruct_9370477dcadb7685), arg5: bool) callconv(.c) HostSqlite_openResult;
+pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c), arg3: FullOrNormal, arg4: RocList(__AnonStruct_9370477dcadb7685), arg5: bool, arg6: u64) callconv(.c) HostSqlite_openResult;
 
 /// Hosted symbol for Host.sqlite_inspect!
-/// Roc signature: Str, Str => Try({ live : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) }, pristine : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) } }, Str)
+/// Roc signature: Str, Str => Try({ at : U64, live : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) }, pristine : { columns : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), objects : List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])) } }, Str)
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
 ///     arg0.decref(roc_host);

@@ -8,7 +8,8 @@ CREATE VIEW notes AS SELECT id, note FROM dish;
 INSERT INTO dish VALUES (1, 'soup', 'hot');
 
 == after
--- @drop column dish note
+-- @release 1
+-- @drop 1 column dish note
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 CREATE VIEW notes AS SELECT id, note FROM dish;
 

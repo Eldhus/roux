@@ -6,26 +6,32 @@ import pf.Sqlite
 ## `Sqlite.open!(Database.at(path), settings)`.
 Database :: [].{
 	at : Str -> Sqlite.Database
-	at = |path| { path, schema, statements, drops, froms }
+	at = |path| { path, schema, statements, release, oldest, drops, froms }
 }
 
 schema : Str
-schema = "-- The golden test's database (tests.zig): `roux-db gen` on this\n-- directory writes the expected Roc beside it.\nCREATE TABLE dish (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL,\n  price_kr INTEGER NOT NULL,\n  note TEXT,\n  vegetarian INTEGER NOT NULL DEFAULT 0\n) STRICT;\n\nCREATE INDEX dish_by_name ON dish (name);\n\nCREATE TABLE tag (\n  dish_id INTEGER NOT NULL REFERENCES dish (id),\n  label TEXT NOT NULL,\n  PRIMARY KEY (dish_id, label)\n) STRICT, WITHOUT ROWID;\n\n-- Gone on purpose, with their rows, when a database is migrated:\n-- @drop table menu\n-- @drop column dish photo\n-- and what is new filled from what was there:\n-- @from column dish note = \"photo caption\" || '!'\n-- @from table tag = \"dish tags\"\n"
+schema = "-- The golden test's database (tests.zig): `roux-db gen` on this\n-- directory writes the expected Roc beside it.\nCREATE TABLE dish (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL,\n  price_kr INTEGER NOT NULL,\n  note TEXT,\n  vegetarian INTEGER NOT NULL DEFAULT 0\n) STRICT;\n\nCREATE INDEX dish_by_name ON dish (name);\n\nCREATE TABLE tag (\n  dish_id INTEGER NOT NULL REFERENCES dish (id),\n  label TEXT NOT NULL,\n  PRIMARY KEY (dish_id, label)\n) STRICT, WITHOUT ROWID;\n\n-- The release, and the oldest a database may be at:\n-- @release 9\n-- @oldest 6\n-- Gone on purpose, with their rows, when a database is migrated:\n-- @drop 7 table menu\n-- @drop 8 column dish photo\n-- and what is new filled from what was there:\n-- @from 8 column dish note = \"photo caption\" || '!'\n-- @from 9 table tag = \"dish tags\"\n"
 
-drops : List(Sqlite.Drop)
+release : U64
+release = 9
+
+oldest : U64
+oldest = 6
+
+drops : List(Sqlite.Line(Sqlite.Drop))
 drops = [
-	# schema.sql:20
-	Table("menu"),
-	# schema.sql:21
-	Column("dish", "photo"),
+	# schema.sql:23
+	{ release: 7, line: Table("menu") },
+	# schema.sql:24
+	{ release: 8, line: Column("dish", "photo") },
 ]
 
-froms : List(Sqlite.From)
+froms : List(Sqlite.Line(Sqlite.From))
 froms = [
-	# schema.sql:23
-	Column("dish", "note", "\"photo caption\" || '!'"),
-	# schema.sql:24
-	Table("tag", "dish tags"),
+	# schema.sql:26
+	{ release: 8, line: Column("dish", "note", "\"photo caption\" || '!'") },
+	# schema.sql:27
+	{ release: 9, line: Table("tag", "dish tags") },
 ]
 
 statements : List(Sqlite.Statement)

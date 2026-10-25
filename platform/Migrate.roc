@@ -43,6 +43,15 @@ Migrate := [].{
 	## longer makes (dropped on purpose: `Drop`).
 	From : [Column(Str, Str, Str), Table(Str, Str)]
 
+	## A line of schema.sql (`Drop`, `From`), with the release it came in.
+	Line(a) : { release : U64, line : a }
+
+	## Where a database stands: the release it reached (`PRAGMA
+	## user_version`; 0 before any), schema.sql's release, and the oldest
+	## release this build migrates from (its lines and those before it were
+	## deleted: every database finished it).
+	Ledger : { at : U64, release : U64, oldest : U64 }
+
 	## A statement of the plan, and why it runs.
 	Step : { sql : Str, why : Str }
 
@@ -50,17 +59,57 @@ Migrate := [].{
 	aside_prefix : Str
 	aside_prefix = "roux_old_"
 
-	## The steps that bring `live` to `pristine`, or why there are none:
-	## each refusal a sentence. A new database (nothing in it) needs none:
-	## the host makes it from schema.sql.
-	plan : Schema, Schema, List(Drop), List(From) -> Try(List(Step), List(Str))
-	plan = |live, pristine, drops, froms| {
+	## The steps that bring `live`, a database at `ledger.at`, to
+	## `pristine`, or why there are none: each refusal a sentence. A new
+	## database (nothing in it) needs none: the host makes it from
+	## schema.sql. The lines of the database's release and later apply; an
+	## older line is history, whatever the database's shape. (At its own
+	## release too: the dev database is at the release being worked on.)
+	plan : Schema, Schema, Ledger, List(Line(Drop)), List(Line(From)) -> Try(List(Step), List(Str))
+	plan = |live, pristine, ledger, drops, froms| {
 		if live.objects.is_empty() {
 			return Ok([])
 		}
-		refusals = refuse(live, pristine, drops, froms)
-		if (refusals.is_empty()) Ok(planned(live, pristine, froms)) else Err(refusals)
+		if ledger.at < ledger.oldest {
+			return Err([too_old(ledger)])
+		}
+		applying = active(drops, ledger.at)
+		filling = active(froms, ledger.at)
+		refusals = refuse(live, pristine, applying, filling, ledger.release)
+		# An older executable over a newer database: only as it is.
+		newer = ledger.at > ledger.release
+		if !refusals.is_empty() {
+			return Err(if (newer) [too_new(ledger)] else refusals)
+		}
+		steps = planned(live, pristine, filling)
+		if (newer and !steps.is_empty()) Err([too_new(ledger)]) else Ok(steps)
 	}
+
+	## The lines a database at release `at` still needs.
+	active : List(Line(a)), U64 -> List(a)
+	active = |lines, at| lines.keep_if(|line| line.release >= at).map(|line| line.line)
+
+	too_old : Ledger -> Str
+	too_old = |ledger|
+		Str.join_with(
+			[
+				"the database is at release ${ledger.at.to_str()}, before `-- @oldest ${ledger.oldest.to_str()}`:",
+				" the @drop and @from lines it needs were deleted. Open it first with an executable",
+				" of a release that still had them, or put them back.",
+			],
+			"",
+		)
+
+	too_new : Ledger -> Str
+	too_new = |ledger|
+		Str.join_with(
+			[
+				"the database is at release ${ledger.at.to_str()}, newer than schema.sql's ${ledger.release.to_str()},",
+				" and its schema differs: an older executable over a newer database opens it only",
+				" as it is.",
+			],
+			"",
+		)
 
 	## Whether the plan loses rows or values (dropped on purpose: `plan`
 	## refuses any other loss).
@@ -71,8 +120,9 @@ Migrate := [].{
 			and (!gone_tables(live, pristine).is_empty() or rebuilt_tables(live, pristine).any(lost))
 	}
 
-	refuse : Schema, Schema, List(Drop), List(From) -> List(Str)
-	refuse = |live, pristine, drops, froms| {
+	refuse : Schema, Schema, List(Drop), List(From), U64 -> List(Str)
+	refuse = |live, pristine, drops, froms, release| {
+		lost = |what, held, drop, carry| lost_with(what, held, drop, carry, release)
 		tables = gone_tables(live, pristine)
 			.keep_if(|table| !drops.any(|drop| drops_table(drop, table.name)))
 			.map(
@@ -117,17 +167,20 @@ Migrate := [].{
 	}
 
 	## Why a table or column would be lost, and the lines that lose it, or
-	## carry it on.
-	lost : Str, Str, Str, Str -> Str
-	lost = |what, held, drop, carry|
+	## carry it on, in schema.sql's release (the first, when it has none).
+	lost_with : Str, Str, Str, Str, U64 -> Str
+	lost_with = |what, held, drop, carry, release| {
+		number = if (release == 0) "1" else release.to_str()
+		first = if (release == 0) " (with `-- @release 1`)" else ""
 		Str.join_with(
 			[
 				"${what} is in the database, not in schema.sql: its ${held} would go.",
-				" Keep it, or drop it on purpose: `-- @drop ${drop}` in schema.sql.",
-				" Renamed? Drop it, and fill the new one from it: `-- @from ${carry}`.",
+				" Keep it, or drop it on purpose: `-- @drop ${number} ${drop}` in schema.sql${first}.",
+				" Renamed? Drop it, and fill the new one from it: `-- @from ${number} ${carry}`.",
 			],
 			"",
 		)
+	}
 
 	planned : Schema, Schema, List(From) -> List(Step)
 	planned = |live, pristine, froms| {
@@ -425,4 +478,8 @@ expect Migrate.quote_word("dish of the day") == "\"dish of the day\""
 expect Migrate.quote_word("2dish") == "\"2dish\""
 expect Migrate.same_name("Dish", "dISH")
 expect !Migrate.same_name("dish", "dishes")
-expect Migrate.plan({ objects: [], columns: [] }, { objects: [], columns: [] }, [], []) == Ok([])
+expect {
+	empty = { objects: [], columns: [] }
+	Migrate.plan(empty, empty, { at: 0, release: 0, oldest: 0 }, [], []) == Ok([])
+}
+expect Migrate.active([{ release: 6, line: "a" }, { release: 7, line: "b" }, { release: 9, line: "c" }], 7) == ["b", "c"]

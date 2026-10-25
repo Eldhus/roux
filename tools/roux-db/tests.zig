@@ -32,6 +32,9 @@ const schema_text =
     \\
 ;
 
+/// `schema_text` as release 3: what `-- @drop` and `-- @from` lines need.
+const released = schema_text ++ "-- @release 3\n";
+
 const Run = struct {
     arena: std.heap.ArenaAllocator,
     diagnostics: Diagnostics,
@@ -188,18 +191,64 @@ const refusals = [_]Refusal{
     },
     .{
         .case = "a drop of a table the schema makes (any case is the same name)",
-        .schema = schema_text ++ "-- @drop table DISH\n",
+        .schema = released ++ "-- @drop 3 table DISH\n",
         .says = "@drop table DISH, but schema.sql makes it",
     },
     .{
         .case = "a drop of a column the schema makes",
-        .schema = schema_text ++ "-- @drop column dish note\n",
+        .schema = released ++ "-- @drop 3 column dish note\n",
         .says = "@drop column dish note, but schema.sql makes it",
     },
     .{
         .case = "a drop misspelt",
-        .schema = schema_text ++ "-- @drop dish note\n",
-        .says = "write `-- @drop table name`",
+        .schema = released ++ "-- @drop 3 dish note\n",
+        .says = "write `-- @drop N table name`",
+    },
+    .{
+        .case = "a drop without the release it came in",
+        .schema = released ++ "-- @drop table menu\n",
+        .says = "write `-- @drop N table name`",
+    },
+    .{
+        .case = "a line, and no release in schema.sql",
+        .schema = schema_text ++ "-- @drop 1 table menu\n",
+        .says = "a line of release 1, but schema.sql says no release",
+    },
+    .{
+        .case = "a line of a release after schema.sql's",
+        .schema = released ++ "-- @drop 4 table menu\n",
+        .says = "a line of release 4, but schema.sql is release 3",
+    },
+    .{
+        .case = "a line every database is past",
+        .schema = released ++ "-- @oldest 2\n-- @drop 2 table menu\n",
+        .says = "a line of release 2, and every database is past it (`-- @oldest 2`): delete it",
+    },
+    .{
+        .case = "an oldest release after schema.sql's",
+        .schema = released ++ "-- @oldest 4\n",
+        .says = "@oldest 4, but schema.sql is release 3",
+    },
+    .{
+        .case = "an oldest release and no release",
+        .schema = schema_text ++ "-- @oldest 2\n",
+        .says = "@oldest, but no `-- @release N`",
+    },
+    .{
+        .case = "a release that is no release number",
+        .schema = schema_text ++ "-- @release 0\n",
+        .says = "write `-- @release N`, N a release from 1",
+    },
+    .{
+        .case = "a second release",
+        .schema = released ++ "CREATE TABLE plate (id INTEGER PRIMARY KEY) STRICT;\n" ++
+            "-- @release 4\n",
+        .says = "a second @release",
+    },
+    .{
+        .case = "a release in a query file",
+        .query = "-- @release 3\n-- name: q :exec\nDELETE FROM tag;",
+        .says = "`-- @release` and `-- @oldest` belong to schema.sql",
     },
     .{
         .case = "a view of a column the schema no longer makes",
@@ -240,57 +289,62 @@ const refusals = [_]Refusal{
     },
     .{
         .case = "a drop's quoted name not closed",
-        .schema = schema_text ++ "-- @drop table \"dish of the day\n",
-        .says = "write `-- @drop table name`",
+        .schema = released ++ "-- @drop 3 table \"dish of the day\n",
+        .says = "write `-- @drop N table name`",
     },
     .{
         .case = "a drop's name in single quotes (a string to SQL)",
-        .schema = schema_text ++ "-- @drop table 'menu'\n",
+        .schema = released ++ "-- @drop 3 table 'menu'\n",
         .says = "in double quotes",
     },
     .{
         .case = "a from without its kind",
-        .schema = schema_text ++ "-- @from dish note = title\n",
-        .says = "write `-- @from column table name = expression`",
+        .schema = released ++ "-- @from 3 dish note = title\n",
+        .says = "write `-- @from N column table name = expression`",
+    },
+    .{
+        .case = "a from without the release it came in",
+        .schema = released ++ "-- @from column dish note = title\n",
+        .says = "write `-- @from N column table name = expression`",
     },
     .{
         .case = "a from with no expression",
-        .schema = schema_text ++ "-- @from column dish note =\n",
-        .says = "write `-- @from column table name = expression`",
+        .schema = released ++ "-- @from 3 column dish note =\n",
+        .says = "write `-- @from N column table name = expression`",
     },
     .{
         .case = "a from filling a column the schema does not make",
-        .schema = schema_text ++ "-- @from column dish photo = picture\n",
+        .schema = released ++ "-- @from 3 column dish photo = picture\n",
         .says = "@from column dish photo, but schema.sql makes no such column to fill",
     },
     .{
         .case = "a from of a table the schema does not make",
-        .schema = schema_text ++ "-- @from table meal = menu\n",
+        .schema = released ++ "-- @from 3 table meal = menu\n",
         .says = "@from table meal, but schema.sql makes no such table",
     },
     .{
         .case = "a from of a table from itself (any case is the same name)",
-        .schema = schema_text ++ "-- @from table dish = DISH\n",
+        .schema = released ++ "-- @from 3 table dish = DISH\n",
         .says = "a table from itself",
     },
     .{
         .case = "a from of a table the schema still makes",
-        .schema = schema_text ++ "-- @from table dish = tag\n",
+        .schema = released ++ "-- @from 3 table dish = tag\n",
         .says = "@from table dish = tag, but schema.sql still makes tag",
     },
     .{
         .case = "a column filled twice",
-        .schema = schema_text ++ "-- @from column dish note = a\n-- @from column dish NOTE = b\n",
+        .schema = released ++ "-- @from 3 column dish note = a\n-- @from 3 column dish NOTE = b\n",
         .says = "a second @from for dish.NOTE",
     },
     .{
         .case = "a from in a query file",
-        .query = "-- @from column dish note = title\n-- name: q :exec\nDELETE FROM tag;",
+        .query = "-- @from 3 column dish note = title\n-- name: q :exec\nDELETE FROM tag;",
         .says = "`-- @from` belongs to schema.sql",
     },
     .{
         .case = "a drop in a query file",
-        .query = "-- @drop table menu\n-- name: q :exec\nDELETE FROM tag;",
+        .query = "-- @drop 3 table menu\n-- name: q :exec\nDELETE FROM tag;",
         .says = "belongs to schema.sql",
     },
     .{
@@ -459,10 +513,10 @@ test "roux-db: triggers that compile are accepted, a view's and one firing anoth
 }
 
 test "roux-db: a drop of what holds rows no more: a table now a view, a column now generated" {
-    const schema = schema_text ++
-        \\-- @drop table menu
+    const schema = released ++
+        \\-- @drop 3 table menu
         \\CREATE VIEW menu AS SELECT id, name FROM dish;
-        \\-- @drop column plate twice
+        \\-- @drop 3 column plate twice
         \\CREATE TABLE plate (id INTEGER PRIMARY KEY, n INTEGER NOT NULL,
         \\  twice INTEGER GENERATED ALWAYS AS (n * 2)) STRICT;
         \\

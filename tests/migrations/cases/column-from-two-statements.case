@@ -6,7 +6,8 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'soup');
 
 == after
--- @from column dish slug = name) FROM "roux_old_dish"; INSERT INTO dish (id, name, slug) VALUES (9, 'x', 'x'); SELECT (1
+-- @release 1
+-- @from 1 column dish slug = name) FROM "roux_old_dish"; INSERT INTO dish (id, name, slug) VALUES (9, 'x', 'x'); SELECT (1
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
 
 == plan

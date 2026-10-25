@@ -1,0 +1,20 @@
+A release that changes no table: nothing to plan, and the database still
+moves to the new release, so the next release's lines know where it is.
+An `init!` task hears it came from release 3.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+PRAGMA user_version = 3;
+
+== after
+-- @release 4
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== query
+PRAGMA user_version
+
+== plan
+migrated from release 3
+
+== rows
+4

@@ -6,8 +6,9 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'soup');
 
 == after
--- @drop column dish title
--- @from column dish name = upper(titel)
+-- @release 1
+-- @drop 1 column dish title
+-- @from 1 column dish name = upper(titel)
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == plan

@@ -7,10 +7,12 @@ CREATE INDEX menu_by_title ON menu (title);
 INSERT INTO menu VALUES (1, 'lunch');
 
 == after
+-- @release 1
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
--- @drop table menu
+-- @drop 1 table menu
 
 == plan
 roux: migrating test.db, 1 step
   table `menu`: dropped on purpose
     DROP TABLE "menu"
+migrated from release 0

@@ -12,8 +12,9 @@ DELETE FROM menu WHERE title = 'late';
 INSERT INTO course VALUES (1, 1, 'soup'), (2, 2, 'roast');
 
 == after
--- @drop table menu
--- @from table meal = menu
+-- @release 1
+-- @drop 1 table menu
+-- @from 1 table meal = menu
 CREATE TABLE meal (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL) STRICT;
 CREATE INDEX meal_by_title ON meal (title);
 CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES meal (id), name TEXT NOT NULL) STRICT;
@@ -43,6 +44,7 @@ roux: migrating test.db, 10 steps
     DROP TABLE "roux_old_course"
   index `meal_by_title`: as schema.sql makes it
     CREATE INDEX meal_by_title ON meal (title)
+migrated from release 0
 
 == rows
 1 | lunch | soup | 3

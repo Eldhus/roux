@@ -8,7 +8,8 @@ INSERT INTO menu VALUES (1, 'lunch');
 INSERT INTO course VALUES (1, 'soup');
 
 == after
--- @drop table menu
+-- @release 1
+-- @drop 1 table menu
 CREATE TABLE course (menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL, PRIMARY KEY (menu_id, name)) STRICT, WITHOUT ROWID;
 
 == plan

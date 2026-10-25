@@ -679,6 +679,8 @@ export fn hosted_sqlite_inspect(
     const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch
         return inspect_error("out of memory");
     defer gpa.free(rows);
+    const at = database_module.release_of(inspection.live.db, &report) catch
+        return inspect_error(report.message());
     const live = listings(inspection.live.db, rows, &report) catch
         return inspect_error(report.message());
     const pristine = listings(inspection.pristine, rows, &report) catch {
@@ -686,7 +688,8 @@ export fn hosted_sqlite_inspect(
         live.columns.deinit(host());
         return inspect_error(report.message());
     };
-    return .{ .tag = .Ok, .payload = .{ .ok = .{ .live = live, .pristine = pristine } } };
+    const inspected: SqliteInspected = .{ .live = live, .pristine = pristine, .at = at };
+    return .{ .tag = .Ok, .payload = .{ .ok = inspected } };
 }
 
 /// Both listings of one database, through `rows`, a buffer each reuses.
@@ -730,6 +733,7 @@ export fn hosted_sqlite_open(
     synchronous: abi.FullOrNormal,
     steps: SqliteSteps,
     copy_first: bool,
+    release: u64,
 ) callconv(.c) SqliteOpenResult {
     defer path.decref(host());
     defer schema.decref(host());
@@ -774,6 +778,8 @@ export fn hosted_sqlite_open(
             .normal => .normal,
         },
         .migration = migration,
+        // roux-db's bound: a release fits `user_version`, an i32.
+        .release = std.math.cast(u32, release) orelse return open_error("a release past 2^31"),
     };
     print_migration(where, migration);
     database = open_migrated(gpa, description, where, copy_first, &report) catch

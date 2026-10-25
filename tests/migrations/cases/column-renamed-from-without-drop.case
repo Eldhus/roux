@@ -6,8 +6,9 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'soup');
 
 == after
--- @from column dish name = title
+-- @release 1
+-- @from 1 column dish name = title
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
-column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish title` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from column dish <new> = "title"`.
+column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop 1 column dish title` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from 1 column dish <new> = "title"`.

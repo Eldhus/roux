@@ -1,33 +1,40 @@
-A database through four deploys, as a team's work reaches it:
+A database through four releases, as a team's work reaches it:
 
-1. `title` renamed `name` (a @drop and a @from).
-2. A teammate's branch, merged after: a `note` column. The rename's lines
-   are still in schema.sql and do nothing.
-3. A UNIQUE added on `name`: a rebuild, the rows copied by name.
-4. The rename's lines removed, every database having passed them.
+1. Release 2: `title` renamed `name` (a @drop and a @from).
+2. Release 3, a teammate's branch merged after: a `note` column. The
+   rename's lines, of release 2, are history to a database at 2.
+3. Release 4: a UNIQUE added on `name`: a rebuild, the rows copied by name.
+4. Release 5: the rename's lines removed, and `@oldest 3` says so.
 
-Each deploy plans only its own change; the rows survive all four.
+Each deploy plans only its own change; the rows survive all four. The
+database starts at release 1.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'soup', 95), (2, 'bread', 40);
+PRAGMA user_version = 1;
 
 == after
--- @drop column dish title
--- @from column dish name = title
+-- @release 2
+-- @drop 2 column dish title
+-- @from 2 column dish name = title
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
 
 == after
--- @drop column dish title
--- @from column dish name = title
+-- @release 3
+-- @drop 2 column dish title
+-- @from 2 column dish name = title
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, note TEXT) STRICT;
 
 == after
--- @drop column dish title
--- @from column dish name = title
+-- @release 4
+-- @drop 2 column dish title
+-- @from 2 column dish name = title
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, price_kr INTEGER NOT NULL, note TEXT) STRICT;
 
 == after
+-- @release 5
+-- @oldest 3
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, price_kr INTEGER NOT NULL, note TEXT) STRICT;
 
 == query
@@ -46,6 +53,7 @@ roux: migrating test.db, 4 steps
     ), "price_kr" FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
+migrated from release 1
 -- after 2
 roux: migrating test.db, 4 steps
   table `dish`: aside, to make it anew
@@ -56,6 +64,7 @@ roux: migrating test.db, 4 steps
     INSERT INTO "dish" ("id", "name", "price_kr") SELECT "id", "name", "price_kr" FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
+migrated from release 2
 -- after 3
 roux: migrating test.db, 4 steps
   table `dish`: aside, to make it anew
@@ -66,7 +75,9 @@ roux: migrating test.db, 4 steps
     INSERT INTO "dish" ("id", "name", "price_kr", "note") SELECT "id", "name", "price_kr", "note" FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
+migrated from release 3
 -- after 4
+migrated from release 4
 
 == rows
 1 | soup | 95 | NULL

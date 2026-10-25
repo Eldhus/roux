@@ -1,0 +1,17 @@
+A new database is made at schema.sql's release, and an `init!` task asking
+where it came from hears that release: it has no older rows.
+
+== before
+
+== after
+-- @release 4
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== query
+PRAGMA user_version
+
+== plan
+migrated from release 4
+
+== rows
+4

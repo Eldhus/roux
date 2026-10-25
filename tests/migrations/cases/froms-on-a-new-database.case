@@ -1,12 +1,18 @@
-A new database, made from schema.sql that still has a release's @drop and
-@from lines: there is nothing to drop or fill, and nothing to plan.
+A new database, made from schema.sql that still has two releases' @drop
+and @from lines: there is nothing to drop or fill, and nothing to plan.
+It is made at release 3, and an `init!` task asking where it came from
+hears release 3: it has no older rows to fix.
 
 == before
 
 == after
--- @drop column dish title
--- @from column dish name = title
--- @drop table menu
--- @from table meal = menu
+-- @release 3
+-- @drop 2 column dish title
+-- @from 2 column dish name = title
+-- @drop 3 table menu
+-- @from 3 table meal = menu
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== plan
+migrated from release 3

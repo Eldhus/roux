@@ -1,16 +1,18 @@
-A table renamed twice over two releases, `carte` to `menu` to `meal`, and
-a database (a teammate's) that missed the first: the lines are followed
-back, and it goes from `carte` to `meal` at once.
+A table renamed twice over two releases, `carte` to `menu` in 2 and to
+`meal` in 3, and a database (a teammate's) still at release 1: the lines
+are followed back, and it goes from `carte` to `meal` at once.
 
 == before
 CREATE TABLE carte (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 INSERT INTO carte VALUES (1, 'lunch');
+PRAGMA user_version = 1;
 
 == after
--- @drop table carte
--- @from table menu = carte
--- @drop table menu
--- @from table meal = menu
+-- @release 3
+-- @drop 2 table carte
+-- @from 2 table menu = carte
+-- @drop 3 table menu
+-- @from 3 table meal = menu
 CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 
 == query
@@ -26,6 +28,7 @@ roux: migrating test.db, 4 steps
     INSERT INTO "meal" ("id", "title") SELECT "id", "title" FROM "roux_old_carte"
   table `meal`: the old one
     DROP TABLE "roux_old_carte"
+migrated from release 1
 
 == rows
 1 | lunch

@@ -7,7 +7,8 @@ CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 'Pea Soup'), (2, 'Rye Bread');
 
 == after
--- @from column dish slug = lower(replace(name, ' ', '-')) -- for URLs
+-- @release 1
+-- @from 1 column dish slug = lower(replace(name, ' ', '-')) -- for URLs
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE) STRICT;
 
 == query
@@ -25,6 +26,7 @@ roux: migrating test.db, 4 steps
     ) FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
+migrated from release 0
 
 == rows
 1 | Pea Soup | pea-soup

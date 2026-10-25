@@ -33,21 +33,32 @@ import Migrate
 ## `open!` migrates: an existing database is brought to what `schema.sql`
 ## makes now, in one transaction, before any request (Migrate.roc). A
 ## table or column `schema.sql` no longer makes is refused, its rows kept,
-## unless `schema.sql` drops it on purpose: `-- @drop table meal`,
-## `-- @drop column dish note`. Before such a drop the database is copied
-## into `<path>.before-drop/` (the last four copies kept). What is new is
-## filled from what was there by `-- @from`: `-- @from column dish name =
-## title` (a rename, with `-- @drop column dish title`), `-- @from table
-## meal = menu`.
+## unless `schema.sql` drops it on purpose: `-- @drop 7 table meal`,
+## `-- @drop 7 column dish note`, 7 the release the line came in. Before
+## such a drop the database is copied into `<path>.before-drop/` (the last
+## four copies kept). What is new is filled from what was there by
+## `-- @from`: `-- @from 7 column dish name = title` (a rename, with
+## `-- @drop 7 column dish title`), `-- @from 7 table meal = menu`.
+##
+## `schema.sql` says its release (`-- @release 9`), and the database
+## keeps the one it reached: a line applies to a database at its release
+## or older, and `-- @oldest 6` refuses a database older than release 6,
+## whose lines were deleted. `migrated_from` tells `init!` where it came
+## from.
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
 	Database : {
 		path : Str,
 		schema : Str,
 		statements : List(Statement),
-		drops : List(Drop),
-		froms : List(From),
+		release : U64,
+		oldest : U64,
+		drops : List(Line(Drop)),
+		froms : List(Line(From)),
 	}
+
+	## A line of `schema.sql`, with the release it came in.
+	Line(a) : Migrate.Line(a)
 
 	## What `schema.sql` drops on purpose (`-- @drop`): a table, or a
 	## table's column, and its rows.
@@ -98,8 +109,9 @@ Sqlite := [].{
 	## Where `backup!` writes copies, and how many it keeps (1 to 256).
 	Backup : { directory : Str, keep : U32 }
 
-	## The opened database, for the app's context.
-	Db :: { opened : Bool }
+	## The opened database, for the app's context; `from`, the release it
+	## was at before `open!` (`migrated_from`).
+	Db :: { opened : Bool, from : U64 }
 
 	## Reads for one request.
 	Read :: { request : U64, writer : Bool }
@@ -114,13 +126,23 @@ Sqlite := [].{
 		listed = Host.sqlite_inspect!(database.path, database.schema) ? |message| DbErr(Failed(message))
 		live = schema_of(listed.live)
 		pristine = schema_of(listed.pristine)
-		steps = Migrate.plan(live, pristine, database.drops, database.froms) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
+		ledger = { at: listed.at, release: database.release, oldest: database.oldest }
+		steps = Migrate.plan(live, pristine, ledger, database.drops, database.froms) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
 		copy_first = Migrate.loses(live, pristine)
-		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps, copy_first) {
-			Ok({}) => Ok(Db.{ opened: Bool.True })
+		opened = Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps, copy_first, database.release)
+		match opened {
+			# A database made now has no older rows: it comes from this release.
+			Ok({}) => Ok(Db.{ opened: Bool.True, from: if (live.objects.is_empty()) database.release else listed.at })
 			Err(message) => Err(DbErr(Failed(message)))
 		}
 	}
+
+	## The release the database was at when `open!` began: for an `init!`
+	## task that fixes rows of older releases, run only for a database that
+	## came from before the release it belongs to. A database made by this
+	## `open!` came from schema.sql's release.
+	migrated_from : Db -> U64
+	migrated_from = |Db.{ from, .. }| from
 
 	## The host's listings (host/database.zig, `Listing`) as Migrate.roc's.
 	schema_of : Host.SqliteListings -> Migrate.Schema

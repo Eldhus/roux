@@ -1,0 +1,47 @@
+The old executable put back over a database a newer release migrated.
+Release 5 changed nothing: release 4's executable opens it as it is, and
+the database stays at release 5. Release 6 added a column: release 4's
+executable is refused, rather than drop it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+PRAGMA user_version = 5;
+
+== after
+-- @release 4
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== after
+-- @release 6
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+
+== after
+-- @release 4
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== query
+PRAGMA user_version
+
+== plan
+-- after 1
+migrated from release 5
+-- after 2
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+migrated from release 5
+-- after 3
+
+== rows
+6
+
+== error
+-- after 3
+the database is at release 6, newer than schema.sql's 4, and its schema differs: an older executable over a newer database opens it only as it is.

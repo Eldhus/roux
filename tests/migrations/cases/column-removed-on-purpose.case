@@ -10,12 +10,13 @@ CREATE TABLE dish (
 INSERT INTO dish VALUES (1, 'soup', 'hot');
 
 == after
+-- @release 1
 CREATE TABLE dish (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL
 ) STRICT;
 
--- @drop column dish note
+-- @drop 1 column dish note
 
 == plan
 roux: migrating test.db, 4 steps
@@ -30,3 +31,4 @@ roux: migrating test.db, 4 steps
     INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
+migrated from release 0

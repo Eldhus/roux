@@ -11,9 +11,10 @@ INSERT INTO menu VALUES (1);
 INSERT INTO course VALUES (1, 1);
 
 == after
+-- @release 1
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 CREATE TABLE course (dish_id INTEGER NOT NULL REFERENCES dish (id), menu_id INTEGER REFERENCES menu (id)) STRICT;
--- @drop table menu
+-- @drop 1 table menu
 
 == plan
 roux: migrating test.db, 1 step
