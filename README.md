@@ -23,6 +23,13 @@ roux build main.roc   # the executable, beside it
 
 x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 
+The database's schema is `db/schema.sql`, and nothing else: change it, and the app migrates its
+database when it starts, in one transaction, before it serves (each step printed). A table whose
+`CREATE` changed is rebuilt with its rows; a table or column the schema no longer has is refused
+unless the schema drops it on purpose (`-- @drop table menu`, `-- @drop column dish note`), and
+whether the rows fit a new constraint is SQLite's to say as they are copied. Forward only: there
+is no going back but by a backup (`Sqlite.backup!`).
+
 
 ## The road ahead
 
@@ -30,7 +37,7 @@ x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 - x64v1musl support
 - A developer tool under `/_dev`.
 - `shutdown!`
-- Migrations.
+- Data migrations, in Roc, beside the schema's.
 - Nested results in typed SQL: a column built by SQLite's JSON functions read as a Roc list or
   record, so a query returns a tree in one round trip.
 - Tag unions in typed SQL: a table's variants read and written as a Roc tag union.
