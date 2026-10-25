@@ -477,7 +477,13 @@ fn open_connection(
     @memset(prepared, null);
     const connection = gpa.create(Connection) catch return out_of_memory(report);
     connection.* = .{ .db = db.?, .role = role, .prepared = prepared };
-    try configure(connection, synchronous, report);
+    configure(connection, synchronous, report) catch {
+        // Which database: a directory it cannot write fails here (WAL).
+        var said: @TypeOf(report.buffer) = undefined;
+        const message = said[0..report.length];
+        @memcpy(message, report.message());
+        return report.fail(report.failure, "open {s}: {s}", .{ path, message });
+    };
     c.sqlite3_progress_handler(connection.db, progress_instructions, progress, connection);
     return connection;
 }

@@ -1,0 +1,26 @@
+A table and its own trigger both change: the trigger is dropped before the
+rebuild, and made as schema.sql says after it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, changed INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TRIGGER dish_changed AFTER UPDATE OF name ON dish BEGIN UPDATE dish SET changed = 1 WHERE id = new.id; END;
+INSERT INTO dish (id, name) VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, changed INTEGER NOT NULL DEFAULT 0, note TEXT) STRICT;
+CREATE TRIGGER dish_changed AFTER UPDATE OF name, note ON dish BEGIN UPDATE dish SET changed = 1 WHERE id = new.id; END;
+
+== plan
+roux: migrating test.db, 6 steps
+  trigger `dish_changed`: changed in schema.sql
+    DROP TRIGGER "dish_changed"
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, changed INTEGER NOT NULL DEFAULT 0, note TEXT) STRICT
+  table `dish`: its rows, by id, name, changed
+    INSERT INTO "dish" ("id", "name", "changed") SELECT "id", "name", "changed" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+  trigger `dish_changed`: as schema.sql makes it
+    CREATE TRIGGER dish_changed AFTER UPDATE OF name, note ON dish BEGIN UPDATE dish SET changed = 1 WHERE id = new.id; END

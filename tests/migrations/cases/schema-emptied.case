@@ -1,0 +1,15 @@
+Every table leaves on purpose, and schema.sql makes nothing but drops them:
+an empty database, which opens again with nothing to do.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_name ON dish (name);
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+-- @drop table dish
+
+== plan
+roux: migrating test.db, 1 step
+  table `dish`: dropped on purpose
+    DROP TABLE "dish"
