@@ -23,12 +23,31 @@ roux build main.roc   # the executable, beside it
 
 x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 
+
+### The database
+
 The database's schema is `db/schema.sql`, and nothing else: change it, and the app migrates its
-database when it starts, in one transaction, before it serves (each step printed). A table whose
-`CREATE` changed is rebuilt with its rows; a table or column the schema no longer has is refused
-unless the schema drops it on purpose (`-- @drop table menu`, `-- @drop column dish note`), and
-whether the rows fit a new constraint is SQLite's to say as they are copied. Forward only: there
-is no going back but by a backup (`Sqlite.backup!`).
+database when it starts, before it serves. There are no migration files and no command to run.
+
+- Each step is printed before it runs, in one transaction. A step that fails rolls them all back:
+  the database is as it was, and the app does not start, saying which step and why.
+- A table whose `CREATE` changed is rebuilt with its rows (an `AUTOINCREMENT` goes on from where it
+  was); whether the rows fit a new constraint is SQLite's to say as they are copied. A new
+  `NOT NULL` column needs a `DEFAULT`, and a column made `NOT NULL` needs its rows filled first.
+- A table or column the schema no longer has is refused, its rows kept, unless the schema drops it
+  on purpose: `-- @drop table menu`, `-- @drop column dish note` (a name with a space in double
+  quotes). The database is then copied into `<path>.before-drop/` first, the last four kept.
+- A rename is a drop and a new one: the rows do not follow.
+- Forward only: the way back is a copy, before a drop or by `Sqlite.backup!`.
+
+To deploy, stop the old executable and start the new one: it migrates, then serves. One process
+owns a database, so the new one refuses to start while the old one runs; if the migration is
+refused, the database is unchanged and the old executable still opens it. On a team, `schema.sql`
+merges as code does: two branches that each add a column merge into a schema with both, and
+every database migrates to it. A `-- @drop` line stays until every database has lost what it
+drops; after that it does nothing. Under `roux dev`, a branch whose schema lacks a column another
+branch added is refused on switching back: give each branch its database, `ROUX_DATABASE=dev-$(git
+branch --show-current).db roux dev main.roc`.
 
 
 ## The road ahead
