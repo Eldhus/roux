@@ -48,15 +48,23 @@ database when it starts, before it serves. There are no migration files and no c
 
   A name with a space goes in double quotes. Before a drop the database is copied into
   `<path>.before-drop/`, the last four kept.
-- Every view and trigger of the schema is checked as it builds: one that names a table or column
-  the schema no longer makes is refused there, not at the request that would run it.
+- An `@from` expression is SQL. It sees the old row's columns by their old names; a subquery
+  naming the table sees the new one, still being filled. It fills a column only when the column is
+  new to its table, so it never runs twice; filling a column the table has already is a task in
+  `init!`. A `--` comment may follow it.
+- Every view, trigger and `REFERENCES` of the schema is checked as it builds: one that names a
+  table or column the schema no longer makes is refused there, not at the request that would run
+  it.
 - Forward only: the way back is a copy, before a drop or by `Sqlite.backup!`.
 
-The database keeps the release it reached (`PRAGMA user_version`). A line applies to a database at
-its release or older, never newer, whatever its shape. When every database has passed a release,
-delete its lines and say so: `-- @oldest 8`. A database still older is refused, rather than
-migrated without the lines it needed. In `init!`, `Sqlite.migrated_from(db)` says where a database
-came from, for a task that fixes older rows.
+The database keeps the release it reached (`PRAGMA user_version`), written with the migration. A
+line applies to a database at its release or older, never newer, whatever its shape. Once every
+database has finished a release, delete its lines and say so: `-- @oldest 8`. A database still
+older is refused, rather than migrated without the lines it needed. In `init!`,
+`Sqlite.migrated_from(db)` says where a database came from, for a task that fixes older rows.
+Columns are matched by name: a name dropped and later added again meets its old values in a
+database that skipped the releases between. Splitting a table into two needs a task in `init!`:
+an `@from` fills one table from one other.
 
 To deploy, stop the old executable and start the new one: it migrates, then serves. One process
 owns a database, so the new one refuses to start while the old one runs; if the migration is
@@ -64,9 +72,11 @@ refused, the database is unchanged and the old executable still opens it.
 
 Rehearse first: `ROUX_REHEARSE=1 ./app` copies the database beside itself, migrates the copy and
 runs `init!` over it, prints what the deploy will, deletes the copy and exits (0 when it all went
-through) without serving. The database is only read. Your dev and staging databases took their
-own paths to this schema; a rehearsal on a copy of production's (`ROUX_DATABASE=prod-copy.db`,
-from `Sqlite.backup!`) runs the very plan production will, on its data.
+through) without serving. The database is only read, but read it must be: the running app holds
+it, so rehearse a copy `Sqlite.backup!` made (`ROUX_DATABASE=prod-copy.db`), or rehearse in the
+deploy itself, between stopping the old executable and starting the new. Your dev and staging
+databases took their own paths to this schema; a rehearsal of production's runs the very plan
+production will, on its data.
 
 On a team, `schema.sql` merges as code does: two branches that each add a column merge into a
 schema with both, and every database migrates to it. Under `roux dev`, a branch whose schema lacks
