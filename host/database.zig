@@ -463,8 +463,12 @@ fn open_connection(
 ) error{Failed}!*Connection {
     var db: ?*c.Db = null;
     const flags = c.open_readwrite | c.open_create | c.open_nomutex | c.open_exrescode;
-    if (c.sqlite3_open_v2(path, &db, flags, null) != c.ok) {
-        const text = if (db) |handle| std.mem.span(c.sqlite3_errmsg(handle)) else "out of memory";
+    const opened = c.sqlite3_open_v2(path, &db, flags, null);
+    if (opened != c.ok) {
+        const text = if (opened & 0xff == c.busy)
+            "another process has it open (one process owns a database: is the app " ++
+                "still running, or a sqlite3 shell?)"
+        else if (db) |handle| std.mem.span(c.sqlite3_errmsg(handle)) else "out of memory";
         _ = c.sqlite3_close_v2(db);
         return report.fail(.failed, "open {s}: {s}", .{ path, text });
     }

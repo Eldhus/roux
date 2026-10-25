@@ -224,10 +224,19 @@ fn open(
         .sync_directory = create and kind != .main,
         .shared = null,
     };
-    file.shared = if (kind == .main) share(text) catch null else lookup(base_path(text, kind));
+    var in_use = false;
+    file.shared = if (kind == .main) share(text) catch |err| shared: {
+        switch (err) {
+            error.DatabaseInUse => in_use = true,
+            else => {},
+        }
+        break :shared null;
+    } else lookup(base_path(text, kind));
     const shared = file.shared orelse {
         wait_io_close(handle);
         base.methods = null;
+        // Another process owns it: SQLite says the database is locked.
+        if (in_use) return c.busy;
         return c.cantopen; // the database opens first; its WAL and journal after
     };
     know_size(shared, file) catch {

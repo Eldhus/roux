@@ -328,6 +328,26 @@ test "database: a new file gets the schema, and opens again as it is" {
     try testing.expectEqual(Value.null, rows.cells.items[2]);
 }
 
+test "database: a file another process owns is refused, saying so" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const first = try fixture.open(schema, &statements, &report);
+    database_module.close(fixture.arena_state.allocator(), first);
+    // An open file description lock of its own, as another process's
+    // roux would hold: it conflicts with this process's own.
+    const file = try fixture.dir.dir.openFile(testing.io, "test.db", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    const Flock = extern struct { type: i16, whence: i16, start: i64, length: i64, pid: i32 };
+    var whole: Flock = .{ .type = 1, .whence = 0, .start = 0, .length = 0, .pid = 0 };
+    const ofd_set_lock = 37;
+    const locked = std.os.linux.fcntl(file.handle, ofd_set_lock, @intFromPtr(&whole));
+    try testing.expectEqual(.SUCCESS, std.os.linux.errno(locked));
+    try testing.expectError(error.Failed, fixture.open(schema, &statements, &report));
+    const said = report.message();
+    try testing.expect(std.mem.indexOf(u8, said, "another process has it open") != null);
+}
+
 test "database: a schema changed since the file was made does not open without a migration" {
     var fixture: Fixture = try .init();
     defer fixture.deinit();
