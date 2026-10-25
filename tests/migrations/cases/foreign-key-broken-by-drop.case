@@ -1,0 +1,24 @@
+A table dropped on purpose that others still refer to: every step runs,
+then the foreign key check before the commit finds the rows pointing
+nowhere, and it all rolls back.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE menu (id INTEGER PRIMARY KEY) STRICT;
+CREATE TABLE course (dish_id INTEGER NOT NULL REFERENCES dish (id), menu_id INTEGER REFERENCES menu (id)) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+INSERT INTO menu VALUES (1);
+INSERT INTO course VALUES (1, 1);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE course (dish_id INTEGER NOT NULL REFERENCES dish (id), menu_id INTEGER REFERENCES menu (id)) STRICT;
+-- @drop table menu
+
+== plan
+roux: migrating test.db, 1 step
+  table `menu`: dropped on purpose
+    DROP TABLE "menu"
+
+== error
+migrating test.db: rows that would break a foreign key: 1 (PRAGMA foreign_key_check names them)

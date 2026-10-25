@@ -1,0 +1,16 @@
+A table dropped on purpose, with its rows and its index.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE INDEX menu_by_title ON menu (title);
+INSERT INTO menu VALUES (1, 'lunch');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+-- @drop table menu
+
+== plan
+roux: migrating test.db, 1 step
+  table `menu`: dropped on purpose
+    DROP TABLE "menu"

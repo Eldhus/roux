@@ -858,8 +858,8 @@ fn migrate_in_transaction(
     const check = "SELECT count(*) FROM pragma_foreign_key_check";
     const violations = try pragma_integer(db, check, report);
     if (violations > 0) {
-        return report.fail(.failed, "migrating {s}: {d} rows would break a foreign key " ++
-            "(PRAGMA foreign_key_check names them)", .{ path, violations });
+        return report.fail(.failed, "migrating {s}: rows that would break a foreign key: " ++
+            "{d} (PRAGMA foreign_key_check names them)", .{ path, violations });
     }
     try compare_schemas(db, pristine, path, report);
     sqlite.exec(db, "COMMIT") catch

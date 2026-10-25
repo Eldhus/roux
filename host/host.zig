@@ -709,8 +709,8 @@ export fn hosted_sqlite_open(
 fn print_migration(where: []const u8, migration: []const database_module.Step) void {
     if (migration.len == 0) return;
     var banner: [256]u8 = undefined;
-    write_line(1, std.fmt.bufPrint(&banner, "roux: migrating {s}, {d} steps", .{
-        where, migration.len,
+    write_line(1, std.fmt.bufPrint(&banner, "roux: migrating {s}, {d} step{s}", .{
+        where, migration.len, if (migration.len == 1) "" else "s",
     }) catch "roux: migrating");
     for (migration) |step| {
         write_parts(1, &.{ "  ", step.why });

@@ -21,7 +21,7 @@ const authorizer = sqlite.authorizer;
 const types = sqlite.types;
 const annotation = @import("annotation.zig");
 const names = @import("names.zig");
-const Diagnostics = @import("diagnostics.zig").Diagnostics;
+pub const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 /// Query files in one database directory.
 pub const files_max = 64;

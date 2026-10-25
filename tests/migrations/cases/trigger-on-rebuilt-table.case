@@ -1,0 +1,35 @@
+A trigger on a table that is rebuilt goes with the old table, so it is
+made again, as schema.sql writes it, though it did not change. A view
+over the table stays as it is: it names the table, not the old one.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE log (dish_id INTEGER NOT NULL) STRICT;
+CREATE TRIGGER dish_logged AFTER INSERT ON dish BEGIN
+  INSERT INTO log VALUES (new.id);
+END;
+CREATE VIEW dish_names AS SELECT name FROM dish;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+CREATE TABLE log (dish_id INTEGER NOT NULL) STRICT;
+CREATE TRIGGER dish_logged AFTER INSERT ON dish BEGIN
+  INSERT INTO log VALUES (new.id);
+END;
+CREATE VIEW dish_names AS SELECT name FROM dish;
+
+== plan
+roux: migrating test.db, 5 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+  trigger `dish_logged`: as schema.sql makes it
+    CREATE TRIGGER dish_logged AFTER INSERT ON dish BEGIN
+      INSERT INTO log VALUES (new.id);
+    END

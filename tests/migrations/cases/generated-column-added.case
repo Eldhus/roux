@@ -1,0 +1,28 @@
+A generated column holds no values of its own: it is never copied, and
+the table's rows compute it once they are in.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 95);
+
+== after
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  price_kr INTEGER NOT NULL,
+  price_eur REAL GENERATED ALWAYS AS (price_kr / 11.5) VIRTUAL
+) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (
+      id INTEGER PRIMARY KEY,
+      price_kr INTEGER NOT NULL,
+      price_eur REAL GENERATED ALWAYS AS (price_kr / 11.5) VIRTUAL
+    ) STRICT
+  table `dish`: its rows, by id, price_kr
+    INSERT INTO "dish" ("id", "price_kr") SELECT "id", "price_kr" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

@@ -1,0 +1,23 @@
+A column's type narrowed, TEXT to INTEGER, in a STRICT table: a value that
+is not an integer cannot be copied. SQLite says so; nothing changes.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, '95'), (2, 'cheap');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price INTEGER NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, price INTEGER NOT NULL) STRICT
+  table `dish`: its rows, by id, price
+    INSERT INTO "dish" ("id", "price") SELECT "id", "price" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== error
+migrating test.db: table `dish`: its rows, by id, price: cannot store TEXT value in INTEGER column dish.price

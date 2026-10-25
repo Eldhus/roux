@@ -1,0 +1,19 @@
+A column schema.sql no longer makes would lose its values: refused, and
+nothing changes.
+
+== before
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  note TEXT
+) STRICT;
+INSERT INTO dish VALUES (1, 'soup', 'hot');
+
+== after
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+) STRICT;
+
+== error
+column `dish.note` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish note` in schema.sql

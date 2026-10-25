@@ -1,0 +1,31 @@
+A new NOT NULL column without a DEFAULT is fine on a table with no rows:
+whether rows fit is SQLite's to say as they are copied, not the plan's to
+guess.
+
+== before
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+) STRICT;
+
+== after
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  price_kr INTEGER NOT NULL
+) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      price_kr INTEGER NOT NULL
+    ) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

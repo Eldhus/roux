@@ -1,0 +1,31 @@
+A new column that may be NULL: the table is rebuilt from schema.sql's own
+text, its rows copied by the columns both have; the new one is NULL in each.
+
+== before
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+) STRICT;
+INSERT INTO dish VALUES (1, 'soup'), (2, 'bread');
+
+== after
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  note TEXT
+) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      note TEXT
+    ) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

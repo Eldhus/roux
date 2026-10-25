@@ -1,0 +1,21 @@
+SQLite's names ignore the case of ASCII letters: `Dish` and `dish` are one
+table. Its CREATE changed, so it is rebuilt under schema.sql's spelling,
+its rows kept.
+
+== before
+CREATE TABLE Dish (id INTEGER PRIMARY KEY, Name TEXT NOT NULL) STRICT;
+INSERT INTO Dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "Dish" RENAME TO "roux_old_Dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "Name" FROM "roux_old_Dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_Dish"

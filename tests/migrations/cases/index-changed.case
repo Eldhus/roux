@@ -1,0 +1,24 @@
+Indexes hold no rows: one that changed is dropped and made again, one
+gone is dropped, a new one made. The table is not touched.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE INDEX dish_by_name ON dish (name);
+CREATE INDEX dish_by_price ON dish (price_kr);
+INSERT INTO dish VALUES (1, 'soup', 95);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE INDEX dish_by_name ON dish (name, price_kr);
+CREATE UNIQUE INDEX dish_names ON dish (name);
+
+== plan
+roux: migrating test.db, 4 steps
+  index `dish_by_name`: changed in schema.sql
+    DROP INDEX "dish_by_name"
+  index `dish_by_price`: not in schema.sql
+    DROP INDEX "dish_by_price"
+  index `dish_by_name`: as schema.sql makes it
+    CREATE INDEX dish_by_name ON dish (name, price_kr)
+  index `dish_names`: as schema.sql makes it
+    CREATE UNIQUE INDEX dish_names ON dish (name)

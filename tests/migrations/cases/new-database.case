@@ -1,0 +1,8 @@
+A new database (nothing in it) is made from schema.sql as it is, with no
+plan.
+
+== before
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_by_name ON dish (name);

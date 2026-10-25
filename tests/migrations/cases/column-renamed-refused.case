@@ -1,0 +1,13 @@
+A column renamed is, to SQLite's listings, one column gone and another
+new: refused, since the old one's values would go. There is no rename;
+drop the old one on purpose (its values go), or keep it beside the new.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '') STRICT;
+
+== error
+column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish title` in schema.sql

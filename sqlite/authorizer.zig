@@ -69,8 +69,8 @@ pub const Verdict = struct {
     created: ?Action = null,
     created_name_buffer: [created_bytes_max]u8 = undefined,
     created_name_length: u32 = 0,
-    /// The table a migration's DROP TABLE names: SQLite then asks to
-    /// delete its rows, which is allowed of that table alone.
+    /// The table or view a migration's DROP names: SQLite then asks to
+    /// delete its rows, which is allowed of that one alone.
     dropped_name_buffer: [created_bytes_max]u8 = undefined,
     dropped_name_length: ?u32 = null,
 
@@ -162,19 +162,25 @@ fn allowed_in_query(action: Action) bool {
 }
 
 /// A migration also drops, and renames a table aside to rebuild it
-/// (SQLite rewrites `sqlite_schema` for that); the only rows it writes
-/// are the ones it copies into a table (an insert from a select), and the
-/// rows of a table it drops (SQLite asks for that delete after the drop).
+/// (SQLite rewrites `sqlite_schema` for that, and `sqlite_sequence` for a
+/// table with AUTOINCREMENT); the only rows it writes are the ones it
+/// copies into a table (an insert from a select), and the rows of a table
+/// or view it drops (SQLite asks for that delete after the drop).
 fn allowed_in_migration(verdict: *Verdict, action: Action, first: ?[*:0]const u8) bool {
     return switch (action) {
         .create_table, .create_index, .create_view, .create_trigger => true,
-        .drop_index, .drop_view, .drop_trigger, .alter_table => true,
-        .drop_table => record_dropped(verdict, first),
+        .drop_index, .drop_trigger, .alter_table => true,
+        .drop_table, .drop_view => record_dropped(verdict, first),
         .read, .select, .insert, .function, .recursive, .reindex => true,
-        .update => is_schema_table(first),
-        .delete => is_schema_table(first) or is_dropped(verdict, first),
+        .update => is_schema_table(first) or is_named(first, "sqlite_sequence"),
+        .delete => is_schema_table(first) or is_named(first, "sqlite_sequence") or
+            is_dropped(verdict, first),
         else => false,
     };
+}
+
+fn is_named(name: ?[*:0]const u8, wanted: []const u8) bool {
+    return std.mem.eql(u8, std.mem.span(name orelse return false), wanted);
 }
 
 /// False for a name too long to keep: its delete is then refused.
