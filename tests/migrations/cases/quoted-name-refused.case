@@ -1,0 +1,13 @@
+A table whose name has spaces would go: the refusal writes the `-- @drop`
+line with the name quoted, ready to paste.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO "dish of the day" VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== error
+table `dish of the day` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop table "dish of the day"` in schema.sql. (A rename is a drop and a new one: the rows do not follow.)

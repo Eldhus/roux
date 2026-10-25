@@ -249,9 +249,9 @@ fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []con
     var drops: std.Io.Writer.Allocating = .init(arena);
     for (compiled.drops) |drop| {
         if (drop.column) |column| {
-            try drops.writer.print("column {s} {s}\n", .{ drop.table, column });
+            try drops.writer.print("column\t{s}\t{s}\n", .{ drop.table, column });
         } else {
-            try drops.writer.print("table {s}\n", .{drop.table});
+            try drops.writer.print("table\t{s}\n", .{drop.table});
         }
     }
     var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});

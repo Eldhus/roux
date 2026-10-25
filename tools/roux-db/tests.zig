@@ -202,6 +202,16 @@ const refusals = [_]Refusal{
         .says = "write `-- @drop table name`",
     },
     .{
+        .case = "a view of a column the schema no longer makes",
+        .schema = schema_text ++ "CREATE VIEW photos AS SELECT photo FROM dish;\n",
+        .says = "view photos: no such column: photo",
+    },
+    .{
+        .case = "a drop's quoted name not closed",
+        .schema = schema_text ++ "-- @drop table \"dish of the day\n",
+        .says = "write `-- @drop table name`",
+    },
+    .{
         .case = "a drop in a query file",
         .query = "-- @drop table menu\n-- name: q :exec\nDELETE FROM tag;",
         .says = "belongs to schema.sql",

@@ -7,7 +7,8 @@ import pf.Stderr
 
 ## The migration cases' app (runner.zig runs it in each case's directory):
 ## opens `test.db` with `schema.sql` and the drops roux-db read from it
-## (`drops`: `table menu`, `column dish note`, a line each), so the
+## (`drops`: `table<tab>menu`, `column<tab>dish<tab>note`, a line each:
+## a name may hold a space), so the
 ## platform migrates it, then exits: 0 when it opened, 1 with the reason
 ## on stderr. It never serves.
 
@@ -32,7 +33,7 @@ init! = || {
 
 drop_of : Str -> Try(Sqlite.Drop, [Blank])
 drop_of = |line|
-	match line.split_on(" ") {
+	match line.split_on("\t") {
 		["table", table] => Ok(Table(table))
 		["column", table, column] => Ok(Column(table, column))
 		_ => Err(Blank)

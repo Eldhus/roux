@@ -19,6 +19,7 @@
 //!
 //!   -- @drop table meal
 //!   -- @drop column dish note
+//!   -- @drop table "dish of the day"   (a name with a space, quoted)
 //!
 //! Any other comment is prose. A `--` comment beginning with `@` that is
 //! not one of these is an error, so a misspelt annotation is never prose.
@@ -154,14 +155,17 @@ fn parse_line(line: []const u8, offset: u32, sink: Sink) void {
     if (words[0][0] != '@') return; // prose
     if (std.mem.eql(u8, words[0], "@param")) return parse_field(words, offset, sink, .param);
     if (std.mem.eql(u8, words[0], "@column")) return parse_field(words, offset, sink, .column);
-    if (std.mem.eql(u8, words[0], "@drop")) return parse_drop(words, offset, sink);
+    if (std.mem.eql(u8, words[0], "@drop")) return parse_drop(line, offset, sink);
     sink.diagnostics.add(sink.file, offset, "unknown annotation {s}: roux-db knows " ++
         "`-- name:`, `-- @param`, `-- @column` and `-- @drop`", .{words[0]});
 }
 
-/// A name as SQLite keeps it, one word: what a drop names is compared with
-/// the database's own names, never parsed as SQL.
-fn parse_drop(words: []const []const u8, offset: u32, sink: Sink) void {
+/// A name as SQLite keeps it: one word, or in double quotes when it has a
+/// space (`"dish of the day"`). What a drop names is compared with the
+/// database's own names, never parsed as SQL.
+fn parse_drop(line: []const u8, offset: u32, sink: Sink) void {
+    var words_buffer: [5][]const u8 = undefined;
+    const words = drop_words(line, &words_buffer) orelse &.{};
     const table_form = words.len == 3 and std.mem.eql(u8, words[1], "table");
     const column_form = words.len == 4 and std.mem.eql(u8, words[1], "column");
     if (!table_form and !column_form) {
@@ -180,6 +184,46 @@ fn parse_drop(words: []const []const u8, offset: u32, sink: Sink) void {
         .offset = offset,
     };
     annotations.drops_count += 1;
+}
+
+/// The words of a `@drop` line, a quoted one without its quotes; null for
+/// more words than `buffer` holds, a quote not closed, or a quote inside
+/// one (a name with `"` in it is not dropped by name).
+fn drop_words(line: []const u8, buffer: [][]const u8) ?[]const []const u8 {
+    var count: usize = 0;
+    var at: usize = 0;
+    for (0..line.len + 1) |_| {
+        while (at < line.len and (line[at] == ' ' or line[at] == '\t' or line[at] == '\r')) at += 1;
+        if (at == line.len) return buffer[0..count];
+        if (count == buffer.len) return null;
+        const start = at;
+        if (line[at] == '"') {
+            const close = std.mem.indexOfScalarPos(u8, line, at + 1, '"') orelse return null;
+            const after = close + 1;
+            if (after < line.len and line[after] != ' ' and line[after] != '\t' and
+                line[after] != '\r') return null;
+            buffer[count] = line[start + 1 .. close];
+            at = after;
+        } else {
+            while (at < line.len and line[at] != ' ' and line[at] != '\t' and line[at] != '\r') {
+                if (line[at] == '"') return null;
+                at += 1;
+            }
+            buffer[count] = line[start..at];
+        }
+        if (buffer[count].len == 0) return null;
+        count += 1;
+    } else unreachable;
+}
+
+test drop_words {
+    var buffer: [5][]const u8 = undefined;
+    const words = drop_words(" @drop table \"dish of the day\"", &buffer).?;
+    try std.testing.expectEqual(3, words.len);
+    try std.testing.expectEqualStrings("dish of the day", words[2]);
+    try std.testing.expect(drop_words("@drop table \"open", &buffer) == null);
+    try std.testing.expect(drop_words("@drop table \"say \"\"hi\"\"\"", &buffer) == null);
+    try std.testing.expect(drop_words("@drop table \"\"", &buffer) == null);
 }
 
 fn parse_name(words: []const []const u8, offset: u32, sink: Sink) void {

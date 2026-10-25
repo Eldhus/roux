@@ -75,7 +75,11 @@ const Compiler = struct {
     verdict: authorizer.Verdict,
     statements: std.ArrayList(Statement),
     drops: std.ArrayList(annotation.Drop),
+    views: std.ArrayList(View),
 };
+
+/// A view of schema.sql, and where its CREATE begins.
+const View = struct { name: []const u8, offset: u32 };
 
 /// Compiles `queries` against `schema`; what is wrong goes to
 /// `diagnostics`, and the result means something only when it is ok.
@@ -96,9 +100,11 @@ pub fn compile(
         .verdict = .{ .policy = .schema },
         .statements = try .initCapacity(arena, statements_max),
         .drops = try .initCapacity(arena, drops_max),
+        .views = try .initCapacity(arena, file_statements_max),
     };
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
+    try check_views(&compiler);
     check_drops(&compiler);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
@@ -261,11 +267,48 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
         compiler.diagnostics.add(0, start, "{s}", .{c.sqlite3_errmsg(compiler.db)});
         return;
     }
+    if (verdict.created.? == .create_view) {
+        // Kept whole: the name was not cut at the verdict's bound.
+        const name = verdict.created_name();
+        if (name.len < authorizer.Verdict.created_bytes_max) {
+            const kept = compiler.arena.dupe(u8, name) catch
+                return compiler.diagnostics.add(0, start, "out of memory", .{});
+            compiler.views.appendAssumeCapacity(.{ .name = kept, .offset = start });
+        }
+        return;
+    }
     if (verdict.created.? != .create_table) return;
     const table = verdict.created_name();
     if (!is_strict(compiler.db, table)) {
         compiler.diagnostics.add(0, start, "table {s} is not STRICT: roux types a column by " ++
             "its declared type, which only a STRICT table enforces", .{table});
+    }
+}
+
+/// Each view read once schema.sql is whole: SQLite makes a view that names
+/// a table or column not there (one `-- @drop`ped, say), and fails only
+/// where it is read, at a request. (A trigger's body likewise, at the
+/// write that fires it; SQLite has no way to check one short of that.)
+fn check_views(compiler: *Compiler) !void {
+    for (compiler.views.items) |view| {
+        const quoted = try std.mem.replaceOwned(u8, compiler.arena, view.name, "\"", "\"\"");
+        const sql = try std.fmt.allocPrint(compiler.arena, "SELECT * FROM \"{s}\"", .{quoted});
+        authorizer.uninstall(compiler.db);
+        var statement: ?*c.Stmt = null;
+        const result = c.sqlite3_prepare_v3(
+            compiler.db,
+            sql.ptr,
+            @intCast(sql.len),
+            0,
+            &statement,
+            null,
+        );
+        defer _ = c.sqlite3_finalize(statement);
+        if (result != c.ok) {
+            compiler.diagnostics.add(0, view.offset, "view {s}: {s}", .{
+                view.name, c.sqlite3_errmsg(compiler.db),
+            });
+        }
     }
 }
 

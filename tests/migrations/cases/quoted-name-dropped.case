@@ -1,0 +1,16 @@
+A table whose name has spaces goes on purpose: `-- @drop` takes the name in
+double quotes, as the refusal wrote it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO "dish of the day" VALUES (1, 'soup');
+
+== after
+-- @drop table "dish of the day"
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 1 step
+  table `dish of the day`: dropped on purpose
+    DROP TABLE "dish of the day"
