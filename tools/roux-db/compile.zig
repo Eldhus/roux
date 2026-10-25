@@ -268,13 +268,17 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
         return;
     }
     if (verdict.created.? == .create_view) {
-        // Kept whole: the name was not cut at the verdict's bound.
+        // A name at the verdict's bound may have been cut: never read.
         const name = verdict.created_name();
-        if (name.len < authorizer.Verdict.created_bytes_max) {
-            const kept = compiler.arena.dupe(u8, name) catch
-                return compiler.diagnostics.add(0, start, "out of memory", .{});
-            compiler.views.appendAssumeCapacity(.{ .name = kept, .offset = start });
+        if (name.len >= authorizer.Verdict.created_bytes_max) {
+            const bound = authorizer.Verdict.created_bytes_max;
+            return compiler.diagnostics.add(0, start, "a view's name of {d} bytes or more", .{
+                bound,
+            });
         }
+        const kept = compiler.arena.dupe(u8, name) catch
+            return compiler.diagnostics.add(0, start, "out of memory", .{});
+        compiler.views.appendAssumeCapacity(.{ .name = kept, .offset = start });
         return;
     }
     if (verdict.created.? != .create_table) return;

@@ -170,7 +170,7 @@ fn parse_drop(line: []const u8, offset: u32, sink: Sink) void {
     const column_form = words.len == 4 and std.mem.eql(u8, words[1], "column");
     if (!table_form and !column_form) {
         sink.diagnostics.add(sink.file, offset, "write `-- @drop table name` or " ++
-            "`-- @drop column table name`", .{});
+            "`-- @drop column table name` (a name with a space in double quotes)", .{});
         return;
     }
     const annotations = sink.annotations;
@@ -205,6 +205,8 @@ fn drop_words(line: []const u8, buffer: [][]const u8) ?[]const []const u8 {
             buffer[count] = line[start + 1 .. close];
             at = after;
         } else {
+            // In single quotes it would be a string to SQL, never a name.
+            if (line[at] == '\'') return null;
             while (at < line.len and line[at] != ' ' and line[at] != '\t' and line[at] != '\r') {
                 if (line[at] == '"') return null;
                 at += 1;
@@ -224,6 +226,7 @@ test drop_words {
     try std.testing.expect(drop_words("@drop table \"open", &buffer) == null);
     try std.testing.expect(drop_words("@drop table \"say \"\"hi\"\"\"", &buffer) == null);
     try std.testing.expect(drop_words("@drop table \"\"", &buffer) == null);
+    try std.testing.expect(drop_words("@drop table 'menu'", &buffer) == null);
 }
 
 fn parse_name(words: []const []const u8, offset: u32, sink: Sink) void {

@@ -948,9 +948,14 @@ fn check_foreign_keys(db: *c.Db, path: []const u8, report: *Report) error{Failed
     var w: std.Io.Writer = .fixed(&buffer);
     for (0..3) |_| {
         if (c.sqlite3_step(rows) != c.row) break;
-        w.print("; {s} row {d} names no {s}", .{
-            column_text(rows, 0), c.sqlite3_column_int64(rows, 1), column_text(rows, 2),
-        }) catch break;
+        // A WITHOUT ROWID table's row has no rowid to name.
+        const said = if (c.sqlite3_column_type(rows, 1) == c.null_type)
+            w.print("; a row of {s} names no {s}", .{ column_text(rows, 0), column_text(rows, 2) })
+        else
+            w.print("; {s} row {d} names no {s}", .{
+                column_text(rows, 0), c.sqlite3_column_int64(rows, 1), column_text(rows, 2),
+            });
+        said catch break;
     }
     return report.fail(.failed, "migrating {s}: rows that would break a foreign key: {d}{s}", .{
         path, violations, w.buffered(),

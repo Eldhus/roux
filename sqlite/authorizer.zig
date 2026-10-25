@@ -173,9 +173,9 @@ fn allowed_in_migration(verdict: *Verdict, action: Action, first: ?[*:0]const u8
         .drop_index, .drop_trigger, .alter_table => true,
         .drop_table, .drop_view => record_dropped(verdict, first),
         .read, .select, .insert, .function, .recursive, .reindex => true,
-        .update => is_schema_table(first) or is_sqlite_own(first),
-        .delete => is_schema_table(first) or is_sqlite_own(first) or
-            is_dropped(verdict, first),
+        // `sqlite_schema` and its other names are SQLite's own too.
+        .update => is_sqlite_own(first),
+        .delete => is_sqlite_own(first) or is_dropped(verdict, first),
         else => false,
     };
 }

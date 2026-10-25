@@ -212,6 +212,11 @@ const refusals = [_]Refusal{
         .says = "write `-- @drop table name`",
     },
     .{
+        .case = "a drop's name in single quotes (a string to SQL)",
+        .schema = schema_text ++ "-- @drop table 'menu'\n",
+        .says = "in double quotes",
+    },
+    .{
         .case = "a drop in a query file",
         .query = "-- @drop table menu\n-- name: q :exec\nDELETE FROM tag;",
         .says = "belongs to schema.sql",
