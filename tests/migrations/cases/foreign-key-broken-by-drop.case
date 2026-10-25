@@ -21,4 +21,4 @@ roux: migrating test.db, 1 step
     DROP TABLE "menu"
 
 == error
-migrating test.db: rows that would break a foreign key: 1 (PRAGMA foreign_key_check names them)
+migrating test.db: rows that would break a foreign key: 1; course row 1 names no menu

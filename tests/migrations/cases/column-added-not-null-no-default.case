@@ -32,4 +32,4 @@ roux: migrating test.db, 4 steps
     DROP TABLE "roux_old_dish"
 
 == error
-migrating test.db: table `dish`: its rows, by id, name: NOT NULL constraint failed: dish.price_kr
+migrating test.db: table `dish`: its rows, by id, name: NOT NULL constraint failed: dish.price_kr (a NOT NULL column needs a value in every row: a column new to the table takes its DEFAULT, a copied one keeps its NULLs)

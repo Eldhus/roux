@@ -901,20 +901,44 @@ fn migrate_in_transaction(
                     path, step.why, authorizer.describe(action),
                 });
             }
-            return report.fail(.failed, "migrating {s}: {s}: {s}", .{
-                path, step.why, c.sqlite3_errmsg(db),
+            // A copied NULL is copied as NULL: the column's DEFAULT is for
+            // a row that names no value. Extended codes: the connection was
+            // opened with them.
+            const hint = if (c.sqlite3_errcode(db) == c.constraint_notnull)
+                " (a NOT NULL column needs a value in every row: a column new " ++
+                    "to the table takes its DEFAULT, a copied one keeps its NULLs)"
+            else
+                "";
+            return report.fail(.failed, "migrating {s}: {s}: {s}{s}", .{
+                path, step.why, c.sqlite3_errmsg(db), hint,
             });
         };
     }
-    const check = "SELECT count(*) FROM pragma_foreign_key_check";
-    const violations = try pragma_integer(db, check, report);
-    if (violations > 0) {
-        return report.fail(.failed, "migrating {s}: rows that would break a foreign key: " ++
-            "{d} (PRAGMA foreign_key_check names them)", .{ path, violations });
-    }
+    try check_foreign_keys(db, path, report);
     try compare_schemas(db, pristine, path, report);
     sqlite.exec(db, "COMMIT") catch
         return report.fail(.failed, "COMMIT: {s}", .{c.sqlite3_errmsg(db)});
+}
+
+/// Fails naming the first rows whose foreign key points nowhere, if any.
+fn check_foreign_keys(db: *c.Db, path: []const u8, report: *Report) error{Failed}!void {
+    const count = "SELECT count(*) FROM pragma_foreign_key_check";
+    const violations = try pragma_integer(db, count, report);
+    if (violations == 0) return;
+    const named = "SELECT \"table\", rowid, parent FROM pragma_foreign_key_check LIMIT 3";
+    const rows = try prepare_own(db, named, report);
+    defer _ = c.sqlite3_finalize(rows);
+    var buffer: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buffer);
+    for (0..3) |_| {
+        if (c.sqlite3_step(rows) != c.row) break;
+        w.print("; {s} row {d} names no {s}", .{
+            column_text(rows, 0), c.sqlite3_column_int64(rows, 1), column_text(rows, 2),
+        }) catch break;
+    }
+    return report.fail(.failed, "migrating {s}: rows that would break a foreign key: {d}{s}", .{
+        path, violations, w.buffered(),
+    });
 }
 
 /// Outside a transaction only: inside one SQLite ignores the PRAGMA, and a

@@ -1,0 +1,24 @@
+A column becomes NOT NULL with a DEFAULT, over rows that hold NULL there.
+The copy names the column, so its NULL is copied and the DEFAULT never
+applies: refused, and the error says why and what to do.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+INSERT INTO dish VALUES (1, 'soup', NULL), (2, 'bread', 'warm');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT NOT NULL DEFAULT '') STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT NOT NULL DEFAULT '') STRICT
+  table `dish`: its rows, by id, name, note
+    INSERT INTO "dish" ("id", "name", "note") SELECT "id", "name", "note" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== error
+migrating test.db: table `dish`: its rows, by id, name, note: NOT NULL constraint failed: dish.note (a NOT NULL column needs a value in every row: a column new to the table takes its DEFAULT, a copied one keeps its NULLs)

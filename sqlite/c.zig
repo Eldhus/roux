@@ -111,6 +111,7 @@ pub extern fn sqlite3_table_column_metadata(
 
 pub const interrupt = 9;
 pub const constraint = 19;
+pub const constraint_notnull = constraint | (5 << 8);
 
 pub const open_nomutex = 0x00008000;
 /// For `prepare_v3`: kept for the connection's life.
