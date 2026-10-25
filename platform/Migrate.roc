@@ -136,6 +136,19 @@ Migrate := [].{
 		twice = moves
 			.keep_if(|move| moves.count_if(|other| same_name(other.old, move.old)) > 1)
 			.map(|move| "table `${move.table.name}` is one of two made `@from table` `${move.old}`")
+		# A table the database has already is not made from another: the old
+		# one would be dropped, nothing filled.
+		there = froms.keep_oks(
+			|line|
+				match line {
+					Table(table, old) =>
+						if (has_table(live, table) and has_table(live, old) and !has_table(pristine, old))
+							Ok("table `${table}` is in the database already: it is not made `@from table` `${old}`, and `${old}`'s rows would go")
+						else
+							Err(NotFound)
+					Column(_, _, _) => Err(NotFound)
+				},
+		)
 		columns = rebuilt_tables(live, pristine).join_map(
 			|table| {
 				dropped = |column| drops.any(|drop| drops_column(drop, table.name, column.name))
@@ -163,7 +176,7 @@ Migrate := [].{
 		aside = pristine.objects.concat(live.objects)
 			.keep_if(|object| folded(object.name).starts_with(aside_prefix))
 			.map(|object| "`${object.name}`: names starting `${aside_prefix}` are roux's, for rebuilding")
-		tables.concat(columns).concat(kept).concat(aside).concat(twice)
+		tables.concat(columns).concat(kept).concat(aside).concat(twice).concat(there)
 	}
 
 	## Why a table or column would be lost, and the lines that lose it, or

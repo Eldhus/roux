@@ -614,12 +614,25 @@ const Rehearsal = struct {
             var source: ?*sqlite.c.Db = null;
             const flags = sqlite.c.open_readonly | sqlite.c.open_exrescode;
             defer _ = sqlite.c.sqlite3_close_v2(source);
-            if (sqlite.c.sqlite3_open_v2(where_z, &source, flags, null) != sqlite.c.ok) {
+            const opened = sqlite.c.sqlite3_open_v2(where_z, &source, flags, null);
+            if (opened & 0xff == sqlite.c.busy) {
+                return report.fail(.failed, "rehearsing {s}: another process has it open " ++
+                    "(one process owns a database): stop the app first, or rehearse a copy " ++
+                    "Sqlite.backup! made", .{where});
+            }
+            if (opened != sqlite.c.ok) {
                 return report.fail(.failed, "rehearsing {s}: {s}", .{
                     where, sqlite.c.sqlite3_errmsg(source),
                 });
             }
-            try backup_module.copy(source.?, copy_path, report);
+            backup_module.copy(source.?, copy_path, report) catch {
+                var said: @TypeOf(report.buffer) = undefined;
+                const message = said[0..report.length];
+                @memcpy(message, report.message());
+                return report.fail(.failed, "rehearsing {s}: making its copy {s}: {s}", .{
+                    where, copy_path, message,
+                });
+            };
         } else |err| switch (err) {
             error.FileNotFound => {},
             else => return report.fail(.failed, "rehearsing {s}: {t}", .{ where, err }),
@@ -627,15 +640,19 @@ const Rehearsal = struct {
         return made;
     }
 
-    /// The copy and the files SQLite keeps beside it.
+    /// The copy, the files SQLite keeps beside it, and the copy of it a
+    /// drop made (`BeforeDrop`, rehearsed too).
     fn delete(rehearsal: *const Rehearsal) void {
         const io = init_io orelse std.Io.Threaded.global_single_threaded.io();
         const base = rehearsal.path();
         for ([_][]const u8{ "", "-wal", "-shm", "-journal" }) |side| {
-            var buffer: [path_bytes_max + 8]u8 = undefined;
+            var buffer: [path_bytes_max + 16]u8 = undefined;
             const name = std.fmt.bufPrint(&buffer, "{s}{s}", .{ base, side }) catch unreachable;
             std.Io.Dir.cwd().deleteFile(io, name) catch {};
         }
+        var buffer: [path_bytes_max + 16]u8 = undefined;
+        const copies = std.fmt.bufPrint(&buffer, "{s}.before-drop", .{base}) catch unreachable;
+        std.Io.Dir.cwd().deleteTree(io, copies) catch {};
     }
 };
 
@@ -795,8 +812,9 @@ export fn hosted_sqlite_open(
 }
 
 /// The database opened, migrated; copied first when the migration drops
-/// rows on purpose, the copy kept only if it commits. A rehearsal's copy is
-/// itself thrown away: nothing to keep before it.
+/// rows on purpose, the copy kept only if it commits. A rehearsal copies
+/// its own copy, beside it, so a copy that cannot be made (a full disk, a
+/// directory not writable) is foretold; that copy goes with it.
 fn open_migrated(
     gpa: std.mem.Allocator,
     description: database_module.Description,
@@ -805,15 +823,18 @@ fn open_migrated(
     report: *database_module.Report,
 ) error{Failed}!*database_module.Database {
     var copy: ?BeforeDrop = null;
-    if (copy_first and !rehearsing()) {
+    if (copy_first) {
         assert(description.migration.len > 0);
-        copy = try BeforeDrop.make(gpa, where, report);
+        if (rehearsing()) try BeforeDrop.check(where, report);
+        copy = try BeforeDrop.make(gpa, description.path, report);
     }
     const opened = database_module.open(gpa, description, .{}, report) catch |err| {
         if (copy) |*made| made.discard();
         return err;
     };
-    if (copy) |*made| made.keep(where);
+    if (copy) |*made| {
+        if (rehearsing()) made.discard() else made.keep(where);
+    }
     return opened;
 }
 
@@ -830,6 +851,22 @@ const BeforeDrop = struct {
 
     /// Copies kept.
     const kept = 4;
+
+    /// For a rehearsal: `<where>.before-drop` is a directory, or nothing
+    /// yet, as the deploy will need it. Only looked at.
+    fn check(where: []const u8, report: *database_module.Report) error{Failed}!void {
+        const io = init_io.?;
+        var buffer: [512]u8 = undefined;
+        const directory = std.fmt.bufPrint(&buffer, "{s}.before-drop", .{where}) catch
+            return report.fail(.failed, "copying {s} before the drop: a path too long", .{where});
+        var dir = std.Io.Dir.cwd().openDir(io, directory, .{}) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return report.fail(.failed, "copying {s} before the drop: {s}: {t}", .{
+                where, directory, err,
+            }),
+        };
+        dir.close(io);
+    }
 
     fn make(
         gpa: std.mem.Allocator,

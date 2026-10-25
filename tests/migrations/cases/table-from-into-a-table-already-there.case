@@ -1,0 +1,17 @@
+A table @from another, but the database has the new one already (made by
+hand, or by a branch): the old table would be dropped and nothing filled.
+Refused.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO menu VALUES (1, 'lunch');
+
+== after
+-- @release 1
+-- @drop 1 table menu
+-- @from 1 table meal = menu
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== error
+table `meal` is in the database already: it is not made `@from table` `menu`, and `menu`'s rows would go
