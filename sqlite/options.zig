@@ -11,7 +11,7 @@ const assert = @import("std").debug.assert;
 
 /// The vendored release (vendor/sqlite/README.md); a test asserts it is
 /// the one linked.
-pub const version = "3.53.4";
+pub const version = "3.54.1";
 
 pub const Option = struct {
     /// Defined as `-D<define>`.

@@ -147,6 +147,9 @@ pub const limit_like_pattern_length = 8;
 pub const limit_variable_number = 9;
 pub const limit_trigger_depth = 10;
 pub const limit_worker_threads = 11;
+pub const limit_parser_depth = 12;
+pub const limit_schema = 13;
+pub const limit_trigger_steps = 14;
 
 /// `(db, op, int value, int *readback)` for the boolean options below.
 pub extern fn sqlite3_db_config(db: *Db, op: c_int, ...) c_int;

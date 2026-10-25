@@ -478,7 +478,9 @@ const options = [_]Option{
 
 const Limit = struct { id: c_int, value: c_int };
 
-/// Every `sqlite3_limit`, explicit: none left to SQLite's default.
+/// Every `sqlite3_limit`, explicit: none left to SQLite's default. In id
+/// order, from 0; `configure` fails if SQLite has one past the last, so a
+/// new release's new limit is set here before it runs.
 const sqlite_limits = [_]Limit{
     .{ .id = c.limit_length, .value = value_bytes_max },
     .{ .id = c.limit_sql_length, .value = 1024 * 1024 },
@@ -492,7 +494,14 @@ const sqlite_limits = [_]Limit{
     .{ .id = c.limit_variable_number, .value = 64 },
     .{ .id = c.limit_trigger_depth, .value = 32 },
     .{ .id = c.limit_worker_threads, .value = 0 },
+    .{ .id = c.limit_parser_depth, .value = 2500 },
+    .{ .id = c.limit_schema, .value = 10_000 },
+    .{ .id = c.limit_trigger_steps, .value = 64 },
 };
+
+comptime {
+    for (sqlite_limits, 0..) |limit, index| assert(limit.id == index);
+}
 
 fn configure(
     connection: *Connection,
@@ -519,6 +528,12 @@ fn configure(
                 limit.value,
             });
         }
+    }
+    const unset = c.sqlite3_limit(db, sqlite_limits.len, -1);
+    if (unset != -1) {
+        return report.fail(.failed, "sqlite3_limit {d}: a limit roux does not set", .{
+            sqlite_limits.len,
+        });
     }
     try configure_pragmas(connection, synchronous, report);
 }
