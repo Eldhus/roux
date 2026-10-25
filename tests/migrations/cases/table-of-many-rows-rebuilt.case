@@ -1,0 +1,31 @@
+A table of 20,000 rows, rebuilt with an index: one copy and one index
+build, whatever the size. (Measured apart: about 0.75 s a million rows.
+The rows stay few here because the checks compare every one.)
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20000)
+INSERT INTO dish SELECT i, 'dish ' || i FROM n;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+CREATE INDEX dish_by_name ON dish (name);
+
+== plan
+roux: migrating test.db, 5 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+  index `dish_by_name`: as schema.sql makes it
+    CREATE INDEX dish_by_name ON dish (name)
+
+== query
+SELECT count(*), min(id), max(id) FROM dish
+
+== rows
+20000 | 1 | 20000

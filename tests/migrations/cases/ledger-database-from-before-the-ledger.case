@@ -1,0 +1,15 @@
+A database from before the ledger (its release 0) meets a build whose
+oldest release is 2: refused with what to do, since the lines it may need
+were deleted. One from before the ledger is the oldest there is.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+-- @release 3
+-- @oldest 2
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== error
+the database is at release 0, before `-- @oldest 2`: the @drop and @from lines it needs were deleted. Open it first with an executable of a release that still had them, or put them back.

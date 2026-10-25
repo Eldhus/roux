@@ -1,0 +1,37 @@
+Rows as real apps hold them, through a rebuild: NULL and the empty string
+apart, text in other scripts, emoji, a quote and a newline inside a value,
+a long value, the largest integer, a real, and duplicates in a column that
+allows them. Every value comes out as it went in.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, price INTEGER, weight REAL) STRICT;
+INSERT INTO dish VALUES (1, 'Smörgåsbord', NULL, 9223372036854775807, 0.1);
+INSERT INTO dish VALUES (2, '', '', 0, -0.0);
+INSERT INTO dish VALUES (3, '拉麵 🍜', 'it''s "hot"' || char(10) || 'mind the bowl', -1, 1e308);
+INSERT INTO dish VALUES (4, 'soup', printf('%.1000c', 'x'), NULL, NULL);
+INSERT INTO dish VALUES (5, 'soup', NULL, NULL, NULL);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, price INTEGER, weight REAL, served TEXT) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT, price INTEGER, weight REAL, served TEXT) STRICT
+  table `dish`: its rows, by id, name, note, price, weight
+    INSERT INTO "dish" ("id", "name", "note", "price", "weight") SELECT "id", "name", "note", "price", "weight" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== query
+SELECT id, quote(name), quote(substr(note, 1, 40)), length(note), price, weight FROM dish ORDER BY id
+
+== rows
+1 | 'Smörgåsbord' | NULL | NULL | 9223372036854775807 | 0.1
+2 | '' | '' | 0 | 0 | 0.0
+3 | '拉麵 🍜' | 'it''s "hot"
+mind the bowl' | 24 | -1 | 1.0e+308
+4 | 'soup' | 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' | 1000 | NULL | NULL
+5 | 'soup' | NULL | NULL | NULL | NULL

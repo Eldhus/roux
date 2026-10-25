@@ -1,0 +1,18 @@
+An index renamed, its definition the same: the old one dropped, the new
+one made. The table is not touched.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_name ON dish (name);
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_by_name ON dish (name);
+
+== plan
+roux: migrating test.db, 2 steps
+  index `dish_name`: not in schema.sql
+    DROP INDEX "dish_name"
+  index `dish_by_name`: as schema.sql makes it
+    CREATE INDEX dish_by_name ON dish (name)

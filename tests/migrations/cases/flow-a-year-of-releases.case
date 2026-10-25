@@ -1,0 +1,138 @@
+A database that follows every release of a year, one deploy each:
+
+2. a `note` column;
+3. `title` renamed `name`;
+4. prices from kronor to öre;
+5. `menu` renamed `meal`, `course` refers to it anew;
+6. an index on `name`, and release 3's lines deleted (`@oldest 3`).
+
+flow-a-year-skipped-releases takes the same database to release 6 in one
+deploy, and must end with the same rows.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT;
+INSERT INTO menu VALUES (1, 'lunch'), (2, 'dinner');
+INSERT INTO dish VALUES (1, 'soup', 95), (2, 'bread', 40), (3, 'roast', 240);
+INSERT INTO course VALUES (1, 1, 1), (2, 1, 2), (3, 2, 3);
+PRAGMA user_version = 1;
+
+== after
+-- @release 2
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL, price_kr INTEGER NOT NULL, note TEXT) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT;
+
+== after
+-- @release 3
+-- @drop 3 column dish title
+-- @from 3 column dish name = title
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, note TEXT) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT;
+
+== after
+-- @release 4
+-- @drop 3 column dish title
+-- @from 3 column dish name = title
+-- @drop 4 column dish price_kr
+-- @from 4 column dish price_ore = price_kr * 100
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT;
+
+== after
+-- @release 5
+-- @drop 3 column dish title
+-- @from 3 column dish name = title
+-- @drop 4 column dish price_kr
+-- @from 4 column dish price_ore = price_kr * 100
+-- @drop 5 table menu
+-- @from 5 table meal = menu
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES meal (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT;
+
+== after
+-- @release 6
+-- @oldest 3
+-- @drop 4 column dish price_kr
+-- @from 4 column dish price_ore = price_kr * 100
+-- @drop 5 table menu
+-- @from 5 table meal = menu
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT;
+CREATE INDEX dish_by_name ON dish (name);
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES meal (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT;
+
+== plan
+-- after 1
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL, price_kr INTEGER NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, title, price_kr
+    INSERT INTO "dish" ("id", "title", "price_kr") SELECT "id", "title", "price_kr" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+migrated from release 1
+-- after 2
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name = title, price_kr, note
+    INSERT INTO "dish" ("id", "name", "price_kr", "note") SELECT "id", (
+    title
+    ), "price_kr", "note" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+migrated from release 2
+-- after 3
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name, price_ore = price_kr * 100, note
+    INSERT INTO "dish" ("id", "name", "price_ore", "note") SELECT "id", "name", (
+    price_kr * 100
+    ), "note" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+migrated from release 3
+-- after 4
+roux: migrating test.db, 8 steps
+  table `meal`: `menu` aside, to make it from
+    ALTER TABLE "menu" RENAME TO "roux_old_menu"
+  table `meal`: as schema.sql makes it
+    CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT
+  table `meal`: its rows, by id, title
+    INSERT INTO "meal" ("id", "title") SELECT "id", "title" FROM "roux_old_menu"
+  table `meal`: the old one
+    DROP TABLE "roux_old_menu"
+  table `course`: aside, to make it anew
+    ALTER TABLE "course" RENAME TO "roux_old_course"
+  table `course`: as schema.sql makes it
+    CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES meal (id), dish_id INTEGER NOT NULL REFERENCES dish (id)) STRICT
+  table `course`: its rows, by id, menu_id, dish_id
+    INSERT INTO "course" ("id", "menu_id", "dish_id") SELECT "id", "menu_id", "dish_id" FROM "roux_old_course"
+  table `course`: the old one
+    DROP TABLE "roux_old_course"
+migrated from release 4
+-- after 5
+roux: migrating test.db, 1 step
+  index `dish_by_name`: as schema.sql makes it
+    CREATE INDEX dish_by_name ON dish (name)
+migrated from release 5
+
+== query
+SELECT meal.title, dish.name, dish.price_ore FROM course JOIN meal ON meal.id = course.menu_id JOIN dish ON dish.id = course.dish_id ORDER BY course.id
+
+== rows
+lunch | soup | 9500
+lunch | bread | 4000
+dinner | roast | 24000

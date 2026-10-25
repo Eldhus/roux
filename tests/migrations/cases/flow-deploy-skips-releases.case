@@ -1,0 +1,39 @@
+Production at release 3, deployed straight to release 6: a rename of 4,
+a drop of 5 and a backfill of 6, all in one plan, and the rows land as
+they would have release by release.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL, photo TEXT) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup', 'soup.jpg'), (2, 'Rye Bread', NULL);
+PRAGMA user_version = 3;
+
+== after
+-- @release 6
+-- @drop 4 column dish title
+-- @from 4 column dish name = title
+-- @drop 5 column dish photo
+-- @from 6 column dish slug = lower(replace(title, ' ', '-'))
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL) STRICT
+  table `dish`: its rows, by id, name = title, slug = lower(replace(title, ' ', '-'))
+    INSERT INTO "dish" ("id", "name", "slug") SELECT "id", (
+    title
+    ), (
+    lower(replace(title, ' ', '-'))
+    ) FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+migrated from release 3
+
+== query
+SELECT id, name, slug FROM dish ORDER BY id
+
+== rows
+1 | Pea Soup | pea-soup
+2 | Rye Bread | rye-bread

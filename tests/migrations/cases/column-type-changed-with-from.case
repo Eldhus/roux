@@ -1,0 +1,34 @@
+A column's type changed with its data: kronor as integers become a price
+written out as text, in a new column filled @from the old one, the old one
+dropped.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 95), (2, 40);
+
+== after
+-- @release 1
+-- @drop 1 column dish price_kr
+-- @from 1 column dish price = CAST(price_kr AS TEXT) || ' kr'
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, price TEXT NOT NULL) STRICT
+  table `dish`: its rows, by id, price = CAST(price_kr AS TEXT) || ' kr'
+    INSERT INTO "dish" ("id", "price") SELECT "id", (
+    CAST(price_kr AS TEXT) || ' kr'
+    ) FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+migrated from release 0
+
+== query
+SELECT id, price FROM dish ORDER BY id
+
+== rows
+1 | 95 kr
+2 | 40 kr
