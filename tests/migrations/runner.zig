@@ -248,7 +248,19 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
         defer case_dir.close(io);
         try case_dir.copyFile("test.db", case_dir, "before.db", io, .{});
         try case_dir.deleteTree(io, "test.db.before-drop");
+        // Rehearsed first, as a deploy would be: it must foretell the real
+        // run, and leave the database and the directory as they were.
+        const rehearsed = try open_as(arena, io, app, dir, after, .rehearsal);
+        try check_unchanged(arena, dir, w);
+        try check_rehearsal_gone(io, dir, step, w);
         const opened = try open(arena, io, app, dir, after);
+        if (rehearsed.opened != opened.opened or !std.mem.eql(u8, rehearsed.plan, opened.plan) or
+            !std.mem.eql(u8, rehearsed.@"error", opened.@"error"))
+        {
+            try w.print("  after {d}, the rehearsal foretold otherwise:\n{s}\n{s}\n", .{
+                step, rehearsed.plan, rehearsed.@"error",
+            });
+        }
         if (afters.len > 1) try plans.writer.print("-- after {d}\n", .{step});
         if (opened.plan.len > 0) try plans.writer.print("{s}\n", .{opened.plan});
         if (opened.opened) {
@@ -337,9 +349,23 @@ const Opened = struct {
     @"error": []const u8,
 };
 
-/// roux-db over `after`, then the app: whether the database opened, the
-/// plan it printed, and why not. roux-db's refusal is the app's too.
+const Run = enum { real, rehearsal };
+
 fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []const u8) !Opened {
+    return open_as(arena, io, app, dir, after, .real);
+}
+
+/// roux-db over `after`, then the app (`ROUX_REHEARSE` set for a
+/// rehearsal): whether the database opened, the plan it printed, and why
+/// not. roux-db's refusal is the app's too.
+fn open_as(
+    arena: Allocator,
+    io: Io,
+    app: []const u8,
+    dir: []const u8,
+    after: []const u8,
+    run: Run,
+) !Opened {
     var diagnostics: roux_db.Diagnostics = .init(arena);
     const schema: roux_db.Input = .{ .name = "schema.sql", .text = after };
     const compiled = try roux_db.compile(arena, schema, &.{}, &diagnostics);
@@ -375,6 +401,7 @@ fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []con
     try case_dir.writeFile(io, .{ .sub_path = "drops", .data = drops.written() });
     try case_dir.writeFile(io, .{ .sub_path = "froms", .data = froms.written() });
     var environ: std.process.Environ.Map = .init(arena); // no ROUX_DATABASE
+    if (run == .rehearsal) try environ.put("ROUX_REHEARSE", "1");
     const app_path = try std.fs.path.join(arena, &.{ "..", std.fs.path.basename(app) });
     const ran = try std.process.run(arena, io, .{
         .argv = &.{app_path},
@@ -398,14 +425,16 @@ fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []con
     };
 }
 
-/// What the host printed, without its line once the database is open, and
-/// the copy's before a drop, dated (`check_copied` checks the copy).
+/// What the host printed, without its line once the database is open, the
+/// copy's before a drop, dated (`check_copied` checks the copy), and a
+/// rehearsal's end.
 fn plan_of(arena: Allocator, stdout: []const u8) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(arena);
     var lines = std.mem.splitScalar(u8, stdout, '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "roux: database ")) continue;
         if (std.mem.startsWith(u8, line, "roux: copied ")) continue;
+        if (std.mem.startsWith(u8, line, "roux: rehearsed")) continue;
         try out.writer.print("{s}\n", .{line});
     }
     return std.mem.trim(u8, out.written(), "\n");
@@ -439,6 +468,19 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     if (!std.mem.eql(u8, broken, "0")) try w.print("  {s} rows break a foreign key\n", .{broken});
     try check_rows(arena, before, db, w);
     try check_sequences(arena, before, db, w);
+}
+
+/// A rehearsal leaves nothing behind: no copy of its own, and no copy
+/// before a drop (its own copy is thrown away).
+fn check_rehearsal_gone(io: Io, dir: []const u8, step: usize, w: *std.Io.Writer) !void {
+    var case_dir = try Io.Dir.cwd().openDir(io, dir, .{ .iterate = true });
+    defer case_dir.close(io);
+    var entries = case_dir.iterate();
+    while (try entries.next(io)) |entry| {
+        const left = std.mem.indexOf(u8, entry.name, ".rehearsal") != null or
+            std.mem.endsWith(u8, entry.name, ".before-drop");
+        if (left) try w.print("  after {d}, the rehearsal left {s}\n", .{ step, entry.name });
+    }
 }
 
 /// A migration that lost a table or a column copied the database first,

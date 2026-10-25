@@ -55,7 +55,13 @@ database when it starts, before it serves. There are no migration files and no c
 
 To deploy, stop the old executable and start the new one: it migrates, then serves. One process
 owns a database, so the new one refuses to start while the old one runs; if the migration is
-refused, the database is unchanged and the old executable still opens it. On a team, `schema.sql`
+refused, the database is unchanged and the old executable still opens it.
+
+Rehearse first: `ROUX_REHEARSE=1 ./app` copies the database beside itself, migrates the copy and
+runs `init!` over it, prints what the deploy will, deletes the copy and exits (0 when it all went
+through) without serving. The database is only read. Your dev and staging databases took their
+own paths to this schema; a rehearsal on a copy of production's (`ROUX_DATABASE=prod-copy.db`,
+from `Sqlite.backup!`) runs the very plan production will, on its data. On a team, `schema.sql`
 merges as code does: two branches that each add a column merge into a schema with both, and
 every database migrates to it. A `-- @drop` or `-- @from` line stays until every database has
 passed it; after that it does nothing, and taking it out too early only refuses the database

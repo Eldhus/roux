@@ -580,6 +580,86 @@ fn ListItem(comptime List: type) type {
     return @typeInfo(pointer).pointer.child;
 }
 
+/// `ROUX_REHEARSE`: the deploy's migration tried first, on a copy. The
+/// database at the path (`ROUX_DATABASE`'s, if set) is only read: it is
+/// copied beside itself (`<path>.rehearsal`), the copy is migrated and
+/// `init!` runs over it, then the copy is deleted and the process exits,
+/// 0 when both went through, serving nothing. Every message names the
+/// database copied, so a rehearsal prints what the deploy will.
+const Rehearsal = struct {
+    path_buffer: [path_bytes_max]u8,
+    path_length: u32,
+    const path_bytes_max = 1024;
+    const suffix = ".rehearsal";
+
+    fn path(rehearsal: *const Rehearsal) [:0]const u8 {
+        return rehearsal.path_buffer[0..rehearsal.path_length :0];
+    }
+
+    /// The copy of `where` (none when there is no database yet: a new one
+    /// is rehearsed as made).
+    fn make(where: []const u8, report: *database_module.Report) error{Failed}!Rehearsal {
+        const io = init_io.?; // Sqlite.open! runs in init!
+        var made: Rehearsal = undefined;
+        const copy_path = std.fmt.bufPrintSentinel(&made.path_buffer, "{s}" ++ suffix, .{
+            where,
+        }, 0) catch return report.fail(.failed, "rehearsing {s}: a path too long", .{where});
+        made.path_length = @intCast(copy_path.len);
+        made.delete(); // a rehearsal killed before it ended
+        if (std.Io.Dir.cwd().access(io, where, .{})) |_| {
+            // Read only, set up in no way: the database is not touched.
+            var where_buffer: [path_bytes_max]u8 = undefined;
+            const where_z = std.fmt.bufPrintSentinel(&where_buffer, "{s}", .{where}, 0) catch
+                unreachable; // shorter than the copy's path
+            var source: ?*sqlite.c.Db = null;
+            const flags = sqlite.c.open_readonly | sqlite.c.open_exrescode;
+            defer _ = sqlite.c.sqlite3_close_v2(source);
+            if (sqlite.c.sqlite3_open_v2(where_z, &source, flags, null) != sqlite.c.ok) {
+                return report.fail(.failed, "rehearsing {s}: {s}", .{
+                    where, sqlite.c.sqlite3_errmsg(source),
+                });
+            }
+            try backup_module.copy(source.?, copy_path, report);
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return report.fail(.failed, "rehearsing {s}: {t}", .{ where, err }),
+        }
+        return made;
+    }
+
+    /// The copy and the files SQLite keeps beside it.
+    fn delete(rehearsal: *const Rehearsal) void {
+        const io = init_io orelse std.Io.Threaded.global_single_threaded.io();
+        const base = rehearsal.path();
+        for ([_][]const u8{ "", "-wal", "-shm", "-journal" }) |side| {
+            var buffer: [path_bytes_max + 8]u8 = undefined;
+            const name = std.fmt.bufPrint(&buffer, "{s}{s}", .{ base, side }) catch unreachable;
+            std.Io.Dir.cwd().deleteFile(io, name) catch {};
+        }
+    }
+};
+
+/// Set by the first `Sqlite.open!` of a rehearsal.
+var rehearsal_made: ?Rehearsal = null;
+
+fn rehearsing() bool {
+    return environment("ROUX_REHEARSE") != null;
+}
+
+/// The file `Sqlite.open!` opens: the path, `ROUX_DATABASE`'s, or in a
+/// rehearsal the copy of it, made at the first call.
+fn database_file(where: []const u8, report: *database_module.Report) error{Failed}![]const u8 {
+    if (!rehearsing()) return where;
+    if (rehearsal_made == null) rehearsal_made = try Rehearsal.make(where, report);
+    return rehearsal_made.?.path();
+}
+
+/// A rehearsal's end, whatever `init!` did: the copy goes.
+fn rehearsal_over(went_through: bool) void {
+    if (rehearsal_made) |*made| made.delete();
+    if (went_through) write_line(1, "roux: rehearsed: the migration and init! went through");
+}
+
 /// `Sqlite.open!`'s first look, in `init!`: the database at the path and
 /// what schema.sql makes, listed for Migrate.roc to plan from.
 export fn hosted_sqlite_inspect(
@@ -592,7 +672,8 @@ export fn hosted_sqlite_inspect(
     const gpa = std.heap.page_allocator;
     const where = environment("ROUX_DATABASE") orelse path.asSlice();
     var report: database_module.Report = .{};
-    var inspection = database_module.Inspection.open(gpa, where, schema.asSlice(), &report) catch
+    const file = database_file(where, &report) catch return inspect_error(report.message());
+    var inspection = database_module.Inspection.open(gpa, file, schema.asSlice(), &report) catch
         return inspect_error(report.message());
     defer inspection.close(gpa);
     const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch
@@ -682,8 +763,10 @@ export fn hosted_sqlite_open(
     // Where the database is is the deployment's to say, as the port.
     const where = environment("ROUX_DATABASE") orelse path.asSlice();
     var report: database_module.Report = .{};
+    const file = database_file(where, &report) catch return open_error(report.message());
     const description: database_module.Description = .{
-        .path = where,
+        .path = file,
+        .name = where,
         .schema = schema.asSlice(),
         .statements = descriptions,
         .synchronous = switch (synchronous) {
@@ -693,16 +776,8 @@ export fn hosted_sqlite_open(
         .migration = migration,
     };
     print_migration(where, migration);
-    var copy: ?BeforeDrop = null;
-    if (copy_first) {
-        assert(migration.len > 0);
-        copy = BeforeDrop.make(gpa, where, &report) catch return open_error(report.message());
-    }
-    database = database_module.open(gpa, description, .{}, &report) catch {
-        if (copy) |*made| made.discard();
+    database = open_migrated(gpa, description, where, copy_first, &report) catch
         return open_error(report.message());
-    };
-    if (copy) |*made| made.keep(where);
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
         return open_error("out of memory");
     var banner: [256]u8 = undefined;
@@ -711,6 +786,29 @@ export fn hosted_sqlite_open(
         where, descriptions.len, description.synchronous,
     }) catch "roux: database");
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+/// The database opened, migrated; copied first when the migration drops
+/// rows on purpose, the copy kept only if it commits. A rehearsal's copy is
+/// itself thrown away: nothing to keep before it.
+fn open_migrated(
+    gpa: std.mem.Allocator,
+    description: database_module.Description,
+    where: []const u8,
+    copy_first: bool,
+    report: *database_module.Report,
+) error{Failed}!*database_module.Database {
+    var copy: ?BeforeDrop = null;
+    if (copy_first and !rehearsing()) {
+        assert(description.migration.len > 0);
+        copy = try BeforeDrop.make(gpa, where, report);
+    }
+    const opened = database_module.open(gpa, description, .{}, report) catch |err| {
+        if (copy) |*made| made.discard();
+        return err;
+    };
+    if (copy) |*made| made.keep(where);
+    return opened;
 }
 
 /// The database as it was, copied before a migration that drops rows on
@@ -1453,6 +1551,12 @@ export fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
 /// says it and reloads when roux dev starts the fixed build.
 fn init_app() InitResult {
     const init = abi.roc_init_for_host();
+    if (rehearsing()) {
+        // A rehearsal ends with `init!`: its copy deleted, nothing served.
+        rehearsal_over(init.tag == .Ok);
+        if (init.tag == .Ok) std.process.exit(0);
+        std.process.exit(@intCast(@max(0, @min(init.payload_err(), 255))));
+    }
     if (init.tag == .Ok) return init.payload_ok();
     if (dev_build == null) {
         const code = init.payload_err();

@@ -156,6 +156,9 @@ pub const StatementDescription = struct {
 
 pub const Description = struct {
     path: []const u8,
+    /// What a migration's messages call the database, when not `path`: a
+    /// rehearsal migrates a copy, and speaks of the database it copied.
+    name: ?[]const u8 = null,
     schema: []const u8,
     statements: []const StatementDescription,
     synchronous: Synchronous,
@@ -710,10 +713,11 @@ fn ensure_schema(db: *c.Db, description: Description, report: *Report) error{Fai
     }
     const pristine = try open_pristine(description.schema, report);
     defer close_pristine(pristine);
+    const name = description.name orelse description.path;
     if (description.migration.len == 0) {
-        return compare_schemas(db, pristine, description.path, report);
+        return compare_schemas(db, pristine, name, report);
     }
-    return migrate(db, pristine, description.migration, description.path, report);
+    return migrate(db, pristine, description.migration, name, report);
 }
 
 /// What `schema` makes, in memory, by the same policy as a new database.
