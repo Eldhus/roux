@@ -1,0 +1,53 @@
+Prices move from kronor to öre, and the lines stay in schema.sql through
+the deploys after. The second deploy rebuilds the table again (a note is
+added): the @from fills only a column new to its table, so the prices are
+not multiplied a second time. The third removes the lines: nothing to do.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup', 95), (2, 'bread', 40);
+
+== after
+-- @drop column dish price_kr
+-- @from column dish price_ore = price_kr * 100
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL) STRICT;
+
+== after
+-- @drop column dish price_kr
+-- @from column dish price_ore = price_kr * 100
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT;
+
+== query
+SELECT id, name, price_ore FROM dish ORDER BY id
+
+== plan
+-- after 1
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL) STRICT
+  table `dish`: its rows, by id, name, price_ore = price_kr * 100
+    INSERT INTO "dish" ("id", "name", "price_ore") SELECT "id", "name", (
+    price_kr * 100
+    ) FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+-- after 2
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_ore INTEGER NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name, price_ore
+    INSERT INTO "dish" ("id", "name", "price_ore") SELECT "id", "name", "price_ore" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+-- after 3
+
+== rows
+1 | soup | 9500
+2 | bread | 4000

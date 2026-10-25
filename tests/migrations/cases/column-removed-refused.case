@@ -16,4 +16,4 @@ CREATE TABLE dish (
 ) STRICT;
 
 == error
-column `dish.note` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish note` in schema.sql. (A rename is a drop and a new one: the values do not follow.)
+column `dish.note` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish note` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from column dish <new> = "note"`.

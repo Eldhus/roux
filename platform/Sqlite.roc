@@ -35,14 +35,27 @@ import Migrate
 ## table or column `schema.sql` no longer makes is refused, its rows kept,
 ## unless `schema.sql` drops it on purpose: `-- @drop table meal`,
 ## `-- @drop column dish note`. Before such a drop the database is copied
-## into `<path>.before-drop/` (the last four copies kept).
+## into `<path>.before-drop/` (the last four copies kept). What is new is
+## filled from what was there by `-- @from`: `-- @from column dish name =
+## title` (a rename, with `-- @drop column dish title`), `-- @from table
+## meal = menu`.
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
-	Database : { path : Str, schema : Str, statements : List(Statement), drops : List(Drop) }
+	Database : {
+		path : Str,
+		schema : Str,
+		statements : List(Statement),
+		drops : List(Drop),
+		froms : List(From),
+	}
 
 	## What `schema.sql` drops on purpose (`-- @drop`): a table, or a
 	## table's column, and its rows.
 	Drop : Migrate.Drop
+
+	## What `schema.sql` fills from what was there (`-- @from`): a column
+	## new to its table by an expression, or a table from another's rows.
+	From : Migrate.From
 
 	Statement : Host.SqliteStatement
 
@@ -101,7 +114,7 @@ Sqlite := [].{
 		listed = Host.sqlite_inspect!(database.path, database.schema) ? |message| DbErr(Failed(message))
 		live = schema_of(listed.live)
 		pristine = schema_of(listed.pristine)
-		steps = Migrate.plan(live, pristine, database.drops) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
+		steps = Migrate.plan(live, pristine, database.drops, database.froms) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
 		copy_first = Migrate.loses(live, pristine)
 		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps, copy_first) {
 			Ok({}) => Ok(Db.{ opened: Bool.True })

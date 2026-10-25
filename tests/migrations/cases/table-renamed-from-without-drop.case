@@ -1,0 +1,13 @@
+A table's @from without its @drop: the old table would still go. Refused,
+the database unchanged.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO menu VALUES (1, 'lunch');
+
+== after
+-- @from table meal = menu
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== error
+table `menu` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop table menu` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from table <new> = menu`.

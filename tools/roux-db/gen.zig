@@ -45,7 +45,14 @@ pub fn generate(
     }
     assert(first == statements.len); // every statement belongs to a file
     var database: std.Io.Writer.Allocating = .init(arena);
-    try emit.write_database(&database.writer, schema, queries, statements, compiled.drops);
+    try emit.write_database(
+        &database.writer,
+        schema,
+        queries,
+        statements,
+        compiled.drops,
+        compiled.froms,
+    );
     outputs[queries.len] = .{ .name = "Database.roc", .text = database.written() };
     return outputs;
 }

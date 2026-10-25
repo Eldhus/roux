@@ -21,6 +21,15 @@
 //!   -- @drop column dish note
 //!   -- @drop table "dish of the day"   (a name with a space, quoted)
 //!
+//! and how a migration fills what is new, from what was there:
+//!
+//!   -- @from column dish name = title          (a column new to its table)
+//!   -- @from column dish slug = lower(name)
+//!   -- @from table meal = menu                 (a table made from another)
+//!
+//! The expression is SQL, read by SQLite in the migration's copy, over the
+//! old table's row; roux-db keeps it as text and never reads it.
+//!
 //! Any other comment is prose. A `--` comment beginning with `@` that is
 //! not one of these is an error, so a misspelt annotation is never prose.
 
@@ -62,6 +71,15 @@ pub const Drop = struct {
     offset: u32,
 };
 
+/// `@from column dish name = title` (`column` set, `source` the
+/// expression), or `@from table meal = menu` (`source` the old table).
+pub const From = struct {
+    table: []const u8,
+    column: ?[]const u8,
+    source: []const u8,
+    offset: u32,
+};
+
 pub const Annotations = struct {
     name: ?[]const u8 = null,
     name_offset: u32 = 0,
@@ -74,9 +92,15 @@ pub const Annotations = struct {
     columns_count: u32 = 0,
     drops: [drops_max]Drop = undefined,
     drops_count: u32 = 0,
+    froms: [drops_max]From = undefined,
+    froms_count: u32 = 0,
 
     pub fn drop_list(annotations: *const Annotations) []const Drop {
         return annotations.drops[0..annotations.drops_count];
+    }
+
+    pub fn from_list(annotations: *const Annotations) []const From {
+        return annotations.froms[0..annotations.froms_count];
     }
 
     pub fn param_list(annotations: *const Annotations) []const Field {
@@ -156,8 +180,45 @@ fn parse_line(line: []const u8, offset: u32, sink: Sink) void {
     if (std.mem.eql(u8, words[0], "@param")) return parse_field(words, offset, sink, .param);
     if (std.mem.eql(u8, words[0], "@column")) return parse_field(words, offset, sink, .column);
     if (std.mem.eql(u8, words[0], "@drop")) return parse_drop(line, offset, sink);
+    if (std.mem.eql(u8, words[0], "@from")) return parse_from(line, offset, sink);
     sink.diagnostics.add(sink.file, offset, "unknown annotation {s}: roux-db knows " ++
-        "`-- name:`, `-- @param`, `-- @column` and `-- @drop`", .{words[0]});
+        "`-- name:`, `-- @param`, `-- @column`, `-- @drop` and `-- @from`", .{words[0]});
+}
+
+/// The names before the first `=` outside double quotes are words, as a
+/// drop's; what follows is an expression (a column's) or one name (a
+/// table's).
+fn parse_from(line: []const u8, offset: u32, sink: Sink) void {
+    const usage = "write `-- @from column table name = expression` or " ++
+        "`-- @from table name = old_name` (a name with a space in double quotes)";
+    var quoted = false;
+    const equals = for (line, 0..) |byte, index| {
+        if (byte == '"') quoted = !quoted;
+        if (byte == '=' and !quoted) break index;
+    } else return sink.diagnostics.add(sink.file, offset, usage, .{});
+    var words_buffer: [5][]const u8 = undefined;
+    const words = drop_words(line[0..equals], &words_buffer) orelse &.{};
+    const source = std.mem.trim(u8, line[equals + 1 ..], " \t\r");
+    const column_form = words.len == 4 and std.mem.eql(u8, words[1], "column");
+    var table_source: [2][]const u8 = undefined;
+    const old: []const []const u8 = drop_words(source, &table_source) orelse &.{};
+    const table_form = words.len == 3 and std.mem.eql(u8, words[1], "table") and old.len == 1;
+    if ((!column_form and !table_form) or source.len == 0) {
+        return sink.diagnostics.add(sink.file, offset, usage, .{});
+    }
+    const annotations = sink.annotations;
+    if (annotations.froms_count == drops_max) {
+        return sink.diagnostics.add(sink.file, offset, "more than {d} @from together", .{
+            drops_max,
+        });
+    }
+    annotations.froms[annotations.froms_count] = .{
+        .table = words[2],
+        .column = if (column_form) words[3] else null,
+        .source = if (column_form) source else table_source[0],
+        .offset = offset,
+    };
+    annotations.froms_count += 1;
 }
 
 /// A name as SQLite keeps it: one word, or in double quotes when it has a

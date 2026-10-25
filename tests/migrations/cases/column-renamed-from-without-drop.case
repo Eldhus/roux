@@ -1,0 +1,13 @@
+A rename's @from without its @drop: the old column would still go, and
+only a @drop says that on purpose. Refused, the database unchanged.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+-- @from column dish name = title
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== error
+column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish title` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from column dish <new> = "title"`.

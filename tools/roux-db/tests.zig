@@ -249,6 +249,46 @@ const refusals = [_]Refusal{
         .says = "in double quotes",
     },
     .{
+        .case = "a from without its kind",
+        .schema = schema_text ++ "-- @from dish note = title\n",
+        .says = "write `-- @from column table name = expression`",
+    },
+    .{
+        .case = "a from with no expression",
+        .schema = schema_text ++ "-- @from column dish note =\n",
+        .says = "write `-- @from column table name = expression`",
+    },
+    .{
+        .case = "a from filling a column the schema does not make",
+        .schema = schema_text ++ "-- @from column dish photo = picture\n",
+        .says = "@from column dish photo, but schema.sql makes no such column to fill",
+    },
+    .{
+        .case = "a from of a table the schema does not make",
+        .schema = schema_text ++ "-- @from table meal = menu\n",
+        .says = "@from table meal, but schema.sql makes no such table",
+    },
+    .{
+        .case = "a from of a table from itself (any case is the same name)",
+        .schema = schema_text ++ "-- @from table dish = DISH\n",
+        .says = "a table from itself",
+    },
+    .{
+        .case = "a from of a table the schema still makes",
+        .schema = schema_text ++ "-- @from table dish = tag\n",
+        .says = "@from table dish = tag, but schema.sql still makes tag",
+    },
+    .{
+        .case = "a column filled twice",
+        .schema = schema_text ++ "-- @from column dish note = a\n-- @from column dish NOTE = b\n",
+        .says = "a second @from for dish.NOTE",
+    },
+    .{
+        .case = "a from in a query file",
+        .query = "-- @from column dish note = title\n-- name: q :exec\nDELETE FROM tag;",
+        .says = "`-- @from` belongs to schema.sql",
+    },
+    .{
         .case = "a drop in a query file",
         .query = "-- @drop table menu\n-- name: q :exec\nDELETE FROM tag;",
         .says = "belongs to schema.sql",

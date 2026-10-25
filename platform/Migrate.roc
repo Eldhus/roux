@@ -36,6 +36,13 @@ Migrate := [].{
 	## rows may go.
 	Drop : [Table(Str), Column(Str, Str)]
 
+	## What fills what is new from what was there. `Column(table, column,
+	## expression)`: a column new to its table, the expression SQL over the
+	## old table's row (SQLite reads it in the copy). `Table(table, old)`: a
+	## table the database lacks, made from the rows of one schema.sql no
+	## longer makes (dropped on purpose: `Drop`).
+	From : [Column(Str, Str, Str), Table(Str, Str)]
+
 	## A statement of the plan, and why it runs.
 	Step : { sql : Str, why : Str }
 
@@ -46,13 +53,13 @@ Migrate := [].{
 	## The steps that bring `live` to `pristine`, or why there are none:
 	## each refusal a sentence. A new database (nothing in it) needs none:
 	## the host makes it from schema.sql.
-	plan : Schema, Schema, List(Drop) -> Try(List(Step), List(Str))
-	plan = |live, pristine, drops| {
+	plan : Schema, Schema, List(Drop), List(From) -> Try(List(Step), List(Str))
+	plan = |live, pristine, drops, froms| {
 		if live.objects.is_empty() {
 			return Ok([])
 		}
-		refusals = refuse(live, pristine, drops)
-		if (refusals.is_empty()) Ok(planned(live, pristine)) else Err(refusals)
+		refusals = refuse(live, pristine, drops, froms)
+		if (refusals.is_empty()) Ok(planned(live, pristine, froms)) else Err(refusals)
 	}
 
 	## Whether the plan loses rows or values (dropped on purpose: `plan`
@@ -64,11 +71,21 @@ Migrate := [].{
 			and (!gone_tables(live, pristine).is_empty() or rebuilt_tables(live, pristine).any(lost))
 	}
 
-	refuse : Schema, Schema, List(Drop) -> List(Str)
-	refuse = |live, pristine, drops| {
+	refuse : Schema, Schema, List(Drop), List(From) -> List(Str)
+	refuse = |live, pristine, drops, froms| {
 		tables = gone_tables(live, pristine)
 			.keep_if(|table| !drops.any(|drop| drops_table(drop, table.name)))
-			.map(|table| lost("table `${table.name}`", "rows", "table ${quote_word(table.name)}"))
+			.map(
+				|table| {
+					name = quote_word(table.name)
+					lost("table `${table.name}`", "rows", "table ${name}", "table <new> = ${name}")
+				},
+			)
+		# A table made from another takes it whole: from two, it cannot.
+		moves = moved(live, pristine, froms)
+		twice = moves
+			.keep_if(|move| moves.count_if(|other| same_name(other.old, move.old)) > 1)
+			.map(|move| "table `${move.table.name}` is one of two made `@from table` `${move.old}`")
 		columns = rebuilt_tables(live, pristine).join_map(
 			|table| {
 				dropped = |column| drops.any(|drop| drops_column(drop, table.name, column.name))
@@ -77,7 +94,9 @@ Migrate := [].{
 					.map(
 						|column| {
 							what = "column `${table.name}.${column.name}`"
-							lost(what, "values", "column ${quote_word(table.name)} ${quote_word(column.name)}")
+							names = "${quote_word(table.name)} ${quote_word(column.name)}"
+							carry = "column ${quote_word(table.name)} <new> = ${quote(column.name)}"
+							lost(what, "values", "column ${names}", carry)
 						},
 					)
 			},
@@ -94,25 +113,34 @@ Migrate := [].{
 		aside = pristine.objects.concat(live.objects)
 			.keep_if(|object| folded(object.name).starts_with(aside_prefix))
 			.map(|object| "`${object.name}`: names starting `${aside_prefix}` are roux's, for rebuilding")
-		tables.concat(columns).concat(kept).concat(aside)
+		tables.concat(columns).concat(kept).concat(aside).concat(twice)
 	}
 
-	## Why a table or column would be lost, and the line that loses it.
-	lost : Str, Str, Str -> Str
-	lost = |what, held, drop|
+	## Why a table or column would be lost, and the lines that lose it, or
+	## carry it on.
+	lost : Str, Str, Str, Str -> Str
+	lost = |what, held, drop, carry|
 		Str.join_with(
 			[
 				"${what} is in the database, not in schema.sql: its ${held} would go.",
 				" Keep it, or drop it on purpose: `-- @drop ${drop}` in schema.sql.",
-				" (A rename is a drop and a new one: the ${held} do not follow.)",
+				" Renamed? Drop it, and fill the new one from it: `-- @from ${carry}`.",
 			],
 			"",
 		)
 
-	planned : Schema, Schema -> List(Step)
-	planned = |live, pristine| {
-		rebuilt = rebuilt_tables(live, pristine)
-		replaced = rebuilt.concat(gone_tables(live, pristine))
+	planned : Schema, Schema, List(From) -> List(Step)
+	planned = |live, pristine, froms| {
+		moves = moved(live, pristine, froms)
+		moved_tables = moves.map(|move| move.table)
+		# Each table made from rows the database has, in schema.sql's order:
+		# rebuilt from itself, or moved from another.
+		changed_tables = rebuilt_tables(live, pristine)
+		rebuilt = pristine.objects.keep_if(
+			|object| has_named(changed_tables, object.name) or has_named(moved_tables, object.name),
+		)
+		moved_from = moves.map(|move| move.old)
+		replaced = rebuilt_tables(live, pristine).concat(gone_tables(live, pristine))
 		# What holds no rows and changed goes first. What goes with a table
 		# or view is not dropped again: a table's indexes, a view's triggers.
 		changed = live.objects.keep_if(|object| object.kind != "table" and !identical(pristine, object))
@@ -121,12 +149,18 @@ Migrate := [].{
 			(object.kind == "index" and has_named(replaced, object.table))
 			or (object.kind == "trigger" and has_named(remade_views, object.table))
 		unmade = changed.drop_if(goes_with).map(|object| unmake(pristine, object))
-		dropped = gone_tables(live, pristine).map(
-			|table| { sql: "DROP TABLE ${quote(table.name)}", why: "table `${table.name}`: dropped on purpose" },
+		# A table another is made from goes with its rebuild.
+		dropped = gone_tables(live, pristine)
+			.drop_if(|table| moved_from.any(|old| same_name(old, table.name)))
+			.map(
+				|table| { sql: "DROP TABLE ${quote(table.name)}", why: "table `${table.name}`: dropped on purpose" },
+			)
+		remade = rebuilt.join_map(
+			|table| rebuild(live, pristine, froms, table, old_of(live, moves, table)),
 		)
-		remade = rebuilt.join_map(|table| rebuild(live, pristine, table))
 		created = pristine.objects
 			.keep_if(|object| object.kind == "table" and !has_table(live, object.name))
+			.drop_if(|table| has_named(moved_tables, table.name))
 			.map(|table| { sql: table.sql, why: "table `${table.name}`: new in schema.sql" })
 		# In schema.sql's order: what each refers to is made by then. A view
 		# of a rebuilt table needs nothing: the rename aside left it as it was.
@@ -150,25 +184,81 @@ Migrate := [].{
 		}
 	}
 
-	## SQLite's twelve steps, as the host frames them (foreign keys off,
-	## the rename aside not rewriting what refers to the table).
-	rebuild : Schema, Schema, Object -> List(Step)
-	rebuild = |live, pristine, table| {
-		old = match find(live.objects, "table", table.name) {
-			Ok(found) => found.name
-			Err(NotFound) => crash "Migrate.rebuild: a rebuilt table is in the database"
+	## The table of the database a remade one is made from: its own, or the
+	## one it is moved from.
+	old_of : Schema, List({ table : Object, old : Str }), Object -> Str
+	old_of = |live, moves, table|
+		match moves.find_first(|move| same_name(move.table.name, table.name)) {
+			Ok(move) => move.old
+			Err(NotFound) =>
+				match find(live.objects, "table", table.name) {
+					Ok(found) => found.name
+					Err(NotFound) => crash "Migrate.old_of: a rebuilt table is in the database"
+				}
 		}
+
+	## Tables schema.sql makes and the database lacks, each made from one
+	## the database has and schema.sql does not, by `@from table` lines,
+	## followed back as far as they go (`meal` from `menu` from `carte`:
+	## a database still at `carte` goes to `meal` at once).
+	moved : Schema, Schema, List(From) -> List({ table : Object, old : Str })
+	moved = |live, pristine, froms|
+		pristine.objects
+			.keep_if(|object| object.kind == "table" and !has_table(live, object.name))
+			.keep_oks(
+				|table|
+					source_of(live, pristine, froms, table.name, froms.len()).map_ok(|old| { table, old }),
+			)
+
+	## The table of the database `name` is made from, through at most
+	## `steps` lines of `@from table`.
+	source_of : Schema, Schema, List(From), Str, U64 -> Try(Str, [NotFound])
+	source_of = |live, pristine, froms, name, steps| {
+		if steps == 0 {
+			return Err(NotFound)
+		}
+		from = froms.keep_oks(
+			|line|
+				match line {
+					Table(table, old) => if (same_name(table, name)) Ok(old) else Err(NotFound)
+					Column(_, _, _) => Err(NotFound)
+				},
+		).first() ? |_| NotFound
+		match find(live.objects, "table", from) {
+			Ok(found) => if (has_table(pristine, from)) Err(NotFound) else Ok(found.name)
+			Err(NotFound) => source_of(live, pristine, froms, from, steps - 1)
+		}
+	}
+
+	## SQLite's twelve steps, as the host frames them (foreign keys off,
+	## the rename aside not rewriting what refers to the table): `table`
+	## made from the database's `old`, itself or another (`From`).
+	rebuild : Schema, Schema, List(From), Object, Str -> List(Step)
+	rebuild = |live, pristine, froms, table, old| {
 		aside = "${aside_prefix}${old}"
 		why = |what| "table `${table.name}`: ${what}"
-		pairs = data_columns(live, old).keep_oks(
+		# Each column the old table had, by name; a column new to the table,
+		# from its `@from` expression over the old row, on lines of its own
+		# (a `--` comment after it ends there).
+		had = data_columns(live, old)
+		pairs = data_columns(pristine, table.name).keep_oks(
 			|column|
-				find_column(data_columns(pristine, table.name), column.name)
-					.map_ok(|new| { new: new.name, old: column.name }),
+				match find_column(had, column.name) {
+					Ok(found) => Ok({ new: column.name, from: quote(found.name), said: column.name })
+					Err(NotFound) =>
+						fill_of(froms, table.name, column.name).map_ok(
+							|expression| {
+								new: column.name,
+								from: "(\n${expression}\n)",
+								said: "${column.name} = ${expression}",
+							},
+						)
+				},
 		)
 		copied = if (pairs.is_empty()) [] else {
 			into = Str.join_with(pairs.map(|pair| quote(pair.new)), ", ")
-			from = Str.join_with(pairs.map(|pair| quote(pair.old)), ", ")
-			names = Str.join_with(pairs.map(|pair| pair.new), ", ")
+			from = Str.join_with(pairs.map(|pair| pair.from), ", ")
+			names = Str.join_with(pairs.map(|pair| pair.said), ", ")
 			insert = "INSERT INTO ${quote(table.name)} (${into}) SELECT ${from} FROM ${quote(aside)}"
 			[{ sql: insert, why: why("its rows, by ${names}") }]
 		}
@@ -184,17 +274,27 @@ Migrate := [].{
 			)
 			[{ sql: sequence, why: why("AUTOINCREMENT goes on from where it was") }]
 		} else []
+		set_aside = if (same_name(old, table.name)) "aside, to make it anew" else "`${old}` aside, to make it from"
 		[
-			{
-				sql: "ALTER TABLE ${quote(old)} RENAME TO ${quote(aside)}",
-				why: why("aside, to make it anew"),
-			},
+			{ sql: "ALTER TABLE ${quote(old)} RENAME TO ${quote(aside)}", why: why(set_aside) },
 			{ sql: table.sql, why: why("as schema.sql makes it") },
 		]
 			.concat(counted)
 			.concat(copied)
 			.concat([{ sql: "DROP TABLE ${quote(aside)}", why: why("the old one") }])
 	}
+
+	## The expression an `@from column` line fills `table.column` with.
+	fill_of : List(From), Str, Str -> Try(Str, [NotFound])
+	fill_of = |froms, table, column|
+		froms.keep_oks(
+			|line|
+				match line {
+					Column(into, name, expression) =>
+						if (same_name(into, table) and same_name(name, column)) Ok(expression) else Err(NotFound)
+					Table(_, _) => Err(NotFound)
+				},
+		).first().map_err(|_| NotFound)
 
 	## Tables in the database that schema.sql no longer makes.
 	gone_tables : Schema, Schema -> List(Object)
@@ -325,4 +425,4 @@ expect Migrate.quote_word("dish of the day") == "\"dish of the day\""
 expect Migrate.quote_word("2dish") == "\"2dish\""
 expect Migrate.same_name("Dish", "dISH")
 expect !Migrate.same_name("dish", "dishes")
-expect Migrate.plan({ objects: [], columns: [] }, { objects: [], columns: [] }, []) == Ok([])
+expect Migrate.plan({ objects: [], columns: [] }, { objects: [], columns: [] }, [], []) == Ok([])

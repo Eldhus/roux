@@ -6,7 +6,7 @@ import pf.Sqlite
 ## `Sqlite.open!(Database.at(path), settings)`.
 Database :: [].{
 	at : Str -> Sqlite.Database
-	at = |path| { path, schema, statements, drops }
+	at = |path| { path, schema, statements, drops, froms }
 }
 
 schema : Str
@@ -14,6 +14,9 @@ schema = "-- The example's database: dishes and their reviews. STRICT, as roux-d
 
 drops : List(Sqlite.Drop)
 drops = []
+
+froms : List(Sqlite.From)
+froms = []
 
 statements : List(Sqlite.Statement)
 statements = [

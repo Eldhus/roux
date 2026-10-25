@@ -1,8 +1,16 @@
 //! The migration cases: each `cases/*.case` holds a database as it was
 //! (`== before`: SQL, rows too), the schema.sql it must become (`== after`,
-//! its `-- @drop`s too), and what opening it must print: the plan as the
-//! host prints it (`== plan`) and why it did not open (`== error`), each
-//! empty when absent. Text before the first section says what the case is.
+//! its `-- @drop`s and `-- @from`s too), and what opening it must print: the
+//! plan as the host prints it (`== plan`) and why it did not open (`==
+//! error`), each empty when absent. Text before the first section says what
+//! the case is.
+//!
+//! A flow has several `== after`s: the same database opened with each in
+//! turn, as deploys follow one another (a refused one changes nothing, and
+//! the next may be its fix); the plan and error then say which step said
+//! what. A `== query` is run once the last step is done, and what it
+//! returns is `== rows`: what landed where, which no general check knows (a
+//! column filled `@from` another).
 //!
 //! A case runs the real path: roux-db reads the after schema (as `roux
 //! build` would), main.roc's app opens the database through Sqlite.open!
@@ -126,14 +134,26 @@ const Verdict = union(enum) { pass, failure: []const u8 };
 
 // --- a case file ------------------------------------------------------------
 
-const Section = enum { before, after, plan, @"error" };
+/// In a file's order. `after` may come again: each a schema.sql the same
+/// database is opened with in turn, as deploys follow one another.
+const Section = enum { before, after, query, plan, rows, @"error" };
+
+/// `== after` sections in one case, at most.
+const afters_max = 16;
 
 const Case = struct {
     prose: []const u8 = "",
-    sections: [4][]const u8 = @splat(""),
+    sections: [std.enums.values(Section).len][]const u8 = @splat(""),
+    afters: [afters_max][]const u8 = undefined,
+    afters_count: u32 = 0,
 
     fn get(case: *const Case, section: Section) []const u8 {
-        return case.sections[@intFromEnum(section)];
+        assert(section != .after);
+        return case.sections[@backingInt(section)];
+    }
+
+    fn after_list(case: *const Case) []const []const u8 {
+        return case.afters[0..case.afters_count];
     }
 };
 
@@ -142,49 +162,67 @@ const Case = struct {
 fn parse(text: []const u8) !Case {
     var case: Case = .{};
     var current: ?Section = null;
-    var seen: [4]bool = @splat(false);
+    var seen: [std.enums.values(Section).len]bool = @splat(false);
     var start: usize = 0;
     var at: usize = 0;
     while (at < text.len) {
         const end = std.mem.indexOfScalarPos(u8, text, at, '\n') orelse text.len;
         const line = text[at..end];
         if (std.mem.startsWith(u8, line, "== ")) {
-            close(&case, current, text[start..at]);
+            try close(&case, current, text[start..at]);
             const section = std.meta.stringToEnum(Section, line[3..]) orelse
                 return error.UnknownSection;
-            if (seen[@intFromEnum(section)]) return error.SectionTwice;
-            seen[@intFromEnum(section)] = true;
+            if (seen[@backingInt(section)] and section != .after) return error.SectionTwice;
+            seen[@backingInt(section)] = true;
             current = section;
             start = @min(end + 1, text.len);
         }
         at = end + 1;
     }
-    close(&case, current, text[start..]);
-    if (!seen[@intFromEnum(Section.before)] or !seen[@intFromEnum(Section.after)]) {
+    try close(&case, current, text[start..]);
+    if (!seen[@backingInt(Section.before)] or case.afters_count == 0) {
         return error.BeforeAndAfterNeeded;
     }
     return case;
 }
 
-fn close(case: *Case, current: ?Section, text: []const u8) void {
+fn close(case: *Case, current: ?Section, text: []const u8) !void {
     const trimmed = std.mem.trim(u8, text, "\n");
-    if (current) |section| case.sections[@intFromEnum(section)] = trimmed else case.prose = trimmed;
+    const section = current orelse {
+        case.prose = trimmed;
+        return;
+    };
+    if (section != .after) {
+        case.sections[@backingInt(section)] = trimmed;
+        return;
+    }
+    if (case.afters_count == afters_max) return error.TooManyAfters;
+    case.afters[case.afters_count] = trimmed;
+    case.afters_count += 1;
 }
 
-/// The case as a file: an empty plan or error is left out.
+/// The case as a file: an empty query, plan, rows or error is left out.
 fn render(arena: Allocator, case: Case) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(arena);
     const w = &out.writer;
     if (case.prose.len > 0) try w.print("{s}\n\n", .{case.prose});
     for (std.enums.values(Section)) |section| {
-        const text = case.get(section);
-        if (text.len == 0 and (section == .plan or section == .@"error")) continue;
-        if (text.len == 0) try w.print("== {t}\n\n", .{section}) else {
-            try w.print("== {t}\n{s}\n\n", .{ section, text });
+        if (section == .after) {
+            for (case.after_list()) |after| try render_section(w, section, after);
+            continue;
         }
+        const text = case.get(section);
+        if (text.len == 0 and section != .before) continue;
+        try render_section(w, section, text);
     }
     const written = out.written();
     return written[0 .. written.len - 1]; // one newline at the end
+}
+
+fn render_section(w: *std.Io.Writer, section: Section, text: []const u8) !void {
+    if (text.len == 0) try w.print("== {t}\n\n", .{section}) else {
+        try w.print("== {t}\n{s}\n\n", .{ section, text });
+    }
 }
 
 // --- running one ----------------------------------------------------------------
@@ -197,37 +235,93 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
     const dir = try std.fmt.allocPrint(arena, "{s}/{s}", .{ work_dir, stem });
     try Io.Dir.cwd().deleteTree(io, dir);
     try Io.Dir.cwd().createDirPath(io, dir);
-    // The database as it was, twice: one to migrate, one to compare with.
     try make_database(arena, dir, "test.db", case.get(.before));
-    try make_database(arena, dir, "before.db", case.get(.before));
-    const opened = try open(arena, io, app, dir, case.get(.after));
     var problems: std.Io.Writer.Allocating = .init(arena);
     const w = &problems.writer;
-    if (opened.opened) {
-        try check_opened(arena, dir, case.get(.after), w);
-        const again = try open(arena, io, app, dir, case.get(.after));
-        if (!again.opened or again.plan.len > 0) {
-            try w.print("  opened again, it planned or failed:\n{s}\n{s}\n", .{
-                again.plan, again.@"error",
-            });
+    var plans: std.Io.Writer.Allocating = .init(arena);
+    var said: []const u8 = "";
+    const afters = case.after_list();
+    for (afters, 1..) |after, step| {
+        // The database as it was before this step, to compare with; the
+        // copies before a drop, this step's alone.
+        var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
+        defer case_dir.close(io);
+        try case_dir.copyFile("test.db", case_dir, "before.db", io, .{});
+        try case_dir.deleteTree(io, "test.db.before-drop");
+        const opened = try open(arena, io, app, dir, after);
+        if (afters.len > 1) try plans.writer.print("-- after {d}\n", .{step});
+        if (opened.plan.len > 0) try plans.writer.print("{s}\n", .{opened.plan});
+        if (opened.opened) {
+            try check_opened(arena, dir, after, w);
+            const again = try open(arena, io, app, dir, after);
+            if (!again.opened or again.plan.len > 0) {
+                try w.print("  after {d}, opened again, it planned or failed:\n{s}\n{s}\n", .{
+                    step, again.plan, again.@"error",
+                });
+            }
+        } else {
+            try check_unchanged(arena, dir, w);
         }
-    } else {
-        try check_unchanged(arena, dir, w);
+        try check_copied(arena, io, dir, opened.opened, w);
+        // A refused deploy changed nothing: the next one may be its fix.
+        if (!opened.opened) {
+            said = if (afters.len > 1) try std.fmt.allocPrint(arena, "{s}{s}-- after {d}\n{s}", .{
+                said, if (said.len > 0) "\n" else "", step, opened.@"error",
+            }) else opened.@"error";
+        }
     }
-    try check_copied(arena, io, dir, opened.opened, w);
+    const plan = std.mem.trimEnd(u8, plans.written(), "\n");
+    const rows = if (case.get(.query).len == 0) "" else try rows_of(arena, dir, case.get(.query));
     if (bless) {
-        case.sections[@intFromEnum(Section.plan)] = opened.plan;
-        case.sections[@intFromEnum(Section.@"error")] = opened.@"error";
+        case.sections[@backingInt(Section.plan)] = plan;
+        case.sections[@backingInt(Section.rows)] = rows;
+        case.sections[@backingInt(Section.@"error")] = said;
         const blessed = try render(arena, case);
         if (!std.mem.eql(u8, blessed, text)) {
             try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = blessed });
         }
     } else {
-        try expect_text(w, "plan", case.get(.plan), opened.plan);
-        try expect_text(w, "error", case.get(.@"error"), opened.@"error");
+        try expect_text(w, "plan", case.get(.plan), plan);
+        try expect_text(w, "rows", case.get(.rows), rows);
+        try expect_text(w, "error", case.get(.@"error"), said);
     }
     const written = problems.written();
     return if (written.len == 0) .pass else .{ .failure = written };
+}
+
+/// `== query` over the database as the last step left it: each row a
+/// line, its cells as SQL quotes them, between ` | `.
+fn rows_of(arena: Allocator, dir: []const u8, query: []const u8) ![]const u8 {
+    const db = try open_file(arena, dir, "test.db");
+    defer close_db(db);
+    var statement: ?*c.Stmt = null;
+    if (c.sqlite3_prepare_v3(db, query.ptr, @intCast(query.len), 0, &statement, null) != c.ok) {
+        return std.fmt.allocPrint(arena, "(the query: {s})", .{c.sqlite3_errmsg(db)});
+    }
+    defer _ = c.sqlite3_finalize(statement);
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const columns: usize = @intCast(c.sqlite3_column_count(statement.?));
+    for (0..case_bytes_max) |_| {
+        switch (c.sqlite3_step(statement.?)) {
+            c.done => break,
+            c.row => {},
+            else => return std.fmt.allocPrint(arena, "(the query: {s})", .{
+                c.sqlite3_errmsg(db),
+            }),
+        }
+        for (0..columns) |column| {
+            if (column > 0) try out.writer.writeAll(" | ");
+            const at: c_int = @intCast(column);
+            if (c.sqlite3_column_type(statement.?, at) == c.null_type) {
+                try out.writer.writeAll("NULL");
+                continue;
+            }
+            const bytes = c.sqlite3_column_text(statement.?, at) orelse "";
+            try out.writer.writeAll(bytes[0..@intCast(c.sqlite3_column_bytes(statement.?, at))]);
+        }
+        try out.writer.writeAll("\n");
+    } else return error.TooManyRows;
+    return std.mem.trimEnd(u8, out.written(), "\n");
 }
 
 fn expect_text(w: *std.Io.Writer, what: []const u8, expected: []const u8, got: []const u8) !void {
@@ -265,10 +359,21 @@ fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []con
             try drops.writer.print("table\t{s}\n", .{drop.table});
         }
     }
+    var froms: std.Io.Writer.Allocating = .init(arena);
+    for (compiled.froms) |from| {
+        // A tab separates the fields main.roc reads.
+        if (std.mem.indexOfScalar(u8, from.source, '\t') != null) return error.TabInFrom;
+        if (from.column) |column| {
+            try froms.writer.print("column\t{s}\t{s}\t{s}\n", .{ from.table, column, from.source });
+        } else {
+            try froms.writer.print("table\t{s}\t{s}\n", .{ from.table, from.source });
+        }
+    }
     var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
     defer case_dir.close(io);
     try case_dir.writeFile(io, .{ .sub_path = "schema.sql", .data = after });
     try case_dir.writeFile(io, .{ .sub_path = "drops", .data = drops.written() });
+    try case_dir.writeFile(io, .{ .sub_path = "froms", .data = froms.written() });
     var environ: std.process.Environ.Map = .init(arena); // no ROUX_DATABASE
     const app_path = try std.fs.path.join(arena, &.{ "..", std.fs.path.basename(app) });
     const ran = try std.process.run(arena, io, .{

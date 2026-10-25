@@ -19,3 +19,6 @@ CREATE TABLE tag (
 -- Gone on purpose, with their rows, when a database is migrated:
 -- @drop table menu
 -- @drop column dish photo
+-- and what is new filled from what was there:
+-- @from column dish note = "photo caption" || '!'
+-- @from table tag = "dish tags"

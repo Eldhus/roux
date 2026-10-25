@@ -10,4 +10,4 @@ INSERT INTO dish VALUES (1, 'soup');
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '') STRICT;
 
 == error
-column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish title` in schema.sql. (A rename is a drop and a new one: the values do not follow.)
+column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop column dish title` in schema.sql. Renamed? Drop it, and fill the new one from it: `-- @from column dish <new> = "title"`.

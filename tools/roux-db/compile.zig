@@ -35,6 +35,7 @@ const file_statements_max = 4096;
 
 pub const Field = annotation.Field;
 pub const Drop = annotation.Drop;
+pub const From = annotation.From;
 
 pub const Statement = struct {
     /// The query file's index in the run (0 is schema.sql).
@@ -63,9 +64,11 @@ pub const Compiled = struct {
     statements: []const Statement,
     /// schema.sql's `-- @drop`s, in its order.
     drops: []const annotation.Drop = &.{},
+    /// schema.sql's `-- @from`s, in its order.
+    froms: []const annotation.From = &.{},
 };
 
-/// `-- @drop`s in schema.sql, in all.
+/// `-- @drop`s in schema.sql, in all; `-- @from`s likewise.
 pub const drops_max = 256;
 
 const Compiler = struct {
@@ -75,6 +78,7 @@ const Compiler = struct {
     verdict: authorizer.Verdict,
     statements: std.ArrayList(Statement),
     drops: std.ArrayList(annotation.Drop),
+    froms: std.ArrayList(annotation.From),
     views: std.ArrayList(Made),
     triggers: std.ArrayList(Made),
 };
@@ -101,6 +105,7 @@ pub fn compile(
         .verdict = .{ .policy = .schema },
         .statements = try .initCapacity(arena, statements_max),
         .drops = try .initCapacity(arena, drops_max),
+        .froms = try .initCapacity(arena, drops_max),
         .views = try .initCapacity(arena, file_statements_max),
         .triggers = try .initCapacity(arena, file_statements_max),
     };
@@ -109,11 +114,16 @@ pub fn compile(
     try check_views(&compiler);
     try check_triggers(&compiler, schema.text);
     check_drops(&compiler);
+    check_froms(&compiler);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
         compile_file(&compiler, @intCast(file), query);
     }
-    return .{ .statements = compiler.statements.items, .drops = compiler.drops.items };
+    return .{
+        .statements = compiler.statements.items,
+        .drops = compiler.drops.items,
+        .froms = compiler.froms.items,
+    };
 }
 
 fn open_memory() !*c.Db {
@@ -246,6 +256,13 @@ fn load_schema(compiler: *Compiler, text: []const u8) void {
                 break;
             }
             compiler.drops.appendAssumeCapacity(drop);
+        }
+        for (annotations.from_list()) |from| {
+            if (compiler.froms.items.len == drops_max) {
+                compiler.diagnostics.add(0, from.offset, "more than {d} @from", .{drops_max});
+                break;
+            }
+            compiler.froms.appendAssumeCapacity(from);
         }
         const statement = next.statement orelse continue;
         defer _ = c.sqlite3_finalize(statement);
@@ -440,6 +457,50 @@ fn check_drops(compiler: *Compiler) void {
     }
 }
 
+/// A from fills what schema.sql makes, from what it no longer makes: a
+/// stored column of a table it makes, or a table it makes from one it
+/// does not; once each. The expression is SQLite's to read, over the old
+/// table's row, when the migration copies it.
+fn check_froms(compiler: *Compiler) void {
+    for (compiler.froms.items, 0..) |from, index| {
+        for (compiler.froms.items[0..index]) |earlier| {
+            const same_column = if (from.column) |column|
+                if (earlier.column) |other| std.ascii.eqlIgnoreCase(column, other) else false
+            else
+                earlier.column == null;
+            if (same_column and std.ascii.eqlIgnoreCase(from.table, earlier.table)) {
+                compiler.diagnostics.add(0, from.offset, "a second @from for {s}{s}{s}", .{
+                    from.table, if (from.column != null) "." else "", from.column orelse "",
+                });
+            }
+        }
+        if (from.column) |column| {
+            if (count_of(compiler.db, column_lookup, from.table, column) == 0) {
+                compiler.diagnostics.add(0, from.offset, "@from column {s} {s}, but " ++
+                    "schema.sql makes no such column to fill", .{ from.table, column });
+            }
+            continue;
+        }
+        // A table renamed twice over two releases: the middle one is made
+        // no more, and is the old side of the second line.
+        const chained = for (compiler.froms.items) |other| {
+            if (other.column == null and std.ascii.eqlIgnoreCase(other.source, from.table)) {
+                break true;
+            }
+        } else false;
+        if (count_of(compiler.db, table_lookup, from.table, "") == 0 and !chained) {
+            compiler.diagnostics.add(0, from.offset, "@from table {s}, but schema.sql " ++
+                "makes no such table", .{from.table});
+        } else if (std.ascii.eqlIgnoreCase(from.table, from.source)) {
+            compiler.diagnostics.add(0, from.offset, "@from table {s} = {s}: a table " ++
+                "from itself", .{ from.table, from.source });
+        } else if (count_of(compiler.db, table_lookup, from.source, "") > 0) {
+            compiler.diagnostics.add(0, from.offset, "@from table {s} = {s}, but schema.sql " ++
+                "still makes {s}", .{ from.table, from.source, from.source });
+        }
+    }
+}
+
 // NOCASE folds ASCII letters alone, as SQLite does names. What a drop
 // loses is rows and values: a view of the table's name holds none, nor
 // does a generated column of the column's (as Migrate.roc counts them).
@@ -485,6 +546,9 @@ fn compile_file(compiler: *Compiler, file: u16, input: Input) void {
         const next = next_statement(compiler, file, input.text, &at, &annotations) orelse break;
         for (annotations.drop_list()) |drop| {
             compiler.diagnostics.add(file, drop.offset, "`-- @drop` belongs to schema.sql", .{});
+        }
+        for (annotations.from_list()) |from| {
+            compiler.diagnostics.add(file, from.offset, "`-- @from` belongs to schema.sql", .{});
         }
         const statement = next.statement orelse {
             if (annotations.name != null) {
