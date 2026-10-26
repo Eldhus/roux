@@ -52,6 +52,14 @@ pub const Paths = struct {
     /// The build directory, `.roux/main` from the app's directory, here from
     /// the working directory.
     out_path: []const u8,
+    /// The build directory from the app's directory, where it is made: from
+    /// a handle on the app's directory, never by a path from the working
+    /// directory. Zig's `createDirPath` (0.17.0) never returns on a path
+    /// through a deleted directory that still resolves (`./x`, or `../x`
+    /// once the parent is deleted too): making `x` fails, so it steps back,
+    /// finds that directory, and steps forward again. Made from the app's
+    /// handle, it fails at once when the app's directory is deleted.
+    out: []const u8,
     /// `.roux/main/app`, roc's executable, from the app's directory.
     executable: []const u8,
 
@@ -59,6 +67,7 @@ pub const Paths = struct {
         const out = try std.fmt.allocPrint(arena, ".roux/{s}", .{app.name});
         return .{
             .out_path = try std.fs.path.join(arena, &.{ app.dir, out }),
+            .out = out,
             .executable = try std.fmt.allocPrint(arena, "{s}/app", .{out}),
         };
     }
@@ -69,9 +78,11 @@ pub const Paths = struct {
 pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer) !void {
     const paths: Paths = try .of(arena, app);
     const start = Io.Timestamp.now(io, .awake);
-    if (has_queries(io, app)) try query_types(arena, io, app, null);
+    var app_dir = try Io.Dir.cwd().openDir(io, app.dir, .{});
+    defer app_dir.close(io);
+    if (has_queries(io, app)) try query_types(arena, io, app);
     var cache: rocstache.generate.Cache = .init(arena);
-    var generation = try begin(arena, io, paths, app, &cache, null, stderr);
+    var generation = try begin(arena, io, app_dir, paths, app, &cache, null, stderr);
     const begun_at = Io.Timestamp.now(io, .awake);
     var roc = start_roc(io, paths, app, mode, null) catch |err| {
         rocstache.generate.abandon(io, &generation);
@@ -81,7 +92,7 @@ pub fn build(arena: Allocator, io: Io, app: App, mode: Mode, stderr: *Io.Writer)
         roc.kill(io);
         return err;
     };
-    try wait_roc(io, &roc);
+    try wait_tool(io, &roc);
     const compiled_at = Io.Timestamp.now(io, .awake);
     try attach(arena, io, paths, app, stderr);
     const attached_at = Io.Timestamp.now(io, .awake);
@@ -105,33 +116,40 @@ pub fn has_queries(io: Io, app: App) bool {
     return true;
 }
 
-/// `roux-db gen db` in the app's directory: the queries' typed modules.
-/// roux-db is found beside this roux (both are `zig build tools`').
-/// `log`: where roux-db's messages go (`roux dev` shows them in the page
-/// too); null for the terminal.
-pub fn query_types(arena: Allocator, io: Io, app: App, log: ?Io.File) !void {
+/// `start_query_types` to the terminal, waited for: `roux build`.
+pub fn query_types(arena: Allocator, io: Io, app: App) !void {
+    var child = try start_query_types(arena, io, app, null);
+    try wait_tool(io, &child);
+}
+
+/// `roux-db gen db` started in the app's directory: the queries' typed
+/// modules. roux-db is found beside this roux (both are `zig build
+/// tools`'). `log`: where roux-db's messages go (`roux dev` shows them in
+/// the page too); null for the terminal.
+pub fn start_query_types(arena: Allocator, io: Io, app: App, log: ?Io.File) !std.process.Child {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const self_len = try Io.Dir.readLinkAbsolute(io, "/proc/self/exe", &buffer);
     const bin = std.fs.path.dirname(buffer[0..self_len]) orelse ".";
     const roux_db = try std.fs.path.join(arena, &.{ bin, "roux-db" });
     const to: std.process.SpawnOptions.StdIo = if (log) |file| .{ .file = file } else .inherit;
-    var child = try spawn_to(io, &.{ roux_db, "gen", "db" }, app.dir, to);
-    if (!(try child.wait(io)).success()) return error.ChildFailed;
+    return spawn_to(io, &.{ roux_db, "gen", "db" }, app.dir, to);
 }
 
-/// The templates' modules written and glue started (generate.zig's
-/// `begin`); `rocstache.generate.finish` writes their program. `changed`:
-/// the templates whose files `roux dev` saw written (null: all may have
-/// been).
+/// The build directory made (in `app_dir`, the app's: `Paths.out`), the
+/// templates' modules written and glue started (generate.zig's `begin`);
+/// `rocstache.generate.finish` writes their program. `changed`: the
+/// templates whose files `roux dev` saw written (null: all may have been).
 pub fn begin(
     arena: Allocator,
     io: Io,
+    app_dir: Io.Dir,
     paths: Paths,
     app: App,
     cache: *rocstache.generate.Cache,
     changed: ?[]const []const u8,
     stderr: *Io.Writer,
 ) !rocstache.generate.Generation {
+    try app_dir.createDirPath(io, paths.out);
     return rocstache.generate.begin(arena, io, .{
         .app = try std.fs.path.join(arena, &.{ app.dir, rocstache.generate.templates_dir }),
         .build = paths.out_path,
@@ -280,8 +298,9 @@ fn write_all(
     }
 }
 
-pub fn wait_roc(io: Io, roc: *std.process.Child) !void {
-    if (!(try roc.wait(io)).success()) return error.ChildFailed;
+/// roc, or roux-db, waited for: whether it succeeded.
+pub fn wait_tool(io: Io, tool: *std.process.Child) !void {
+    if (!(try tool.wait(io)).success()) return error.ChildFailed;
 }
 
 /// A tool started, its output (stdout and stderr) to `to`; one that cannot

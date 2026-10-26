@@ -41,8 +41,8 @@ pub const Options = struct {
     /// `*.rocstache` and the modules written for them; missing for an app
     /// without templates.
     app: []const u8,
-    /// The build directory (`<app>/.roux/main`): the program
-    /// (`templates.bin`) and glue's files (`glue/`).
+    /// The build directory (`<app>/.roux/main`), made by the caller: the
+    /// program (`templates.bin`) and glue's files (`glue/`).
     build: []const u8,
     /// The pinned `roc`, for glue.
     roc: []const u8,
@@ -122,6 +122,15 @@ pub fn finish(gpa: Allocator, io: Io, generation: *Generation, errors: *Io.Write
     return result;
 }
 
+/// Glue's process, while it runs (`finish` waits for it): roux dev bounds
+/// how long.
+pub fn glue_running(generation: *const Generation) ?*const std.process.Child {
+    return switch (generation.glue) {
+        .running => |*running| &running.child,
+        .kept, .parse => null,
+    };
+}
+
 /// A generation not finished (the caller failed between the halves): glue
 /// stopped, and nothing it made kept.
 pub fn abandon(io: Io, generation: *Generation) void {
@@ -175,7 +184,6 @@ fn begin_with(
         const changed = try write_module(gpa, io, app, cache, k);
         if (changed) modules_changed = true;
     }
-    try cwd.createDirPath(io, options.build);
     var build = try cwd.openDir(io, options.build, .{});
     errdefer build.close(io);
     const glue = try glue_start(gpa, io, build, options, cache, kept, contracts, errors);
@@ -658,7 +666,7 @@ fn glue_start(
     const present = if (build.access(io, zon, .{})) true else |_| false;
     if (!changed and present) return .{ .parse = id };
     return .{ .running = .{
-        .child = try spawn_glue(gpa, io, build, options, cache, errors),
+        .child = try spawn_glue(io, build, options, cache, errors),
         .id = id,
     } };
 }
@@ -721,22 +729,30 @@ fn glue_again(io: Io, build: Io.Dir, cache: *Cache) void {
 
 /// `roc glue` with roux's spec on the throwaway platform, started: it
 /// writes `glue/out/layouts.zon`, and what it says goes to `glue/log`
-/// (a file, so a long message can never block it on a full pipe).
+/// (a file, so a long message can never block it on a full pipe). It runs
+/// in the build directory, so the output directory it makes is inside it
+/// (`glue/out`), never a path from roux's working directory: Zig's
+/// `createDirPath`, which roc uses, never returns on a path through a
+/// deleted directory that still resolves (`./`, `../`), and spun 27 h once.
 fn spawn_glue(
-    gpa: Allocator,
     io: Io,
     build: Io.Dir,
     options: Options,
     cache: *Cache,
     errors: *Io.Writer,
 ) Error!std.process.Child {
-    const spec = try std.fmt.allocPrint(gpa, "{s}/glue/Layout.roc", .{options.build});
-    const output = try std.fmt.allocPrint(gpa, "{s}/glue/out", .{options.build});
-    const main = try std.fmt.allocPrint(gpa, "{s}/glue/main.roc", .{options.build});
     const log = try build.createFile(io, "glue/log", .{});
     defer log.close(io);
     return std.process.spawn(io, .{
-        .argv = &.{ options.roc, "glue", "--no-cache", spec, output, main },
+        .argv = &.{
+            options.roc,
+            "glue",
+            "--no-cache",
+            "glue/Layout.roc",
+            "glue/out",
+            "glue/main.roc",
+        },
+        .cwd = .{ .dir = build },
         .stdin = .ignore,
         .stdout = .{ .file = log },
         .stderr = .{ .file = log },

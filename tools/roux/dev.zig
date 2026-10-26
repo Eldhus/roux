@@ -34,6 +34,11 @@
 //! One line per pass on stderr, for people and agents to wait on:
 //! `roux dev: build 3 ok (templates reread, 2) in 0.8 ms` for markup,
 //! `roux dev: build 4 ok (roc) in 1097 ms` for a restart, or `... failed`.
+//!
+//! It stops when its app's directory is deleted, and on SIGINT or SIGTERM,
+//! even mid-pass: a pass's tools (roux-db, roc glue, roc) are killed then,
+//! and `tools_ms_max` into the pass at most. The directories it makes are
+//! made from a handle on the app's directory (`pipeline.Paths.out`).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -80,6 +85,19 @@ const restart_code = 75;
 const quiet_ms = 10;
 /// At most 1 s of edits gathered into one pass.
 const quiet_windows_max = 100;
+/// How often an idle roux dev looks whether its app's directory was deleted
+/// (`deleted`) and whether it was asked to stop.
+const idle_check_ms = 1000;
+
+/// How long a pass's tools (roux-db, roc glue, roc) may run, from the
+/// pass's start, before they are killed and the pass fails. The slowest
+/// seen: the dragrace site's first pass, roc 156 s from a cold cache
+/// (2026-10-24). A glue that spun in a deleted directory held its pass,
+/// and roux dev, 27 h (2026-10-25).
+const tools_ms_max = 10 * std.time.ms_per_min;
+/// How often a tool's wait looks whether roux dev was asked to stop, or
+/// its app's directory deleted.
+const stop_check_ms = 100;
 
 const files_max = 4096;
 const directories_max = 256;
@@ -111,13 +129,18 @@ pub fn run(
     const lasting = lasting_state.allocator();
     // The binary in the build directory, named as roux build names it.
     var options = options_given;
-    const out_path = (try pipeline.Paths.of(lasting, options.app)).out_path;
-    options.app.output = try std.fs.path.join(lasting, &.{ out_path, options.app.name });
-    try Io.Dir.cwd().createDirPath(io, out_path);
-    var watch: Watch = try .start(gpa, io, options, out_path);
+    const paths: pipeline.Paths = try .of(lasting, options.app);
+    options.app.output = try std.fs.path.join(lasting, &.{ paths.out_path, options.app.name });
+    // Held for as long as roux dev runs: what it makes goes in this
+    // directory (`Paths.out`), and when it is deleted roux dev stops.
+    var app_dir = try Io.Dir.cwd().openDir(io, options.app.dir, .{});
+    defer app_dir.close(io);
+    try app_dir.createDirPath(io, paths.out);
+    var watch: Watch = try .start(gpa, io, options, app_dir, paths.out_path);
     defer watch.deinit(gpa);
     var state: State = .{
         .options = options,
+        .app_dir = app_dir,
         .static = &watch.static,
         .environ = environ,
         .cache = .init(gpa),
@@ -128,37 +151,24 @@ pub fn run(
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     stop_on_signals();
-    // Until SIGINT or SIGTERM: roux dev runs as long as it is wanted.
+    // Until SIGINT or SIGTERM, or the app's directory is deleted: roux dev
+    // runs as long as it is wanted.
     while (!stopping.load(.monotonic)) {
         _ = arena_state.reset(.retain_capacity);
-        if (watch.static_told) try state.static_said(arena_state.allocator(), io, &watch, stderr);
-        if (watch.listening_told) try state.listening_said(arena_state.allocator(), io, &watch);
+        const arena = arena_state.allocator();
+        if (watch.static_told) try state.static_said(arena, io, &watch, stderr);
+        if (watch.listening_told) try state.listening_said(arena, io, &watch);
         const changed = watch.changed;
         watch.changed.reset();
         var names: [16][]const u8 = undefined;
-        const pass: Pass = .{
+        try state.pass_said(arena, io, stderr, .{
             .markup_only = changed.markup_only(),
             .written = changed.written(&names),
-        };
-        // What the pass says (roux's lines, the generator's refusals,
-        // roc's messages) goes to the terminal, and when it failed, to
-        // the page too: the running app shows it over the page.
-        const arena = arena_state.allocator();
-        var report: Io.Writer.Allocating = .init(arena);
-        const failed = if (state.pass(arena, io, &report.writer, pass)) |_|
-            false
-        else |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => true,
-        };
-        stderr.writeAll(report.written()) catch {};
-        if (failed) {
-            state.tell_page(arena, io, report.written());
-        } else if (state.page_told) {
-            state.tell_page(arena, io, "");
+        });
+        if (try state.wait(arena, io, &watch, stderr) == .gone) {
+            try stderr.writeAll("roux dev: the app's directory was deleted; stopping\n");
+            return error.AppDeleted;
         }
-        stderr.flush() catch {};
-        try state.wait(arena, io, &watch, stderr);
     }
 }
 
@@ -194,6 +204,9 @@ fn stop_on_signals() void {
     _ = linux.sigaction(.USR2, &ignore, null); // the same, for a failure's news
 }
 
+/// Why roux dev's wait for an edit ended (`Watch.wait`).
+const Woken = enum { source, exited, stopping, gone };
+
 /// What inotify said since the last pass.
 const Pass = struct {
     /// Only templates changed, so no other source did and hashing them is
@@ -205,6 +218,8 @@ const Pass = struct {
 
 const State = struct {
     options: Options,
+    /// The app's directory, held by `run`.
+    app_dir: Io.Dir,
     /// The app's static directory, once its host has said (`Watch.static`).
     static: *const ?[]const u8,
     environ: *const std.process.Environ.Map,
@@ -226,12 +241,13 @@ const State = struct {
     /// The running app shows a failure over its pages (`tell_page`).
     page_told: bool = false,
 
-    /// Until a source changes; the app exiting on its own is said, and
-    /// waits for an edit too, unless it asked to be started again.
-    fn wait(state: *State, arena: Allocator, io: Io, watch: *Watch, stderr: *Io.Writer) !void {
+    /// Until a source changes, the app's directory is deleted, or roux dev
+    /// is asked to stop; the app exiting on its own is said, and waits for
+    /// an edit too, unless it asked to be started again.
+    fn wait(state: *State, arena: Allocator, io: Io, watch: *Watch, stderr: *Io.Writer) !Woken {
         while (true) {
             switch (try watch.wait(state.child_fd)) {
-                .source, .stopping => return,
+                .source, .stopping, .gone => |woken| return woken,
                 .exited => if (state.exited(io, stderr)) {
                     const paths: pipeline.Paths = try .of(arena, state.options.app);
                     state.restart(arena, io, paths) catch |err| {
@@ -287,11 +303,36 @@ const State = struct {
         state.page_told = text.len > 0;
     }
 
+    /// A pass, and what it says (roux's lines, the generator's refusals,
+    /// roc's messages) on the terminal, and when it failed, on the page
+    /// too: the running app shows it over the page.
+    fn pass_said(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer, p: Pass) !void {
+        var report: Io.Writer.Allocating = .init(arena);
+        const passed = if (state.pass(arena, io, &report.writer, p)) |_|
+            true
+        else |err| switch (err) {
+            error.OutOfMemory => return err,
+            // A pass cut short by SIGINT or SIGTERM failed for that alone.
+            else => if (stopping.load(.monotonic)) return else false,
+        };
+        stderr.writeAll(report.written()) catch {};
+        if (!passed) {
+            state.tell_page(arena, io, report.written());
+        } else if (state.page_told) {
+            state.tell_page(arena, io, "");
+        }
+        stderr.flush() catch {};
+    }
+
     /// One pass: what changed is built, then the app restarted, or told to
     /// reread its templates.
     fn pass(state: *State, arena: Allocator, io: Io, stderr: *Io.Writer, p: Pass) !void {
         const app = state.options.app;
         const start = Io.Timestamp.now(io, .awake);
+        const bounds: Bounds = .{
+            .deadline = start.addDuration(.fromMilliseconds(tools_ms_max)),
+            .app_dir = state.app_dir,
+        };
         // After a failure the sources may hold Roc the app was not built
         // from (a contract that changed, roc that failed): hash them all.
         const before = if (p.markup_only and state.child != null and !state.failing)
@@ -301,10 +342,12 @@ const State = struct {
         const paths: pipeline.Paths = try .of(arena, app);
         // roux-db runs when roux build would: the app has `db/schema.sql`.
         if (before.sql != state.built.sql and pipeline.has_queries(io, app)) {
-            queries(arena, io, paths, app, stderr) catch |err| return state.failed(stderr, err);
+            queries(arena, io, paths, app, bounds, stderr) catch |err| {
+                return state.failed(stderr, err);
+            };
         }
-        const built = state.generate_and_roc(arena, io, paths, before, p, stderr) catch |err|
-            return state.failed(stderr, err);
+        const generated = state.generate_and_roc(arena, io, paths, before, p, bounds, stderr);
+        const built = generated catch |err| return state.failed(stderr, err);
         const now = built.now;
         const roc = now.roc != state.built.roc;
         const static = now.static != state.built.static;
@@ -347,8 +390,8 @@ const State = struct {
 
     /// The templates generated and, when Roc changed (an edit, or a
     /// contract that rewrote its Page.roc), roc built while glue lays the
-    /// contracts out: what the sources are now, and whether the program
-    /// changed.
+    /// contracts out, both within `bounds`: what the sources are now, and
+    /// whether the program changed.
     fn generate_and_roc(
         state: *State,
         arena: Allocator,
@@ -356,11 +399,13 @@ const State = struct {
         paths: pipeline.Paths,
         before: Digests,
         p: Pass,
+        bounds: Bounds,
         stderr: *Io.Writer,
     ) !struct { now: Digests, program_changed: bool } {
         const app = state.options.app;
+        const cache = &state.cache;
         var generation =
-            try pipeline.begin(arena, io, paths, app, &state.cache, p.written, stderr);
+            try pipeline.begin(arena, io, state.app_dir, paths, app, cache, p.written, stderr);
         const now = if (generation.modules_changed)
             digests(arena, io, app.dir, state.static.*) catch |err| {
                 rocstache.generate.abandon(io, &generation);
@@ -390,12 +435,17 @@ const State = struct {
             }
         else
             null;
+        // `finish` waits for glue: a glue killed fails it, and roc goes too.
+        if (rocstache.generate.glue_running(&generation)) |glue| {
+            bound(io, glue, "roc glue", bounds, stderr);
+        }
         const generated = rocstache.generate.finish(arena, io, &generation, stderr) catch |err| {
             if (roc) |*child| child.kill(io);
             return err;
         };
         if (roc) |*child| {
-            const waited = pipeline.wait_roc(io, child);
+            bound(io, child, "roc", bounds, stderr);
+            const waited = pipeline.wait_tool(io, child);
             const said = out.readFileAlloc(io, roc_log_name, arena, .limited(1 << 20)) catch "";
             stderr.writeAll(said) catch {};
             try waited;
@@ -610,21 +660,25 @@ test address_said {
     try std.testing.expect(address_said("localhost:8080") == null);
 }
 
-/// roux-db on the app's queries, its messages into the pass's report (and
-/// so over the page when it refuses one), as roc's are.
+/// roux-db on the app's queries, within `bounds`, its messages into the
+/// pass's report (and so over the page when it refuses one), as roc's
+/// are.
 fn queries(
     arena: Allocator,
     io: Io,
     paths: pipeline.Paths,
     app: pipeline.App,
+    bounds: Bounds,
     report: *Io.Writer,
 ) !void {
-    try Io.Dir.cwd().createDirPath(io, paths.out_path);
-    var out = try Io.Dir.cwd().openDir(io, paths.out_path, .{});
+    try bounds.app_dir.createDirPath(io, paths.out);
+    var out = try bounds.app_dir.openDir(io, paths.out, .{});
     defer out.close(io);
     const log = try out.createFile(io, roux_db_log_name, .{ .truncate = true });
     defer log.close(io);
-    const ran = pipeline.query_types(arena, io, app, log);
+    var roux_db = try pipeline.start_query_types(arena, io, app, log);
+    bound(io, &roux_db, "roux-db", bounds, report);
+    const ran = pipeline.wait_tool(io, &roux_db);
     const said = out.readFileAlloc(io, roux_db_log_name, arena, .limited(1 << 20)) catch "";
     report.writeAll(said) catch {};
     return ran;
@@ -732,6 +786,8 @@ const Watch = struct {
     gpa: Allocator,
     io: Io,
     options: Options,
+    /// The app's directory, held by `run`: deleted, roux dev stops.
+    app_dir: Io.Dir,
     /// The build directory, from the working directory.
     out_path: []const u8,
     /// Its watch: only `static_name` written there counts.
@@ -807,13 +863,20 @@ const Watch = struct {
         }
     };
 
-    fn start(gpa: Allocator, io: Io, options: Options, out_path: []const u8) !Watch {
+    fn start(
+        gpa: Allocator,
+        io: Io,
+        options: Options,
+        app_dir: Io.Dir,
+        out_path: []const u8,
+    ) !Watch {
         const fd: i32 = @intCast(try syscall(linux.inotify_init1(linux.IN.CLOEXEC)));
         var watch: Watch = .{
             .fd = fd,
             .gpa = gpa,
             .io = io,
             .options = options,
+            .app_dir = app_dir,
             .out_path = out_path,
         };
         errdefer watch.deinit(gpa);
@@ -930,14 +993,13 @@ const Watch = struct {
         watch.changed.listing = true;
     }
 
-    const Woken = enum { source, exited, stopping };
-
     /// Blocks until a source changes, then drains the events already
     /// queued; or until the app (`child_fd`, a pidfd; -1 for none) exits,
-    /// or a signal asks roux dev to stop.
+    /// the app's directory is deleted, or a signal asks roux dev to stop.
     fn wait(watch: *Watch, child_fd: i32) !Woken {
         while (!stopping.load(.monotonic)) {
-            switch (try watch.read(-1, child_fd)) {
+            if (deleted(watch.io, watch.app_dir)) return .gone;
+            switch (try watch.read(idle_check_ms, child_fd)) {
                 .source => break,
                 .exited => return .exited,
                 .quiet, .timeout => {},
@@ -952,6 +1014,8 @@ const Watch = struct {
             if (try watch.read(quiet_ms, -1) == .timeout) break;
             if (stopping.load(.monotonic)) return .stopping;
         }
+        // Deleting the app's directory deletes its files first, a source.
+        if (deleted(watch.io, watch.app_dir)) return .gone;
         return .source;
     }
 
@@ -1023,6 +1087,69 @@ const Watch = struct {
         return if (source) .source else .quiet;
     }
 };
+
+/// What ends a pass's tools early, besides SIGINT and SIGTERM (`stopping`).
+const Bounds = struct {
+    /// `tools_ms_max` into the pass.
+    deadline: Io.Timestamp,
+    /// The app's directory, deleted (`deleted`).
+    app_dir: Io.Dir,
+};
+
+/// Returns once a pass's tool has exited, or has been killed: past the
+/// deadline (said on `report`), with the app's directory deleted, or as
+/// roux dev stops. Not reaped: its own wait does that, at once.
+fn bound(
+    io: Io,
+    tool: *const std.process.Child,
+    name: []const u8,
+    bounds: Bounds,
+    report: *Io.Writer,
+) void {
+    const pid = tool.id.?;
+    const ended = until_exit(io, pid, bounds) catch |err| {
+        report.print("roux dev: {s} not waited for ({t}); killed\n", .{ name, err }) catch {};
+        _ = linux.kill(pid, .KILL);
+        return;
+    };
+    switch (ended) {
+        .exited => {},
+        .stopping, .deleted => _ = linux.kill(pid, .KILL),
+        .late => {
+            report.print("roux dev: {s} still running {d} s into the pass; killed\n", .{
+                name,
+                tools_ms_max / std.time.ms_per_s,
+            }) catch {};
+            _ = linux.kill(pid, .KILL);
+        },
+    }
+}
+
+/// Until `pid` exits or `bounds` end it, or roux dev is asked to stop: its
+/// pidfd polled `stop_check_ms` at a time, so a signal that lands between
+/// a look and the poll is still seen.
+fn until_exit(io: Io, pid: linux.pid_t, bounds: Bounds) !enum { exited, late, deleted, stopping } {
+    const fd: i32 = @intCast(try syscall(linux.pidfd_open(pid, 0)));
+    defer _ = linux.close(fd);
+    while (!stopping.load(.monotonic)) {
+        if (deleted(io, bounds.app_dir)) return .deleted;
+        const left_ms = Io.Timestamp.now(io, .awake).durationTo(bounds.deadline).toMilliseconds();
+        if (left_ms <= 0) return .late;
+        var fds = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+        const timeout: i32 = @intCast(@min(left_ms, stop_check_ms));
+        if (try syscall(linux.poll(&fds, fds.len, timeout)) > 0) return .exited;
+    }
+    return .stopping;
+}
+
+/// Whether a directory held open was deleted: its links are 0. inotify
+/// cannot say: a directory still in use, as a working directory or an open
+/// handle (roux dev's, the app's), reports no IN_DELETE_SELF until the last
+/// use ends (Linux 7.2, 2026-10-26).
+fn deleted(io: Io, dir: Io.Dir) bool {
+    const stat = dir.stat(io) catch return false;
+    return stat.nlink == 0;
+}
 
 fn syscall(result: usize) !usize {
     return switch (linux.errno(result)) {

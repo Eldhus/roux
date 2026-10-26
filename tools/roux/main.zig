@@ -109,7 +109,12 @@ pub fn main(init: std.process.Init) !void {
             .port = flags.port,
         }, init.environ_map);
     result catch |err| switch (err) {
-        error.Invalid, error.GlueFailed, error.ChildFailed, error.AttachFailed => {
+        error.Invalid,
+        error.GlueFailed,
+        error.ChildFailed,
+        error.AttachFailed,
+        error.AppDeleted,
+        => {
             stderr.flush() catch {};
             std.process.exit(1);
         },
