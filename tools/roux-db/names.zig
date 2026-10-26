@@ -33,6 +33,27 @@ pub fn is_pascal(name: []const u8) bool {
     return true;
 }
 
+/// Types a query module sees without declaring them, which a row type so
+/// named would shadow (roc then misreads every use): the pinned nightly's
+/// auto-imported builtins (src/canonicalize/CIR.zig's `builtin_type_specs`,
+/// f6c6cfb), and `Sqlite`, which each query module imports.
+const reserved_types = [_][]const u8{
+    "Bool",        "Try",          "Dict",         "Set",    "Str",      "Hasher",
+    "Iter",        "Stream",       "List",         "Box",    "Encoding", "Json",
+    "Utf8Problem", "Utf16Problem", "Utf32Problem", "Range",  "U8",       "I8",
+    "U16",         "I16",          "U32",          "I32",    "U64",      "I64",
+    "U128",        "I128",         "Dec",          "F32",    "F64",      "U8x16",
+    "I8x16",       "U16x8",        "I16x8",        "U32x4",  "I32x4",    "U64x2",
+    "I64x2",       "Numeral",      "Crypto",       "Sqlite",
+};
+
+pub fn is_reserved_type(name: []const u8) bool {
+    for (reserved_types) |reserved| {
+        if (std.mem.eql(u8, reserved, name)) return true;
+    }
+    return false;
+}
+
 /// Words Roc reserves; a field or function so named would not parse. The
 /// template compiler's list, the pinned nightly's, so the two never differ.
 pub fn is_roc_keyword(name: []const u8) bool {

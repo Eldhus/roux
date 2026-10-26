@@ -303,6 +303,27 @@ const refusals = [_]Refusal{
         .says = "a second query named q",
     },
     .{
+        .case = "a row type that is a builtin",
+        .query = "-- name: list :many(10)\nSELECT name FROM dish;",
+        .says = "its row type would be List, which this module already has",
+    },
+    .{
+        .case = "a row type that is the import",
+        .query = "-- name: sqlite :one\nSELECT name FROM dish;",
+        .says = "its row type would be Sqlite, which this module already has",
+    },
+    .{
+        .case = "a row type that is the module",
+        .query = "-- name: dishes :many(10)\nSELECT name FROM dish;",
+        .says = "its row type would be Dishes, which this module already has",
+    },
+    .{
+        .case = "two queries of one row type",
+        .query = "-- name: top10 :many(10)\nSELECT name FROM dish;\n" ++
+            "-- name: top_10 :many(10)\nSELECT name FROM dish;",
+        .says = "query top_10: its row type would be Top10, as top10's is",
+    },
+    .{
         .case = "an unknown table",
         .query = "-- name: q :one\nSELECT a FROM nowhere;",
         .says = "no such table",

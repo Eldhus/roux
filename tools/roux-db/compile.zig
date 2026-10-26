@@ -291,15 +291,39 @@ fn compile_file(compiler: *Compiler, file: u16, input: Input) void {
     } else {
         compiler.diagnostics.add(file, at, "more than {d} statements", .{file_statements_max});
     }
-    check_unique_names(compiler, file, compiler.statements.items[first..]);
+    check_names(compiler, file, module, compiler.statements.items[first..]);
 }
 
-fn check_unique_names(compiler: *Compiler, file: u16, statements: []const Statement) void {
+/// Each query's name, and its row type (`by_id`'s `ById`), one of a kind:
+/// a row type is declared in the module beside the types its signatures
+/// use, so it must not be one of them, nor the module itself, nor another
+/// query's (`top_10` and `top10` are both `Top10`).
+fn check_names(
+    compiler: *Compiler,
+    file: u16,
+    module: []const u8,
+    statements: []const Statement,
+) void {
     for (statements, 0..) |statement, i| {
+        var row_buffer: [names.name_bytes_max]u8 = undefined;
+        const row = names.pascal_from_snake(statement.name, &row_buffer);
+        const has_row = statement.kind != .exec;
+        if (has_row and (names.is_reserved_type(row) or std.mem.eql(u8, row, module))) {
+            compiler.diagnostics.add(file, statement.name_offset, "query {s}: its row type " ++
+                "would be {s}, which this module already has; name it otherwise", .{
+                statement.name,
+                row,
+            });
+        }
         for (statements[0..i]) |earlier| {
+            var earlier_buffer: [names.name_bytes_max]u8 = undefined;
+            const earlier_row = names.pascal_from_snake(earlier.name, &earlier_buffer);
             if (std.mem.eql(u8, earlier.name, statement.name)) {
                 compiler.diagnostics.add(file, statement.name_offset, "a second query " ++
                     "named {s}", .{statement.name});
+            } else if (has_row and earlier.kind != .exec and std.mem.eql(u8, earlier_row, row)) {
+                compiler.diagnostics.add(file, statement.name_offset, "query {s}: its row " ++
+                    "type would be {s}, as {s}'s is", .{ statement.name, row, earlier.name });
             }
         }
     }
