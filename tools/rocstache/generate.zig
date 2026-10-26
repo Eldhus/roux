@@ -46,6 +46,10 @@ pub const Options = struct {
     build: []const u8,
     /// The pinned `roc`, for glue.
     roc: []const u8,
+    /// The pinned nightly's name (`nightly-2026-10-24-f6c6cfb`), which roux
+    /// checks `roc` is: part of the layouts' identity, the same wherever roc
+    /// lives, so two machines generate the same `Templates.roc`.
+    roc_version: []const u8,
     /// The templates whose files changed since the last generation, by
     /// name (inotify told `roux dev`); the others' kept sources are theirs.
     /// Null: read every one, and list the directory.
@@ -632,16 +636,18 @@ fn glue_start(
     try layout.write_contracts(contracts, &declared.writer);
     var identity = std.hash.Wyhash.init(0);
     identity.update(layout.spec);
-    identity.update(options.roc);
+    assert(options.roc_version.len > 0);
+    identity.update(options.roc_version);
     identity.update(declared.written());
     for (kept) |k| identity.update(k.name);
     const id = identity.final();
-    // The layouts are the compiler's: a new spec or another roc (a nightly
-    // bump; its path names it) lays them out again, as a contract does.
+    // The layouts are the compiler's: a new spec or another nightly (a
+    // bump) lays them out again, as a contract does.
     const c = cache;
     const spec_changed =
         try write_output(c, gpa, io, build, "build", "glue/Layout.roc", layout.spec);
-    const roc_changed = try write_output(c, gpa, io, build, "build", "glue/roc", options.roc);
+    const roc_changed =
+        try write_output(c, gpa, io, build, "build", "glue/roc", options.roc_version);
     _ = try write_output(c, gpa, io, build, "build", "glue/main.roc", platform.written());
     const contracts_changed =
         try write_output(c, gpa, io, build, "build", "glue/Contracts.roc", declared.written());

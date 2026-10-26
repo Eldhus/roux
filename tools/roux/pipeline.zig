@@ -9,6 +9,7 @@ const assert = std.debug.assert;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const rocstache = @import("rocstache");
+const roux_options = @import("roux_options");
 
 pub const App = struct {
     /// The directory holding the app's `.roc` and its templates.
@@ -135,6 +136,7 @@ pub fn begin(
         .app = try std.fs.path.join(arena, &.{ app.dir, rocstache.generate.templates_dir }),
         .build = paths.out_path,
         .roc = app.roc,
+        .roc_version = roux_options.roc_version,
         .changed = changed,
     }, cache, stderr);
 }
