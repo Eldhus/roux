@@ -188,6 +188,47 @@ fn write_one(database: *Database, index: u32, params: []const Value, collected: 
     try database_module.commit_write(database, testing.io, &report);
 }
 
+test "database: an app's waits replace the defaults; 0 keeps one; past a bound refused" {
+    const defaults: database_module.Limits = .{};
+    const kept = database_module.limits_with(.{
+        .read_wait_ms = 0,
+        .write_wait_ms = 0,
+        .writers_waiting = 0,
+    }).?;
+    try testing.expectEqual(defaults, kept);
+    const queued = database_module.limits_with(.{
+        .read_wait_ms = 5_000,
+        .write_wait_ms = 5_000,
+        .writers_waiting = 256,
+    }).?;
+    try testing.expectEqual(5_000, queued.read_wait_ms);
+    try testing.expectEqual(5_000, queued.write_wait_ms);
+    try testing.expectEqual(256, queued.writers_waiting);
+    try testing.expectEqual(defaults.statement_time_ms, queued.statement_time_ms);
+    try testing.expectEqual(defaults.readers_per_shard, queued.readers_per_shard);
+    const one = database_module.limits_with(.{
+        .read_wait_ms = 0,
+        .write_wait_ms = 2_000,
+        .writers_waiting = 0,
+    }).?;
+    try testing.expectEqual(defaults.read_wait_ms, one.read_wait_ms);
+    try testing.expectEqual(2_000, one.write_wait_ms);
+    const at_bounds = database_module.limits_with(.{
+        .read_wait_ms = database_module.wait_ms_max,
+        .write_wait_ms = database_module.wait_ms_max,
+        .writers_waiting = database_module.writers_waiting_max,
+    });
+    try testing.expect(at_bounds != null);
+    const wait_past = database_module.wait_ms_max + 1;
+    const writers_past = database_module.writers_waiting_max + 1;
+    const past = [_]database_module.Waits{
+        .{ .read_wait_ms = wait_past, .write_wait_ms = 0, .writers_waiting = 0 },
+        .{ .read_wait_ms = 0, .write_wait_ms = wait_past, .writers_waiting = 0 },
+        .{ .read_wait_ms = 0, .write_wait_ms = 0, .writers_waiting = writers_past },
+    };
+    for (past) |waits| try testing.expectEqual(null, database_module.limits_with(waits));
+}
+
 test "database: synchronous as the app asks, on the writer and every reader, read back" {
     var fixture: Fixture = try .init();
     defer fixture.deinit();

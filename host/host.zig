@@ -583,11 +583,22 @@ export fn hosted_sqlite_open(
     schema: abi.RocStr,
     statements: SqliteStatements,
     synchronous: abi.FullOrNormal,
+    read_wait_ms: u32,
+    write_wait_ms: u32,
+    writers_waiting: u32,
 ) callconv(.c) SqliteOpenResult {
     defer path.decref(host());
     defer schema.decref(host());
     defer statements.deinit(host());
     if (serving or database != null) return open_error("Sqlite.open! belongs to init!, once");
+    const limits = database_module.limits_with(.{
+        .read_wait_ms = read_wait_ms,
+        .write_wait_ms = write_wait_ms,
+        .writers_waiting = writers_waiting,
+    }) orelse return open_error(std.fmt.comptimePrint(
+        "a wait past {d} ms, or more than {d} writers waiting",
+        .{ database_module.wait_ms_max, database_module.writers_waiting_max },
+    ));
     const gpa = std.heap.page_allocator;
     const roc_statements = statements.items();
     const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch
@@ -616,14 +627,16 @@ export fn hosted_sqlite_open(
             .normal => .normal,
         },
     };
-    database = database_module.open(gpa, description, .{}, &report) catch
+    database = database_module.open(gpa, description, limits, &report) catch
         return open_error(report.message());
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
         return open_error("out of memory");
-    var banner: [256]u8 = undefined;
-    const line = "roux: database {s}, {d} statements, synchronous {t}";
+    var banner: [512]u8 = undefined;
+    const line = "roux: database {s}, {d} statements, synchronous {t}, " ++
+        "waits up to {d} ms for a reader, {d} ms for the writer, {d} writers";
     write_line(1, std.fmt.bufPrint(&banner, line, .{
-        where, descriptions.len, description.synchronous,
+        where,               descriptions.len,     description.synchronous,
+        limits.read_wait_ms, limits.write_wait_ms, limits.writers_waiting,
     }) catch "roux: database");
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
 }

@@ -40,7 +40,18 @@ Sqlite := [].{
 	## `Normal`: at the next checkpoint; a power loss or a kernel panic
 	## may lose the commits since (a crash of the app loses none), for
 	## about 30 times the commits a second.
-	Settings : { synchronous : [Full, Normal] }
+	##
+	## How long a request waits for the database before a 503, and how many
+	## may wait for the writer, each when given: the host's defaults shed
+	## load early (a reader 100 ms, the writer 1 s, 64 waiting); an app that
+	## would rather queue raises them, up to 60 s and 4,096. Each is more
+	## than 0.
+	Settings : {
+		synchronous : [Full, Normal],
+		read_wait_ms ?: U32,
+		write_wait_ms ?: U32,
+		writers_waiting ?: U32,
+	}
 
 	## A parameter, or a cell of a row.
 	Value : Host.SqliteValue
@@ -86,11 +97,20 @@ Sqlite := [].{
 
 	## Opens the database, once, in `init!`.
 	open! : Database, Settings => Try(Db, [DbErr(Err)])
-	open! = |database, { synchronous }|
-		match Host.sqlite_open!(database.path, database.schema, database.statements, synchronous) {
+	open! = |database, settings| {
+		# 0 is the host's default, so a 0 given is refused here.
+		read_wait_ms = settings.?read_wait_ms ?? 0
+		write_wait_ms = settings.?write_wait_ms ?? 0
+		writers_waiting = settings.?writers_waiting ?? 0
+		given_zero = [settings.?read_wait_ms, settings.?write_wait_ms, settings.?writers_waiting].contains(Ok(0))
+		if given_zero {
+			return Err(DbErr(Failed("read_wait_ms, write_wait_ms and writers_waiting are more than 0")))
+		}
+		match Host.sqlite_open!(database.path, database.schema, database.statements, settings.synchronous, read_wait_ms, write_wait_ms, writers_waiting) {
 			Ok({}) => Ok(Db.{ opened: Bool.True })
 			Err(message) => Err(DbErr(Failed(message)))
 		}
+	}
 
 	read : Db, Server.Request -> Read
 	read = |_db, request| Read.{ request: request.body, writer: Bool.False }

@@ -57,6 +57,42 @@ pub const Limits = struct {
     read_wait_ms: u32 = 100,
 };
 
+/// The waits an app may set (`Sqlite.Settings`); 0 keeps the default.
+pub const Waits = struct {
+    read_wait_ms: u32,
+    write_wait_ms: u32,
+    writers_waiting: u32,
+};
+/// The most an app may set a wait to: a request held a minute is lost anyway.
+pub const wait_ms_max = 60_000;
+/// The most writers an app may let wait.
+pub const writers_waiting_max = 4096;
+
+comptime {
+    const defaults: Limits = .{};
+    assert(defaults.read_wait_ms <= wait_ms_max);
+    assert(defaults.write_wait_ms <= wait_ms_max);
+    assert(defaults.writers_waiting <= writers_waiting_max);
+}
+
+/// The host's limits with an app's waits; null for a wait past its bound.
+pub fn limits_with(waits: Waits) ?Limits {
+    if (waits.read_wait_ms > wait_ms_max) return null;
+    if (waits.write_wait_ms > wait_ms_max) return null;
+    if (waits.writers_waiting > writers_waiting_max) return null;
+    var limits: Limits = .{};
+    if (waits.read_wait_ms != 0) limits.read_wait_ms = waits.read_wait_ms;
+    if (waits.write_wait_ms != 0) limits.write_wait_ms = waits.write_wait_ms;
+    if (waits.writers_waiting != 0) limits.writers_waiting = waits.writers_waiting;
+    assert(limits.read_wait_ms > 0);
+    assert(limits.read_wait_ms <= wait_ms_max);
+    assert(limits.write_wait_ms > 0);
+    assert(limits.write_wait_ms <= wait_ms_max);
+    assert(limits.writers_waiting > 0);
+    assert(limits.writers_waiting <= writers_waiting_max);
+    return limits;
+}
+
 /// Readers a pool holds, at most (a bit each in `ReaderPool.free`).
 pub const readers_per_shard_max = 32;
 /// Statements of schema.sql.

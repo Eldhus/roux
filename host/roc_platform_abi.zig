@@ -1848,13 +1848,16 @@ pub const HostResponse_stream_endArgs = extern struct {
 };
 
 /// Arguments for Host.sqlite_open!
-/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal] => Try({}, Str)
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal], U32, U32, U32 => Try({}, Str)
 /// Refcounted fields are owned by the hosted function.
 pub const HostSqlite_openArgs = extern struct {
     arg0: RocStr,
     arg1: RocStr,
     arg2: RocList(__AnonStruct_2d568438e96cd20c),
     arg3: FullOrNormal,
+    arg4: u32,
+    arg5: u32,
+    arg6: u32,
 };
 
 /// Arguments for Host.sqlite_run!
@@ -2357,7 +2360,7 @@ pub extern fn hosted_response_stream_flush(arg0: u64) callconv(.c) HostResponse_
 pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_stream_startResult;
 
 /// Hosted symbol for Host.sqlite_open!
-/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal] => Try({}, Str)
+/// Roc signature: Str, Str, List({ columns : List(U8), name : Str, params : List(U8), rows_max : U32, sql : Str, writes : Bool }), [Full, Normal], U32, U32, U32 => Try({}, Str)
 /// Owned arguments. Release each exactly once before returning, unless it is
 /// moved into storage or into the result:
 ///     arg0.decref(roc_host);
@@ -2365,7 +2368,7 @@ pub extern fn hosted_response_stream_end(arg0: u64) callconv(.c) HostResponse_st
 ///     decrefListOf__AnonStruct_2d568438e96cd20c(arg2, roc_host);
 ///     arg3.decref(roc_host);
 /// The result is owned by Roc: return exactly one owned reference.
-pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c), arg3: FullOrNormal) callconv(.c) HostSqlite_openResult;
+pub extern fn hosted_sqlite_open(arg0: RocStr, arg1: RocStr, arg2: RocList(__AnonStruct_2d568438e96cd20c), arg3: FullOrNormal, arg4: u32, arg5: u32, arg6: u32) callconv(.c) HostSqlite_openResult;
 
 /// Hosted symbol for Host.sqlite_run!
 /// Roc signature: U64, U32, Bool, List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)]) => Try(List(List([Blob(List(U8)), Integer(I64), Null, Real(F64), Text(Str)])), { code : U8, message : Str })

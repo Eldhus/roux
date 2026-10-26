@@ -59,8 +59,12 @@ Host := [].{
 	SqliteErr : { code : U8, message : Str }
 
 	## Opens the app's one database, in `init!` (path, schema.sql, the
-	## statements, when a commit is durable); `Err` says why not.
-	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous => Try({}, Str)
+	## statements, when a commit is durable, then the waits as
+	## host/database.zig's `Waits`: read_wait_ms, write_wait_ms,
+	## writers_waiting, 0 for the host's default); `Err` says why not. The
+	## waits go as numbers, not a record: Zig 0.17 broke on reading a record
+	## an exported function takes by value (an LLVM memcpy, -Osafe).
+	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous, U32, U32, U32 => Try({}, Str)
 
 	## As host/database.zig's `Synchronous`.
 	SqliteSynchronous : [Full, Normal]
