@@ -105,12 +105,14 @@ pub fn run(
     var stderr_file: Io.File.Writer = .initStreaming(.stderr(), io, &stderr_buffer);
     const stderr = &stderr_file.interface;
     defer stderr.flush() catch {};
+    // What lasts as long as roux dev: the build's paths.
+    var lasting_state: std.heap.ArenaAllocator = .init(gpa);
+    defer lasting_state.deinit();
+    const lasting = lasting_state.allocator();
     // The binary in the build directory, named as roux build names it.
     var options = options_given;
-    const out_path = (try pipeline.Paths.of(gpa, options.app)).out_path;
-    defer gpa.free(out_path);
-    options.app.output = try std.fs.path.join(gpa, &.{ out_path, options.app.name });
-    defer gpa.free(options.app.output);
+    const out_path = (try pipeline.Paths.of(lasting, options.app)).out_path;
+    options.app.output = try std.fs.path.join(lasting, &.{ out_path, options.app.name });
     try Io.Dir.cwd().createDirPath(io, out_path);
     var watch: Watch = try .start(gpa, io, options, out_path);
     defer watch.deinit(gpa);
