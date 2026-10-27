@@ -583,6 +583,51 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
     return runs;
 }
 
+test "attached: the host reads the section roux build adds, and only that" {
+    const gpa = testing.allocator;
+    const program_format = rocstache.program;
+    try testing.expectEqualStrings(program_format.section_name, templates.section_name);
+    var bytes: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&bytes);
+    const code = [_]u64{ 2, 0 };
+    try program_format.write(.{ .code = &code, .text = "abc", .layouts = 7 }, &writer);
+    const program = writer.buffered();
+    const elf = try program_format.test_elf(gpa, "code", 3);
+    defer gpa.free(elf);
+    const attached = try program_format.test_attached(gpa, elf, program);
+    defer gpa.free(attached);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = testing.io;
+    const path_of = struct {
+        fn path_of(buffer: []u8, dir: []const u8, name: []const u8) ![:0]const u8 {
+            return std.fmt.bufPrintSentinel(buffer, ".zig-cache/tmp/{s}/{s}", .{ dir, name }, 0);
+        }
+    }.path_of;
+    var buffer: [128]u8 = undefined;
+    try tmp.dir.writeFile(io, .{ .sub_path = "attached", .data = attached });
+    const words = try templates.read_attached(try path_of(&buffer, &tmp.sub_path, "attached"));
+    defer std.heap.page_allocator.free(words);
+    try testing.expectEqualSlices(u8, program, std.mem.sliceAsBytes(words));
+    // No section: an app without templates, or one a tool stripped.
+    try tmp.dir.writeFile(io, .{ .sub_path = "bare", .data = elf });
+    const bare = templates.read_attached(try path_of(&buffer, &tmp.sub_path, "bare"));
+    try testing.expectError(error.NoneAttached, bare);
+    // The old trailer is not read: the bytes past the ELF are not looked at.
+    try testing.expectEqual(@as(usize, 0x50), program.len);
+    const trailer = "\x50\x00\x00\x00\x00\x00\x00\x00ROUXTPL1";
+    const appended = try std.mem.concat(gpa, u8, &.{ elf, program, trailer });
+    defer gpa.free(appended);
+    try tmp.dir.writeFile(io, .{ .sub_path = "appended", .data = appended });
+    const old = templates.read_attached(try path_of(&buffer, &tmp.sub_path, "appended"));
+    try testing.expectError(error.NoneAttached, old);
+    // Not an ELF: malformed, not "none".
+    try tmp.dir.writeFile(io, .{ .sub_path = "text", .data = "#!/bin/sh\n" });
+    const text = templates.read_attached(try path_of(&buffer, &tmp.sub_path, "text"));
+    try testing.expectError(error.Malformed, text);
+}
+
 fn parsed(arena: std.mem.Allocator, source: []const u8) !*const parse.Tree {
     const tree = try arena.create(parse.Tree);
     var diagnostic: parse.Diagnostic = .{};

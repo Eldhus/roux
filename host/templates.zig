@@ -43,25 +43,31 @@ const Op = enum(u4) {
 const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
 
 /// The program roux build attached to the executable, read at start-up
-/// (`load_attached`): roc links the app as any platform's, and roux
-/// appends the templates' program after it, then a trailer: the program's
-/// length in bytes and `attached_magic`. Words: the code's length in
-/// words, the text's in bytes, the layouts' identity, the code, then the
-/// text, with `slack` bytes after it (tools/rocstache/program.zig).
+/// (`load_attached`): roc links the app as any platform's, and roux adds
+/// the templates' program to it as the section `section_name`
+/// (tools/rocstache/program.zig's `attachment`). Words: the code's length
+/// in words, the text's in bytes, the layouts' identity, the code, then
+/// the text, with `slack` bytes after it.
 var attached: Data = undefined;
+/// Whether the executable has no program: an app without templates, or one
+/// whose section a tool removed (`render` says which it was).
+var none_attached = false;
 
-pub const attached_magic = "ROUXTPL1";
+pub const section_name = ".roux.templates";
 
 /// An app with no templates: no tag, no code, no text.
 const empty_words = [_]u64{ 2, 0, 0, 0, 0 } ++ @as([slack / 8]u64, @splat(0));
 
-/// Reads the program after the executable's own bytes; none attached is an
-/// app without templates. Called once, before `init!`. An attachment that
-/// is malformed stops the app: it was built wrong.
+/// Reads the program from the executable's section; none is an app without
+/// templates. Called once, before `init!`. A program that is malformed
+/// stops the app: it was built wrong.
 pub fn load_attached() void {
     attached = data_at(&empty_words);
-    const words = read_attached() catch |err| switch (err) {
-        error.NoneAttached => return,
+    const words = read_attached("/proc/self/exe") catch |err| switch (err) {
+        error.NoneAttached => {
+            none_attached = true;
+            return;
+        },
         error.Unreadable => @panic("the executable could not be read for its templates"),
         error.Malformed => @panic("the templates attached to the executable are malformed"),
         error.OutOfMemory => @panic("out of memory reading the templates"),
@@ -69,9 +75,13 @@ pub fn load_attached() void {
     attached = data_at(words.ptr);
 }
 
-fn read_attached() error{ NoneAttached, Unreadable, Malformed, OutOfMemory }![]u64 {
+const AttachedError = error{ NoneAttached, Unreadable, Malformed, OutOfMemory };
+
+/// The program in the section `section_name` of the ELF at `path` (public
+/// for templates_test.zig).
+pub fn read_attached(path: [*:0]const u8) AttachedError![]u64 {
     const linux = std.os.linux;
-    const opened = linux.open("/proc/self/exe", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    const opened = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
     if (linux.errno(opened) != .SUCCESS) return error.Unreadable;
     const fd: i32 = @intCast(opened);
     defer _ = linux.close(fd);
@@ -80,20 +90,68 @@ fn read_attached() error{ NoneAttached, Unreadable, Malformed, OutOfMemory }![]u
     if (linux.errno(linux.statx(fd, "", flags, .{ .SIZE = true }, &stat)) != .SUCCESS) {
         return error.Unreadable;
     }
-    const size: u64 = stat.size;
-    var trailer: [16]u8 = undefined;
-    if (size < trailer.len) return error.NoneAttached;
-    try pread_all(fd, &trailer, size - trailer.len);
-    if (!std.mem.eql(u8, trailer[8..], attached_magic)) return error.NoneAttached;
-    const length = std.mem.readInt(u64, trailer[0..8], .little);
-    if (length < 24 + slack or length % 8 != 0 or length > size - trailer.len) {
-        return error.Malformed;
-    }
+    const section = try section_named(fd, stat.size, section_name);
+    const length = section.size;
+    if (length < 24 + slack or length % 8 != 0) return error.Malformed;
     const words = try std.heap.page_allocator.alloc(u64, @intCast(length / 8));
     errdefer std.heap.page_allocator.free(words);
-    try pread_all(fd, std.mem.sliceAsBytes(words), size - trailer.len - length);
+    try pread_all(fd, std.mem.sliceAsBytes(words), section.offset);
     if (!well_formed(words, length)) return error.Malformed;
     return words;
+}
+
+const Section = struct { offset: u64, size: u64 };
+
+/// The section `name` of the ELF in `fd` (`size` bytes), through its
+/// section headers: a little-endian ELF64 (ELF's own layout, fixed: the
+/// header's fields at their offsets, 64 bytes a section header).
+fn section_named(fd: i32, size: u64, name: []const u8) AttachedError!Section {
+    const header_size = 64;
+    const entry_size = 64;
+    const names_size_max = 1 << 20;
+    var header: [header_size]u8 = undefined;
+    if (size < header_size) return error.Malformed;
+    try pread_all(fd, &header, 0);
+    if (!std.mem.eql(u8, header[0..4], std.elf.MAGIC)) return error.Malformed;
+    if (header[4] != std.elf.ELFCLASS64 or header[5] != std.elf.ELFDATA2LSB) return error.Malformed;
+    if (field(u16, &header, 58) != entry_size) return error.Malformed;
+    const count = field(u16, &header, 60);
+    const names_index = field(u16, &header, 62);
+    if (count == 0 or count >= std.elf.SHN_LORESERVE or names_index >= count) {
+        return error.Malformed;
+    }
+    const table_offset = field(u64, &header, 40);
+    const table_size = @as(u64, count) * entry_size;
+    if (table_offset > size or table_size > size - table_offset) return error.Malformed;
+    const allocator = std.heap.page_allocator;
+    const table = try allocator.alloc(u8, @intCast(table_size));
+    defer allocator.free(table);
+    try pread_all(fd, table, table_offset);
+    const names_entry = table[@as(usize, names_index) * entry_size ..][0..entry_size];
+    const names_at = Section{
+        .offset = field(u64, names_entry, 24),
+        .size = field(u64, names_entry, 32),
+    };
+    if (names_at.size > names_size_max) return error.Malformed;
+    if (names_at.offset > size or names_at.size > size - names_at.offset) return error.Malformed;
+    const names = try allocator.alloc(u8, @intCast(names_at.size));
+    defer allocator.free(names);
+    try pread_all(fd, names, names_at.offset);
+    for (0..count) |index| {
+        const entry = table[index * entry_size ..][0..entry_size];
+        const name_offset = field(u32, entry, 0);
+        if (name_offset >= names.len) continue;
+        const end = std.mem.indexOfScalarPos(u8, names, name_offset, 0) orelse continue;
+        if (!std.mem.eql(u8, names[name_offset..end], name)) continue;
+        const found = Section{ .offset = field(u64, entry, 24), .size = field(u64, entry, 32) };
+        if (found.offset > size or found.size > size - found.offset) return error.Malformed;
+        return found;
+    }
+    return error.NoneAttached;
+}
+
+fn field(comptime T: type, bytes: []const u8, offset: usize) T {
+    return std.mem.readInt(T, bytes[offset..][0..@sizeOf(T)], .little);
 }
 
 /// Whether `length` bytes of `words` hold one program, padded to whole
@@ -161,6 +219,12 @@ const scopes_max = 16 * 9 + 1;
 /// discriminant, from its tag's payload, as glue laid the union out (the
 /// program's header: bytecode.zig's `Union`). The value is only read.
 pub fn render(layouts: u64, template: abi.RocBox, roc_host: *abi.RocHost) Bytes {
+    // Only an app with templates renders: its program was removed after
+    // roux build (LLVM's `strip --strip-all` drops sections not loaded), or
+    // the binary was not made by roux build.
+    if (reload_path == null and none_attached) @panic("the executable has no section " ++
+        section_name ++ ", the templates' program: a tool removed it after roux build " ++
+        "(llvm-strip, llvm-objcopy --strip-all), or roux build did not make this binary");
     if (reload_path == null) return render_union(attached, layouts, template, roc_host);
     const program = acquire();
     defer release();

@@ -3,7 +3,7 @@
 //! module, which the `roux` tool builds apps with.
 
 pub const generate = @import("generate.zig");
-/// The program's bytes and the trailer that attaches it to an executable.
+/// The program's bytes and the ELF section that attaches it to an executable.
 pub const program = @import("program.zig");
 /// The compiler's parts, for the host's test of the compiler and the VM
 /// together (host/templates_test.zig).

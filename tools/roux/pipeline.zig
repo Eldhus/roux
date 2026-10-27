@@ -170,11 +170,11 @@ pub fn start_roc(io: Io, paths: Paths, app: App, mode: Mode, log: ?Io.File) !std
     return spawn_to(io, argv, app.dir, to);
 }
 
-/// roc's executable with the templates' program attached after it, then
-/// the trailer the host looks for (host/templates.zig's `load_attached`):
-/// the program's length and a magic. Written beside the output and renamed
-/// over it, so a running binary is not overwritten. A call that fails is
-/// named on `stderr`, with its file and errno.
+/// roc's executable with the templates' program attached as its section
+/// `.roux.templates` (tools/rocstache/program.zig's `attachment`), which
+/// the host reads (host/templates.zig's `load_attached`). Written beside
+/// the output and renamed over it, so a running binary is not overwritten.
+/// A call that fails is named on `stderr`, with its file and errno.
 pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App, stderr: *Io.Writer) !void {
     const cwd = Io.Dir.cwd();
     const built = try std.fs.path.joinZ(arena, &.{ app.dir, paths.executable });
@@ -183,10 +183,13 @@ pub fn attach(arena: Allocator, io: Io, paths: Paths, app: App, stderr: *Io.Writ
         rocstache.generate.program_name,
     });
     const program = try cwd.readFileAlloc(io, program_path, arena, .limited(1 << 30));
-    const trailer = rocstache.program.trailer(program.len);
     const attached = try std.fmt.allocPrintSentinel(arena, "{s}.new", .{app.output}, 0);
     var failure: Failure = .{};
-    write_attached(built, attached, &.{ program, &trailer }, &failure) catch |err| {
+    const made = attachment_of(arena, built, program, &failure) catch |err| {
+        failure.say(stderr);
+        return err;
+    };
+    write_attached(built, attached, &made.header, &.{made.tail}, &failure) catch |err| {
         failure.say(stderr);
         return err;
     };
@@ -221,11 +224,78 @@ const Failure = struct {
     }
 };
 
-/// `attached` made: `built` (roc's executable), then `parts`. Removed again
-/// if any call fails.
+/// The attachment of `program` to `built` (roc's executable), from its ELF
+/// header, section headers and names, read here.
+fn attachment_of(
+    arena: Allocator,
+    built: [:0]const u8,
+    program: []const u8,
+    failure: *Failure,
+) error{ AttachFailed, OutOfMemory }!rocstache.program.Attachment {
+    const elf = rocstache.program;
+    const linux = std.os.linux;
+    const source = linux.open(built, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
+    if (linux.errno(source) != .SUCCESS) {
+        return failure.set("open", built, @tagName(linux.errno(source)));
+    }
+    const fd: i32 = @intCast(source);
+    defer _ = linux.close(fd);
+    var stat: linux.Statx = undefined;
+    const stat_flags: u32 = linux.AT.EMPTY_PATH;
+    const stated = linux.statx(fd, "", stat_flags, .{ .SIZE = true }, &stat);
+    if (linux.errno(stated) != .SUCCESS) {
+        return failure.set("statx", built, @tagName(linux.errno(stated)));
+    }
+    var header: [elf.header_size]u8 = undefined;
+    try read_at(fd, &header, 0, stat.size, built, failure);
+    const found = elf.sections(&header) catch return failure.set("read", built, "not an ELF64");
+    const table = try arena.alloc(u8, @as(usize, found.count) * elf.section_header_size);
+    try read_at(fd, table, found.offset, stat.size, built, failure);
+    const names_section = elf.section_at(table, found.names);
+    if (names_section.size > elf.names_size_max) {
+        return failure.set("read", built, "section names past 1 MiB");
+    }
+    const names = try arena.alloc(u8, @intCast(names_section.size));
+    try read_at(fd, names, names_section.offset, stat.size, built, failure);
+    return elf.attachment(arena, &header, table, names, stat.size, program) catch |err| {
+        return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.NotElf => failure.set("read", built, "not an ELF64"),
+            error.AlreadyAttached => failure.set("read", built, "templates already attached"),
+        };
+    };
+}
+
+/// `buffer` filled from `fd` at `offset`, all of it inside the file's `size`.
+fn read_at(
+    fd: i32,
+    buffer: []u8,
+    offset: u64,
+    size: u64,
+    path: []const u8,
+    failure: *Failure,
+) error{AttachFailed}!void {
+    const linux = std.os.linux;
+    if (offset > size or buffer.len > size - offset) {
+        return failure.set("read", path, "past the end of the file");
+    }
+    var done: usize = 0;
+    while (done < buffer.len) {
+        const got = linux.pread(fd, buffer[done..].ptr, buffer.len - done, @intCast(offset + done));
+        if (linux.errno(got) != .SUCCESS) {
+            return failure.set("pread", path, @tagName(linux.errno(got)));
+        }
+        if (got == 0) return failure.set("pread", path, "the file ended");
+        done += got;
+    }
+}
+
+/// `attached` made: `built` (roc's executable), then `parts`, then
+/// `header` over its first bytes. Removed again if any call fails.
 fn write_attached(
     built: [:0]const u8,
     attached: [:0]const u8,
+    header: []const u8,
     parts: []const []const u8,
     failure: *Failure,
 ) error{AttachFailed}!void {
@@ -256,6 +326,11 @@ fn write_attached(
         }
     } else return failure.set("copy_file_range", attached, "past 16 GiB");
     for (parts) |part| try write_all(fd, part, attached, failure);
+    const wrote = linux.pwrite(fd, header.ptr, header.len, 0);
+    if (linux.errno(wrote) != .SUCCESS) {
+        return failure.set("pwrite", attached, @tagName(linux.errno(wrote)));
+    }
+    if (wrote != header.len) return failure.set("pwrite", attached, "the header in part");
 }
 
 /// The rest of `source` written to `fd`, 64 KiB a read.
@@ -333,7 +408,7 @@ test "attach: a failed call is named, with its file and errno" {
     var failure: Failure = .{};
     const parts: []const []const u8 = &.{"program"};
     const missing = "/nonexistent/roux-attach/app";
-    const opened = write_attached(missing, "/nonexistent/roux-attach/app.new", parts, &failure);
+    const opened = write_attached(missing, "/nonexistent/roux-attach/app.new", "", parts, &failure);
     try std.testing.expectError(error.AttachFailed, opened);
     var buffer: [128]u8 = undefined;
     var stderr: Io.Writer = .fixed(&buffer);
@@ -346,9 +421,40 @@ test "attach: a failed call is named, with its file and errno" {
     // missing.
     failure = .{};
     const attached = "/nonexistent/roux-attach/app.new";
-    const made = write_attached("/proc/self/exe", attached, parts, &failure);
+    const made = write_attached("/proc/self/exe", attached, "", parts, &failure);
     try std.testing.expectError(error.AttachFailed, made);
     try std.testing.expectEqualStrings("open", failure.call);
     try std.testing.expectEqualStrings(attached, failure.path);
     try std.testing.expectEqualStrings("NOENT", failure.why);
+}
+
+test "attach: a linked executable gets the program as a section, its own bytes kept" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const elf = rocstache.program;
+    // This test's own executable, as roc's: linked, with its sections.
+    const built = "/proc/self/exe";
+    const attached = try std.fmt.allocPrintSentinel(arena, ".zig-cache/tmp/{s}/app", .{
+        tmp.sub_path,
+    }, 0);
+    const program = "program!" ++ "program!" ++ "program!";
+    var failure: Failure = .{};
+    const made = try attachment_of(arena, built, program, &failure);
+    try write_attached(built, attached, &made.header, &.{made.tail}, &failure);
+    const cwd = Io.Dir.cwd();
+    const before = try cwd.readFileAlloc(io, built, arena, .limited(1 << 30));
+    const after = try cwd.readFileAlloc(io, attached, arena, .limited(1 << 30));
+    const kept = after[elf.header_size..before.len];
+    try std.testing.expectEqualSlices(u8, before[elf.header_size..], kept);
+    try std.testing.expectEqualStrings(program, (try elf.test_section(after, elf.section_name)).?);
+    try std.testing.expectEqual(null, try elf.test_section(before, elf.section_name));
+    // Attached again is refused, and said.
+    failure = .{};
+    const again = attachment_of(arena, attached, program, &failure);
+    try std.testing.expectError(error.AttachFailed, again);
+    try std.testing.expectEqualStrings("templates already attached", failure.why);
 }
