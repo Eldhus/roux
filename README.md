@@ -33,71 +33,14 @@ An app's database is SQL in `db/`, which `roux-db` checks and compiles as the ap
   none for a long time.
 - every other `.sql`: the queries, each a typed Roc function.
 
-When the app starts, before it serves, it brings its database to `schema.sql`, in one
-transaction, each step printed before it runs:
-
-1. The steps of `ledger.sql` the database has not run, in order. The database records each as it
-   runs (in its table `roux_ledger`), so a step runs once on every database, however many releases
-   that database skipped.
-2. What `schema.sql` changed: a new table made; a table whose `CREATE` changed rebuilt with its
-   rows (an `AUTOINCREMENT` goes on from where it was), SQLite saying whether they fit; indexes,
-   views and triggers made again.
-3. The database must then be exactly what `schema.sql` makes, no foreign key broken. A failure
-   anywhere rolls it all back: the database is as it was, and the app does not start, saying which
-   step and why.
-
-Adding a table, a column, an index or a constraint is an edit to `schema.sql`, and nothing more. A
-table or column `schema.sql` no longer has is refused, its rows kept, until a step renames or drops
-it; the refusal writes the step. A step is one SQL statement, ended by `;`:
-
-```sql
--- db/ledger.sql: add steps at the end; a step that ran is never changed.
-ALTER TABLE dish RENAME COLUMN title TO name;
-
--- Dishes get a slug (schema.sql makes it NOT NULL UNIQUE).
-ALTER TABLE dish ADD COLUMN slug TEXT;
-UPDATE dish SET slug = lower(replace(name, ' ', '-'));
-
-DROP TABLE menu;
-```
-
-- A step is plain SQL, run as written, on the database as the last deploy left it, before
-  `schema.sql`'s changes: a step that fills a column `schema.sql` adds adds the column first, as
-  above. SQLite's rules hold: it drops no column a view still reads (drop the view in a step first;
-  `schema.sql` makes it again).
-- Foreign keys are off while the steps run, so nothing cascades; they are checked once, at the end.
-- A new database is made from `schema.sql`, and records every step as run without running one.
-- A step that ran is never changed: a database refuses a ledger whose step differs from the one it
-  ran, and says both. Comments between steps are not part of them.
-- Before steps run, the database is copied into `<path>.before-ledger/` (the last four kept).
-  Forward only: the way back is that copy, or one `Sqlite.backup!` made.
-- Every view, trigger and `REFERENCES` of the schema is checked as it builds: one that names a
-  table or column the schema no longer makes is refused there, not at the request that would run
-  it.
-
-To deploy, stop the old executable and start the new one: it migrates, then serves. One process
-owns a database, so the new one refuses to start while the old one runs; if the migration is
-refused, the database is unchanged and the old executable still opens it. An older executable put
-back over a database a newer one migrated opens it as it is, if its ledger is the start of the
-database's and its `schema.sql` what the database holds; otherwise it is refused.
-
-Rehearse first: `ROUX_REHEARSE=1 ./app` copies the database beside itself, migrates the copy and
-runs `init!` over it, prints what the deploy will, deletes the copy and exits (0 when it all went
-through) without serving. The database is only read, but read it must be: the running app holds
-it, so rehearse a copy `Sqlite.backup!` made (`ROUX_DATABASE=prod-copy.db`), or rehearse in the
-deploy itself, between stopping the old executable and starting the new. Your dev and staging
-databases took their own paths to this schema (a dev database took `schema.sql`'s column before
-the step that fills it was written); a rehearsal of production's runs the very steps production
-will, on its data.
-
-On a team, both files merge as code does. Two branches that each add a column merge into a
-`schema.sql` with both. Two that each add steps meet at the end of `ledger.sql`, and git asks
-which goes first. A dev database that ran its branch's step before another branch's came in front
-of it is refused, as an edited step would be; so is one whose branch's schema lacks a column
-another branch added. Give each branch its database:
-`ROUX_DATABASE=dev-$(git branch --show-current).db roux dev main.roc`. A dev database that ran a
-draft of a step: put back the copy made before it, from `<path>.before-ledger/`, and fix the
-step.
+When the app starts, before it serves, it brings its database to `schema.sql` in one
+transaction: first the steps of `ledger.sql` the database has not run (it records each), then what
+`schema.sql` changed, then a check that the database is exactly what `schema.sql` makes. A
+failure anywhere rolls it all back, and the app does not start. Adding a table, a column or an
+index is an edit to `schema.sql` and nothing more; a table or column it no longer has is refused
+until a step renames or drops it, and the refusal writes the step. `ROUX_REHEARSE=1 ./app` tries a
+deploy's migration on a copy first. How it all works, on a team and across deploys:
+[docs/migrations.md](docs/migrations.md).
 
 
 ## The road ahead
