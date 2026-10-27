@@ -38,7 +38,7 @@ roux: migrating test.db, ledger.sql's steps 1 to 2
 
 == error
 -- after 1
-migrating test.db: ledger.sql's step 1: no such column: slug
+migrating test.db: ledger.sql's step 1: no such column: slug (a step runs on the database as the last deploy left it, before schema.sql's changes)
 
 == query
 SELECT id, slug FROM dish

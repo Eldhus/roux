@@ -1030,12 +1030,16 @@ fn exec_step(
         // A copied NULL is copied as NULL: the column's DEFAULT is for a
         // row that names no value. Extended codes: the connection was
         // opened with them.
-        const hint = if (kind == .plan and c.sqlite3_errcode(db) == c.constraint_notnull)
-            " (a NOT NULL column needs a value in every row: a column new to the table " ++
-                "takes its DEFAULT, a copied one keeps its NULLs; a step of ledger.sql " ++
-                "fills it)"
-        else
-            "";
+        const hint = switch (kind) {
+            .ledger => " (a step runs on the database as the last deploy left it, before " ++
+                "schema.sql's changes)",
+            .plan => if (c.sqlite3_errcode(db) == c.constraint_notnull)
+                " (a NOT NULL column needs a value in every row: a column new to the table " ++
+                    "takes its DEFAULT, a copied one keeps its NULLs; a step of ledger.sql " ++
+                    "fills it)"
+            else
+                "",
+        };
         return report.fail(.failed, "migrating {s}: {s}: {s}{s}", .{
             name, why, c.sqlite3_errmsg(db), hint,
         });

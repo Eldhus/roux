@@ -39,7 +39,7 @@ roux: migrating test.db, 1 step
 
 == error
 -- after 1
-migrating test.db: ledger.sql's step 1: error in view dishes after drop column: no such column: note
+migrating test.db: ledger.sql's step 1: error in view dishes after drop column: no such column: note (a step runs on the database as the last deploy left it, before schema.sql's changes)
 
 == query
 SELECT id, name FROM dishes

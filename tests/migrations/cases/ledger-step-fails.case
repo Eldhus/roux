@@ -18,4 +18,4 @@ roux: migrating test.db, ledger.sql's step 1
     UPDATE dish SET title = upper(titel);
 
 == error
-migrating test.db: ledger.sql's step 1: no such column: titel
+migrating test.db: ledger.sql's step 1: no such column: titel (a step runs on the database as the last deploy left it, before schema.sql's changes)
