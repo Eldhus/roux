@@ -1,34 +1,35 @@
 //! The migration cases: each `cases/*.case` holds a database as it was
-//! (`== before`: SQL, rows too), the schema.sql it must become (`== after`,
-//! its `-- @drop`s and `-- @from`s too), and what opening it must print: the
-//! plan as the host prints it (`== plan`) and why it did not open (`==
-//! error`), each empty when absent. Text before the first section says what
-//! the case is.
+//! (`== before`: SQL, rows too), the schema.sql it must become (`== after`),
+//! the ledger.sql beside it (`== ledger`, none when absent), and what
+//! opening it must print: the steps as the host prints them (`== plan`) and
+//! why it did not open (`== error`), each empty when absent. Text before the
+//! first section says what the case is.
 //!
 //! A flow has several `== after`s: the same database opened with each in
 //! turn, as deploys follow one another (a refused one changes nothing, and
-//! the next may be its fix); the plan and error then say which step said
-//! what. A `== query` is run once the last step is done, and what it
-//! returns is `== rows`: what landed where, which no general check knows (a
-//! column filled `@from` another).
+//! the next may be its fix); the plan and error then say which deploy said
+//! what. A `== ledger` follows the `== after` it comes with, and stays, as a
+//! file in git does, until another replaces it. A `== query` is run once the
+//! last deploy is done, and what it returns is `== rows`: what landed where.
 //!
-//! A case runs the real path: roux-db reads the after schema (as `roux
-//! build` would), main.roc's app opens the database through Sqlite.open!
-//! (Migrate.roc plans, the host migrates), then the runner checks what must
-//! hold whatever the plan was:
+//! A case runs the real path: roux-db reads the schema and the ledger (as
+//! `roux build` would), main.roc's app opens the database through
+//! Sqlite.open! (the ledger's steps, then Migrate.roc's plan), then the
+//! runner checks what must hold whatever was done:
 //!
 //! - rehearsed first (`ROUX_REHEARSE`): the rehearsal foretells the plan,
 //!   the outcome and the error, and leaves the database and its directory
 //!   as they were;
-//! - opened: the schema is what schema.sql makes, to the byte; every row
-//!   of every table both have is there, by the columns both have, and of
-//!   every table made `@from` another, the other's; an AUTOINCREMENT kept
-//!   goes on from where it was; the database is whole and its foreign keys
-//!   hold; it is at schema.sql's release, or the newer one it was at;
-//!   opening again plans nothing;
-//! - not opened: nothing changed, schema, rows or release;
-//! - a migration that lost a table or a column copied the database first,
-//!   whole (`test.db.before-drop/`); one that lost nothing, or failed, left
+//! - opened: the schema is what schema.sql makes, to the byte; the
+//!   database records every step of the ledger as run (`roux_ledger`), or
+//!   the newer ledger it had run; every row of every table is there, by
+//!   the columns both have, as the steps it had not run leave them (the
+//!   runner runs those on a copy, as plain SQL); an AUTOINCREMENT goes on
+//!   from where it was; the database is whole and its foreign keys hold;
+//!   opening again does nothing;
+//! - not opened: nothing changed, schema, rows or ledger;
+//! - a migration that ran steps of the ledger copied the database first,
+//!   whole (`test.db.before-ledger/`); one that ran none, or failed, left
 //!   no copy.
 //!
 //! `== before` runs as plain SQL, with no policy: it may make what
@@ -140,24 +141,29 @@ const Verdict = union(enum) { pass, failure: []const u8 };
 // --- a case file ------------------------------------------------------------
 
 /// In a file's order. `after` may come again: each a schema.sql the same
-/// database is opened with in turn, as deploys follow one another.
-const Section = enum { before, after, plan, @"error", query, rows };
+/// database is opened with in turn, as deploys follow one another; a
+/// `ledger` after one comes with it.
+const Section = enum { before, after, ledger, plan, @"error", query, rows };
 
 /// `== after` sections in one case, at most.
 const afters_max = 16;
 
+/// One deploy of a flow: its schema.sql, and its ledger.sql when the case
+/// gives one (else the one given last stays).
+const After = struct { schema: []const u8, ledger: ?[]const u8 = null };
+
 const Case = struct {
     prose: []const u8 = "",
     sections: [std.enums.values(Section).len][]const u8 = @splat(""),
-    afters: [afters_max][]const u8 = undefined,
+    afters: [afters_max]After = undefined,
     afters_count: u32 = 0,
 
     fn get(case: *const Case, section: Section) []const u8 {
-        assert(section != .after);
+        assert(section != .after and section != .ledger);
         return case.sections[@backingInt(section)];
     }
 
-    fn after_list(case: *const Case) []const []const u8 {
+    fn after_list(case: *const Case) []const After {
         return case.afters[0..case.afters_count];
     }
 };
@@ -177,7 +183,9 @@ fn parse(text: []const u8) !Case {
             try close(&case, current, text[start..at]);
             const section = std.meta.stringToEnum(Section, line[3..]) orelse
                 return error.UnknownSection;
-            if (seen[@backingInt(section)] and section != .after) return error.SectionTwice;
+            const again = section == .after or section == .ledger;
+            if (seen[@backingInt(section)] and !again) return error.SectionTwice;
+            if (section == .ledger and current != .after) return error.LedgerNotAfterAfter;
             seen[@backingInt(section)] = true;
             current = section;
             start = @min(end + 1, text.len);
@@ -197,13 +205,15 @@ fn close(case: *Case, current: ?Section, text: []const u8) !void {
         case.prose = trimmed;
         return;
     };
-    if (section != .after) {
-        case.sections[@backingInt(section)] = trimmed;
-        return;
+    switch (section) {
+        .after => {
+            if (case.afters_count == afters_max) return error.TooManyAfters;
+            case.afters[case.afters_count] = .{ .schema = trimmed };
+            case.afters_count += 1;
+        },
+        .ledger => case.afters[case.afters_count - 1].ledger = trimmed,
+        else => case.sections[@backingInt(section)] = trimmed,
     }
-    if (case.afters_count == afters_max) return error.TooManyAfters;
-    case.afters[case.afters_count] = trimmed;
-    case.afters_count += 1;
 }
 
 /// The case as a file: an empty query, plan, rows or error is left out.
@@ -212,13 +222,18 @@ fn render(arena: Allocator, case: Case) ![]const u8 {
     const w = &out.writer;
     if (case.prose.len > 0) try w.print("{s}\n\n", .{case.prose});
     for (std.enums.values(Section)) |section| {
-        if (section == .after) {
-            for (case.after_list()) |after| try render_section(w, section, after);
-            continue;
+        switch (section) {
+            .after => for (case.after_list()) |after| {
+                try render_section(w, .after, after.schema);
+                if (after.ledger) |ledger| try render_section(w, .ledger, ledger);
+            },
+            .ledger => {},
+            else => {
+                const text = case.get(section);
+                if (text.len == 0 and section != .before) continue;
+                try render_section(w, section, text);
+            },
         }
-        const text = case.get(section);
-        if (text.len == 0 and section != .before) continue;
-        try render_section(w, section, text);
     }
     const written = out.written();
     return written[0 .. written.len - 1]; // one newline at the end
@@ -232,6 +247,12 @@ fn render_section(w: *std.Io.Writer, section: Section, text: []const u8) !void {
 
 // --- running one ----------------------------------------------------------------
 
+/// What one case's deploys printed, together.
+const Said = struct {
+    plans: std.Io.Writer.Allocating,
+    errors: []const u8 = "",
+};
+
 fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: bool) !Verdict {
     const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ cases_dir, name });
     const text = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(case_bytes_max));
@@ -242,60 +263,27 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
     try Io.Dir.cwd().createDirPath(io, dir);
     try make_database(arena, dir, "test.db", case.get(.before));
     var problems: std.Io.Writer.Allocating = .init(arena);
-    const w = &problems.writer;
-    var plans: std.Io.Writer.Allocating = .init(arena);
-    var said: []const u8 = "";
+    var said: Said = .{ .plans = .init(arena) };
     const afters = case.after_list();
-    for (afters, 1..) |after, step| {
-        // The database as it was before this step, to compare with; the
-        // copies before a drop, this step's alone.
-        var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
-        defer case_dir.close(io);
-        try case_dir.copyFile("test.db", case_dir, "before.db", io, .{});
-        try case_dir.deleteTree(io, "test.db.before-drop");
-        // Rehearsed first, as a deploy would be: it must foretell the real
-        // run, and leave the database and the directory as they were.
-        const rehearsed = try open_as(arena, io, app, dir, after, .rehearsal);
-        try check_unchanged(arena, dir, w);
-        try check_rehearsal_gone(io, dir, step, w);
-        const opened = try open(arena, io, app, dir, after);
-        if (rehearsed.opened != opened.opened or !std.mem.eql(u8, rehearsed.plan, opened.plan) or
-            !std.mem.eql(u8, rehearsed.@"error", opened.@"error"))
-        {
-            try w.print("  after {d}, the rehearsal foretold otherwise:\n{s}\n{s}\n", .{
-                step, rehearsed.plan, rehearsed.@"error",
-            });
-        }
-        if (afters.len > 1) try plans.writer.print("-- after {d}\n", .{step});
-        if (opened.plan.len > 0) try plans.writer.print("{s}\n", .{opened.plan});
-        if (opened.opened) {
-            try check_opened(arena, dir, after, w);
-            try check_release(arena, dir, opened.release, step, w);
-            try check_moved(arena, dir, opened.froms, w);
-            const again = try open(arena, io, app, dir, after);
-            // What the app says of where it came from is no plan.
-            if (!again.opened or std.mem.indexOf(u8, again.plan, "roux: migrating") != null) {
-                try w.print("  after {d}, opened again, it planned or failed:\n{s}\n{s}\n", .{
-                    step, again.plan, again.@"error",
-                });
-            }
-        } else {
-            try check_unchanged(arena, dir, w);
-        }
-        try check_copied(arena, io, dir, opened.opened, w);
-        // A refused deploy changed nothing: the next one may be its fix.
-        if (!opened.opened) {
-            said = if (afters.len > 1) try std.fmt.allocPrint(arena, "{s}{s}-- after {d}\n{s}", .{
-                said, if (said.len > 0) "\n" else "", step, opened.@"error",
-            }) else opened.@"error";
-        }
+    var ledger: []const u8 = "";
+    for (afters, 1..) |after, deploy| {
+        ledger = after.ledger orelse ledger;
+        const run: Deploy = .{
+            .dir = dir,
+            .number = deploy,
+            .flow = afters.len > 1,
+            .schema = after.schema,
+            .ledger = ledger,
+        };
+        try run_deploy(arena, io, app, run, &said, &problems.writer);
     }
-    const plan = std.mem.trimEnd(u8, plans.written(), "\n");
+    const plan = std.mem.trimEnd(u8, said.plans.written(), "\n");
     const rows = if (case.get(.query).len == 0) "" else try rows_of(arena, dir, case.get(.query));
+    const w = &problems.writer;
     if (bless) {
         case.sections[@backingInt(Section.plan)] = plan;
         case.sections[@backingInt(Section.rows)] = rows;
-        case.sections[@backingInt(Section.@"error")] = said;
+        case.sections[@backingInt(Section.@"error")] = said.errors;
         const blessed = try render(arena, case);
         if (!std.mem.eql(u8, blessed, text)) {
             try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = blessed });
@@ -303,13 +291,75 @@ fn run_case(arena: Allocator, io: Io, app: []const u8, name: []const u8, bless: 
     } else {
         try expect_text(w, "plan", case.get(.plan), plan);
         try expect_text(w, "rows", case.get(.rows), rows);
-        try expect_text(w, "error", case.get(.@"error"), said);
+        try expect_text(w, "error", case.get(.@"error"), said.errors);
     }
     const written = problems.written();
     return if (written.len == 0) .pass else .{ .failure = written };
 }
 
-/// `== query` over the database as the last step left it: each row a
+/// One deploy: the database opened with a schema.sql and a ledger.sql.
+const Deploy = struct {
+    dir: []const u8,
+    number: usize,
+    /// One of several: what it prints is headed with its number.
+    flow: bool,
+    schema: []const u8,
+    ledger: []const u8,
+};
+
+fn run_deploy(
+    arena: Allocator,
+    io: Io,
+    app: []const u8,
+    run: Deploy,
+    said: *Said,
+    w: *std.Io.Writer,
+) !void {
+    const dir = run.dir;
+    // The database as it was before this deploy, to compare with; the
+    // copies before a ledger's steps, this deploy's alone.
+    var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
+    defer case_dir.close(io);
+    try case_dir.copyFile("test.db", case_dir, "before.db", io, .{});
+    try case_dir.deleteTree(io, "test.db.before-ledger");
+    // Rehearsed first, as a deploy would be: it must foretell the real run,
+    // and leave the database and the directory as they were.
+    const rehearsed = try open_as(arena, io, app, run, .rehearsal);
+    try check_unchanged(arena, dir, w);
+    try check_rehearsal_gone(io, run, w);
+    const opened = try open_as(arena, io, app, run, .real);
+    if (rehearsed.opened != opened.opened or !std.mem.eql(u8, rehearsed.plan, opened.plan) or
+        !std.mem.eql(u8, rehearsed.@"error", opened.@"error"))
+    {
+        try w.print("  after {d}, the rehearsal foretold otherwise:\n{s}\n{s}\n", .{
+            run.number, rehearsed.plan, rehearsed.@"error",
+        });
+    }
+    if (run.flow) try said.plans.writer.print("-- after {d}\n", .{run.number});
+    if (opened.plan.len > 0) try said.plans.writer.print("{s}\n", .{opened.plan});
+    const pending = try pending_of(arena, dir, opened.steps);
+    if (opened.opened) {
+        try check_opened(arena, io, run, pending, w);
+        try check_ledger(arena, dir, opened.steps, w);
+        const again = try open_as(arena, io, app, run, .real);
+        if (!again.opened or std.mem.indexOf(u8, again.plan, "roux: migrating") != null) {
+            try w.print("  after {d}, opened again, it migrated or failed:\n{s}\n{s}\n", .{
+                run.number, again.plan, again.@"error",
+            });
+        }
+    } else {
+        try check_unchanged(arena, dir, w);
+    }
+    try check_copied(arena, io, dir, opened.opened and pending.len > 0, w);
+    // A refused deploy changed nothing: the next one may be its fix.
+    if (!opened.opened) {
+        said.errors = if (run.flow) try std.fmt.allocPrint(arena, "{s}{s}-- after {d}\n{s}", .{
+            said.errors, if (said.errors.len > 0) "\n" else "", run.number, opened.@"error",
+        }) else opened.@"error";
+    }
+}
+
+/// `== query` over the database as the last deploy left it: each row a
 /// line, its cells as SQL quotes them, between ` | `.
 fn rows_of(arena: Allocator, dir: []const u8, query: []const u8) ![]const u8 {
     const db = try open_file(arena, dir, "test.db");
@@ -355,32 +405,20 @@ const Opened = struct {
     opened: bool,
     plan: []const u8,
     @"error": []const u8,
-    /// schema.sql's `@release`, 0 for none.
-    release: u32 = 0,
-    /// schema.sql's `@from`s.
-    froms: []const roux_db.From = &.{},
+    /// The ledger's steps, as roux-db split them.
+    steps: []const []const u8 = &.{},
 };
 
 const Run = enum { real, rehearsal };
 
-fn open(arena: Allocator, io: Io, app: []const u8, dir: []const u8, after: []const u8) !Opened {
-    return open_as(arena, io, app, dir, after, .real);
-}
-
-/// roux-db over `after`, then the app (`ROUX_REHEARSE` set for a
-/// rehearsal): whether the database opened, the plan it printed, and why
-/// not. roux-db's refusal is the app's too.
-fn open_as(
-    arena: Allocator,
-    io: Io,
-    app: []const u8,
-    dir: []const u8,
-    after: []const u8,
-    run: Run,
-) !Opened {
+/// roux-db over the deploy's schema.sql and ledger.sql, then the app
+/// (`ROUX_REHEARSE` set for a rehearsal): whether the database opened,
+/// what it printed, and why not. roux-db's refusal is the app's too.
+fn open_as(arena: Allocator, io: Io, app: []const u8, run: Deploy, how: Run) !Opened {
     var diagnostics: roux_db.Diagnostics = .init(arena);
-    const schema: roux_db.Input = .{ .name = "schema.sql", .text = after };
-    const compiled = try roux_db.compile(arena, schema, &.{}, &diagnostics);
+    const schema: roux_db.Input = .{ .name = "schema.sql", .text = run.schema };
+    const ledger: roux_db.Input = .{ .name = "ledger.sql", .text = run.ledger };
+    const compiled = try roux_db.compile(arena, schema, ledger, &.{}, &diagnostics);
     if (!diagnostics.ok()) {
         var said: std.Io.Writer.Allocating = .init(arena);
         for (diagnostics.items()) |diagnostic| try said.writer.print("roux-db: {s}\n", .{
@@ -389,41 +427,22 @@ fn open_as(
         const refused = std.mem.trimEnd(u8, said.written(), "\n");
         return .{ .opened = false, .plan = "", .@"error" = refused };
     }
-    var drops: std.Io.Writer.Allocating = .init(arena);
-    for (compiled.drops) |drop| {
-        try drops.writer.print("{d}\t", .{drop.release});
-        if (drop.column) |column| {
-            try drops.writer.print("column\t{s}\t{s}\n", .{ drop.table, column });
-        } else {
-            try drops.writer.print("table\t{s}\n", .{drop.table});
-        }
+    // main.roc reads the steps a NUL apart (a step may hold any other byte).
+    var steps: std.Io.Writer.Allocating = .init(arena);
+    for (compiled.ledger, 0..) |step, index| {
+        if (std.mem.indexOfScalar(u8, step, 0) != null) return error.NulInStep;
+        try steps.writer.print("{s}{s}", .{ if (index > 0) "\x00" else "", step });
     }
-    var froms: std.Io.Writer.Allocating = .init(arena);
-    for (compiled.froms) |from| {
-        // A tab separates the fields main.roc reads.
-        if (std.mem.indexOfScalar(u8, from.source, '\t') != null) return error.TabInFrom;
-        try froms.writer.print("{d}\t", .{from.release});
-        if (from.column) |column| {
-            try froms.writer.print("column\t{s}\t{s}\t{s}\n", .{ from.table, column, from.source });
-        } else {
-            try froms.writer.print("table\t{s}\t{s}\n", .{ from.table, from.source });
-        }
-    }
-    const releases = try std.fmt.allocPrint(arena, "{d}\t{d}", .{
-        compiled.release, compiled.oldest,
-    });
-    var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
+    var case_dir = try Io.Dir.cwd().openDir(io, run.dir, .{});
     defer case_dir.close(io);
-    try case_dir.writeFile(io, .{ .sub_path = "schema.sql", .data = after });
-    try case_dir.writeFile(io, .{ .sub_path = "releases", .data = releases });
-    try case_dir.writeFile(io, .{ .sub_path = "drops", .data = drops.written() });
-    try case_dir.writeFile(io, .{ .sub_path = "froms", .data = froms.written() });
+    try case_dir.writeFile(io, .{ .sub_path = "schema.sql", .data = run.schema });
+    try case_dir.writeFile(io, .{ .sub_path = "ledger", .data = steps.written() });
     var environ: std.process.Environ.Map = .init(arena); // no ROUX_DATABASE
-    if (run == .rehearsal) try environ.put("ROUX_REHEARSE", "1");
+    if (how == .rehearsal) try environ.put("ROUX_REHEARSE", "1");
     const app_path = try std.fs.path.join(arena, &.{ "..", std.fs.path.basename(app) });
     const ran = try std.process.run(arena, io, .{
         .argv = &.{app_path},
-        .cwd = .{ .path = dir },
+        .cwd = .{ .path = run.dir },
         .environ_map = &environ,
         .stdout_limit = .limited(output_bytes_max),
         .stderr_limit = .limited(output_bytes_max),
@@ -440,14 +459,13 @@ fn open_as(
         .opened = code == 0,
         .plan = try plan_of(arena, ran.stdout),
         .@"error" = std.mem.trim(u8, ran.stderr, "\n"),
-        .release = compiled.release,
-        .froms = compiled.froms,
+        .steps = compiled.ledger,
     };
 }
 
 /// What the host printed, without its line once the database is open, the
-/// copy's before a drop, dated (`check_copied` checks the copy), and a
-/// rehearsal's end.
+/// copy's before the ledger's steps, dated (`check_copied` checks the
+/// copy), and a rehearsal's end.
 fn plan_of(arena: Allocator, stdout: []const u8) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(arena);
     var lines = std.mem.splitScalar(u8, stdout, '\n');
@@ -462,19 +480,59 @@ fn plan_of(arena: Allocator, stdout: []const u8) ![]const u8 {
 
 // --- the checks -------------------------------------------------------------------
 
-fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io.Writer) !void {
-    const db = try open_file(arena, dir, "test.db");
-    defer close_db(db);
+/// The steps of `ledger` the database before this deploy had not run: none
+/// when it held nothing (schema.sql makes it, with every step recorded),
+/// or ran another ledger (refused), or a newer one.
+fn pending_of(arena: Allocator, dir: []const u8, ledger: []const []const u8) ![]const []const u8 {
     const before = try open_file(arena, dir, "before.db");
     defer close_db(before);
+    const app_tables = "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND " ++
+        "name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name <> 'roux_ledger'";
+    if (std.mem.eql(u8, try text_of(arena, before, app_tables), "0")) return &.{};
+    const ran = try ledger_of(arena, before);
+    if (ran.len > ledger.len) return &.{};
+    for (ran, ledger[0..ran.len]) |did, says| {
+        if (!std.mem.eql(u8, did, says)) return &.{};
+    }
+    return ledger[ran.len..];
+}
+
+/// The steps a database records as run, in order; none without
+/// `roux_ledger`.
+fn ledger_of(arena: Allocator, db: *c.Db) ![]const []const u8 {
+    const has = "SELECT count(*) FROM sqlite_schema WHERE name = 'roux_ledger'";
+    if (std.mem.eql(u8, try text_of(arena, db, has), "0")) return &.{};
+    // A step may hold a newline: each row's text as hex, a line each.
+    const rows = try text_of(arena, db, "SELECT hex(sql) FROM roux_ledger ORDER BY step");
+    var steps: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.tokenizeScalar(u8, rows, '\n');
+    while (lines.next()) |hex| {
+        const bytes = try arena.alloc(u8, hex.len / 2);
+        _ = try std.fmt.hexToBytes(bytes, hex);
+        try steps.append(arena, bytes);
+    }
+    return steps.items;
+}
+
+fn check_opened(
+    arena: Allocator,
+    io: Io,
+    run: Deploy,
+    pending: []const []const u8,
+    w: *std.Io.Writer,
+) !void {
+    const dir = run.dir;
+    const db = try open_file(arena, dir, "test.db");
+    defer close_db(db);
     const pristine = try open_memory();
     defer close_db(pristine);
-    try sqlite.exec(pristine, after);
-    // SQLite's own tables aside (`sqlite_sequence`, `sqlite_stat1`): what
-    // ran on the database before may leave them. A key's index is kept.
+    try sqlite.exec(pristine, run.schema);
+    // SQLite's own tables aside (`sqlite_sequence`, `sqlite_stat1`), and
+    // roux's ledger: what ran on the database before may leave them. A
+    // key's index is kept.
     const schema_sql = "SELECT type || ' ' || name || ' ' || tbl_name || char(10) || " ++
-        "coalesce(sql, '') FROM sqlite_schema " ++
-        "WHERE type != 'table' OR name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY type, name";
+        "coalesce(sql, '') FROM sqlite_schema WHERE (type != 'table' OR name NOT LIKE " ++
+        "'sqlite\\_%' ESCAPE '\\') AND name <> 'roux_ledger' ORDER BY type, name";
     const made = try text_of(arena, db, schema_sql);
     const wanted = try text_of(arena, pristine, schema_sql);
     if (!std.mem.eql(u8, made, wanted)) {
@@ -486,56 +544,62 @@ fn check_opened(arena: Allocator, dir: []const u8, after: []const u8, w: *std.Io
     if (!std.mem.eql(u8, integrity, "ok")) try w.print("  integrity_check: {s}\n", .{integrity});
     const broken = try text_of(arena, db, "SELECT count(*) FROM pragma_foreign_key_check");
     if (!std.mem.eql(u8, broken, "0")) try w.print("  {s} rows break a foreign key\n", .{broken});
-    try check_rows(arena, before, db, w);
-    try check_sequences(arena, before, db, w);
+    // The database before, and the steps it had not run, as plain SQL.
+    var case_dir = try Io.Dir.cwd().openDir(io, dir, .{});
+    defer case_dir.close(io);
+    try case_dir.copyFile("before.db", case_dir, "stepped.db", io, .{});
+    const stepped = try open_file(arena, dir, "stepped.db");
+    defer close_db(stepped);
+    try sqlite.exec(stepped, "PRAGMA foreign_keys = OFF");
+    for (pending, 1..) |step, number| {
+        sqlite.exec(stepped, step) catch {
+            try w.print("  pending step {d}, as plain SQL: {s}\n", .{
+                number, c.sqlite3_errmsg(stepped),
+            });
+        };
+    }
+    try check_rows(arena, stepped, db, w);
+    try check_sequences(arena, stepped, db, w);
 }
 
-/// An opened database is at schema.sql's release, or the newer one it was
-/// at: a release is never lowered.
-fn check_release(
-    arena: Allocator,
-    dir: []const u8,
-    release: u32,
-    step: usize,
-    w: *std.Io.Writer,
-) !void {
+/// An opened database records every step of the ledger as run, or every
+/// step of the newer ledger it had run.
+fn check_ledger(arena: Allocator, dir: []const u8, ledger: []const []const u8, w: *std.Io.Writer) !void {
     const db = try open_file(arena, dir, "test.db");
     defer close_db(db);
     const before = try open_file(arena, dir, "before.db");
     defer close_db(before);
-    const was = try std.fmt.parseInt(u32, try text_of(arena, before, "PRAGMA user_version"), 10);
-    const now = try std.fmt.parseInt(u32, try text_of(arena, db, "PRAGMA user_version"), 10);
-    if (now != @max(was, release)) {
-        try w.print("  after {d}, the database is at release {d}, not {d}\n", .{
-            step, now, @max(was, release),
+    const was = try ledger_of(arena, before);
+    const now = try ledger_of(arena, db);
+    const wanted = if (was.len > ledger.len) was else ledger;
+    const same = now.len == wanted.len and for (now, wanted) |a, b| {
+        if (!std.mem.eql(u8, a, b)) break false;
+    } else true;
+    if (!same) {
+        try w.print("  the database records {d} steps run, not the {d} it should\n", .{
+            now.len, wanted.len,
         });
     }
 }
 
 /// A rehearsal leaves nothing behind: no copy of its own, and no copy
-/// before a drop (its own copy is thrown away).
-fn check_rehearsal_gone(io: Io, dir: []const u8, step: usize, w: *std.Io.Writer) !void {
-    var case_dir = try Io.Dir.cwd().openDir(io, dir, .{ .iterate = true });
+/// before the ledger's steps (its own copy is thrown away).
+fn check_rehearsal_gone(io: Io, run: Deploy, w: *std.Io.Writer) !void {
+    var case_dir = try Io.Dir.cwd().openDir(io, run.dir, .{ .iterate = true });
     defer case_dir.close(io);
     var entries = case_dir.iterate();
     while (try entries.next(io)) |entry| {
         const left = std.mem.indexOf(u8, entry.name, ".rehearsal") != null or
-            std.mem.endsWith(u8, entry.name, ".before-drop");
-        if (left) try w.print("  after {d}, the rehearsal left {s}\n", .{ step, entry.name });
+            std.mem.endsWith(u8, entry.name, ".before-ledger");
+        if (left) try w.print("  after {d}, the rehearsal left {s}\n", .{ run.number, entry.name });
     }
 }
 
-/// A migration that lost a table or a column copied the database first,
-/// whole, into `test.db.before-drop/`; one that lost nothing, or failed,
-/// left no copy (one made before a failure is deleted).
-fn check_copied(
-    arena: Allocator,
-    io: Io,
-    dir: []const u8,
-    opened: bool,
-    w: *std.Io.Writer,
-) !void {
-    const copies_dir = try std.fmt.allocPrint(arena, "{s}/test.db.before-drop", .{dir});
+/// A migration that ran steps of the ledger copied the database first,
+/// whole, into `test.db.before-ledger/`; one that ran none, or failed, left
+/// no copy (one made before a failure is deleted).
+fn check_copied(arena: Allocator, io: Io, dir: []const u8, ran: bool, w: *std.Io.Writer) !void {
+    const copies_dir = try std.fmt.allocPrint(arena, "{s}/test.db.before-ledger", .{dir});
     var copy_name: ?[]const u8 = null;
     var copies: u32 = 0;
     if (Io.Dir.cwd().openDir(io, copies_dir, .{ .iterate = true })) |opened_dir| {
@@ -550,56 +614,21 @@ fn check_copied(
         error.FileNotFound => {},
         else => return err,
     }
-    if (copies > 1) try w.print("  {d} copies before the drop, not one\n", .{copies});
+    if (ran and copies != 1) try w.print("  it ran steps, and copied {d} times\n", .{copies});
+    if (!ran and copies > 0) try w.print("  it ran no step, and copied\n", .{});
+    const name = copy_name orelse return;
     const before = try open_file(arena, dir, "before.db");
     defer close_db(before);
-    if (opened) {
-        const db = try open_file(arena, dir, "test.db");
-        defer close_db(db);
-        const lost = try lost_any(arena, before, db);
-        if (lost and copies == 0) try w.print("  it dropped, with no copy before\n", .{});
-        if (!lost and copies > 0) try w.print("  it dropped nothing, and copied\n", .{});
-    } else if (copies > 0) {
-        try w.print("  it did not open, and left a copy before the drop\n", .{});
-    }
-    const name = copy_name orelse return;
-    const path = try std.fmt.allocPrint(arena, "test.db.before-drop/{s}", .{name});
+    const path = try std.fmt.allocPrint(arena, "test.db.before-ledger/{s}", .{name});
     const copy = try open_file(arena, dir, path);
     defer close_db(copy);
     const schema_sql = "SELECT type || ' ' || name || char(10) || coalesce(sql, '') " ++
         "FROM sqlite_schema ORDER BY type, name";
     const copied = try text_of(arena, copy, schema_sql);
     if (!std.mem.eql(u8, copied, try text_of(arena, before, schema_sql))) {
-        try w.print("  the copy before the drop has another schema\n", .{});
+        try w.print("  the copy before the ledger's steps has another schema\n", .{});
     }
     try check_rows(arena, before, copy, w);
-}
-
-/// Whether `before` had a table or a column of a table `db` has no more.
-fn lost_any(arena: Allocator, before: *c.Db, db: *c.Db) !bool {
-    const tables_sql = "SELECT name FROM sqlite_schema WHERE type = 'table' " ++
-        "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name";
-    const tables = try text_of(arena, before, tables_sql);
-    var names = std.mem.tokenizeScalar(u8, tables, '\n');
-    while (names.next()) |table| {
-        // A view of its name holds none of its rows.
-        const still_sql = try std.fmt.allocPrint(arena, "SELECT count(*) FROM " ++
-            "pragma_table_list WHERE schema = 'main' AND type = 'table' AND " ++
-            "name = {s} COLLATE NOCASE", .{try literal(arena, table)});
-        if (std.mem.eql(u8, try text_of(arena, db, still_sql), "0")) return true;
-        const columns_sql = try std.fmt.allocPrint(arena, "SELECT name FROM " ++
-            "pragma_table_xinfo({s}) WHERE hidden = 0", .{try literal(arena, table)});
-        const columns = try text_of(arena, before, columns_sql);
-        var each = std.mem.tokenizeScalar(u8, columns, '\n');
-        while (each.next()) |column| {
-            const kept_sql = try std.fmt.allocPrint(arena, "SELECT count(*) FROM " ++
-                "pragma_table_xinfo({s}) WHERE hidden = 0 AND name = {s} COLLATE NOCASE", .{
-                try literal(arena, table), try literal(arena, column),
-            });
-            if (std.mem.eql(u8, try text_of(arena, db, kept_sql), "0")) return true;
-        }
-    }
-    return false;
 }
 
 /// A table that keeps AUTOINCREMENT keeps the largest key it handed out,
@@ -662,58 +691,22 @@ fn check_unchanged(arena: Allocator, dir: []const u8, w: *std.Io.Writer) !void {
             now, was,
         });
     }
-    const release_now = try text_of(arena, db, "PRAGMA user_version");
-    const release_was = try text_of(arena, before, "PRAGMA user_version");
-    if (!std.mem.eql(u8, release_now, release_was)) {
-        try w.print("  it did not open, and the release moved: {s}, was {s}\n", .{
-            release_now, release_was,
+    const ran_now = try ledger_of(arena, db);
+    const ran_before = try ledger_of(arena, before);
+    if (ran_now.len != ran_before.len) {
+        try w.print("  it did not open, and recorded steps: {d}, was {d}\n", .{
+            ran_now.len, ran_before.len,
         });
     }
     try check_rows(arena, before, db, w);
 }
 
-/// A table made `@from` another holds the other's rows, by the columns
-/// both have: a rename is the same rows under a new name.
-fn check_moved(
-    arena: Allocator,
-    dir: []const u8,
-    froms: []const roux_db.From,
-    w: *std.Io.Writer,
-) !void {
-    const db = try open_file(arena, dir, "test.db");
-    defer close_db(db);
-    const before = try open_file(arena, dir, "before.db");
-    defer close_db(before);
-    for (froms) |from| {
-        if (from.column != null) continue;
-        // Moved in this step: the old table was here, the new one was not.
-        if (!try has_table(arena, before, from.source)) continue;
-        if (try has_table(arena, before, from.table)) continue;
-        const columns = try common_columns_of(arena, before, from.source, db, from.table);
-        if (columns.len == 0) continue;
-        const was = try text_of(arena, before, try rows_sql(arena, from.source, columns));
-        const now = try text_of(arena, db, try rows_sql(arena, from.table, columns));
-        if (!std.mem.eql(u8, was, now)) {
-            try w.print("  table {s} made from {s}, by {s}:\n{s}\n  were:\n{s}\n", .{
-                from.table, from.source, columns, now, was,
-            });
-        }
-    }
-}
-
-fn has_table(arena: Allocator, db: *c.Db, table: []const u8) !bool {
-    const sql = try std.fmt.allocPrint(arena, "SELECT count(*) FROM pragma_table_list " ++
-        "WHERE schema = 'main' AND type = 'table' AND name = {s} COLLATE NOCASE", .{
-        try literal(arena, table),
-    });
-    return !std.mem.eql(u8, try text_of(arena, db, sql), "0");
-}
-
 /// Every table of `before` that `db` has (by SQLite's name rules), row for
-/// row, by the columns both have that hold values.
+/// row, by the columns both have that hold values. roux's ledger is
+/// checked on its own (`check_ledger`).
 fn check_rows(arena: Allocator, before: *c.Db, db: *c.Db, w: *std.Io.Writer) !void {
     const tables_sql = "SELECT name FROM sqlite_schema WHERE type = 'table' " ++
-        "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name";
+        "AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name <> 'roux_ledger' ORDER BY name";
     const tables = try text_of(arena, before, tables_sql);
     var names = std.mem.tokenizeScalar(u8, tables, '\n');
     while (names.next()) |table| {
@@ -732,22 +725,10 @@ fn check_rows(arena: Allocator, before: *c.Db, db: *c.Db, w: *std.Io.Writer) !vo
 
 /// `"a", "b"`: the columns holding values in both, as `before` names them.
 fn common_columns(arena: Allocator, before: *c.Db, db: *c.Db, table: []const u8) ![]const u8 {
-    return common_columns_of(arena, before, table, db, table);
-}
-
-/// The same, of `old` in `before` and `new` in `db`.
-fn common_columns_of(
-    arena: Allocator,
-    before: *c.Db,
-    old: []const u8,
-    db: *c.Db,
-    new: []const u8,
-) ![]const u8 {
     const columns_sql = "SELECT name FROM pragma_table_xinfo({s}) WHERE hidden = 0 ORDER BY cid";
-    const had_sql = try std.fmt.allocPrint(arena, columns_sql, .{try literal(arena, old)});
-    const has_sql = try std.fmt.allocPrint(arena, columns_sql, .{try literal(arena, new)});
-    const had = try text_of(arena, before, had_sql);
-    const has = try text_of(arena, db, has_sql);
+    const table_sql = try std.fmt.allocPrint(arena, columns_sql, .{try literal(arena, table)});
+    const had = try text_of(arena, before, table_sql);
+    const has = try text_of(arena, db, table_sql);
     var out: std.Io.Writer.Allocating = .init(arena);
     var columns = std.mem.tokenizeScalar(u8, had, '\n');
     while (columns.next()) |column| {

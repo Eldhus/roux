@@ -15,13 +15,3 @@ CREATE TABLE tag (
   label TEXT NOT NULL,
   PRIMARY KEY (dish_id, label)
 ) STRICT, WITHOUT ROWID;
-
--- The release, and the oldest a database may be at:
--- @release 9
--- @oldest 6
--- Gone on purpose, with their rows, when a database is migrated:
--- @drop 7 table menu
--- @drop 8 column dish photo
--- and what is new filled from what was there:
--- @from 8 column dish note = "photo caption" || '!'
--- @from 9 table tag = "dish tags"

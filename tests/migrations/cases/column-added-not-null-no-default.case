@@ -1,6 +1,7 @@
 A new NOT NULL column without a DEFAULT, on a table with rows: the plan is
 made, and SQLite refuses the copy. Nothing changes, and the error names
-the step. (Give it a DEFAULT, let it be NULL, or fill it `@from`.)
+the step. (Give it a DEFAULT, let it be NULL, or fill it by the ledger:
+column-backfilled.)
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
@@ -21,4 +22,4 @@ roux: migrating test.db, 4 steps
     DROP TABLE "roux_old_dish"
 
 == error
-migrating test.db: table `dish`: its rows, by id, name: NOT NULL constraint failed: dish.price_kr (a NOT NULL column needs a value in every row: a column new to the table takes its DEFAULT, a copied one keeps its NULLs)
+migrating test.db: table `dish`: its rows, by id, name: NOT NULL constraint failed: dish.price_kr (a NOT NULL column needs a value in every row: a column new to the table takes its DEFAULT, a copied one keeps its NULLs; a step of ledger.sql fills it)

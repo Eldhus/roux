@@ -30,43 +30,23 @@ import Migrate
 ## as it is (a constraint the handler made a 400), a success becomes a
 ## 500, since what it did was undone. `ROUX_DATABASE` overrides the path.
 ##
-## `open!` migrates: an existing database is brought to what `schema.sql`
-## makes now, in one transaction, before any request (Migrate.roc). A
-## table or column `schema.sql` no longer makes is refused, its rows kept,
-## unless `schema.sql` drops it on purpose: `-- @drop 7 table meal`,
-## `-- @drop 7 column dish note`, 7 the release the line came in. Before
-## such a drop the database is copied into `<path>.before-drop/` (the last
-## four copies kept). What is new is filled from what was there by
-## `-- @from`: `-- @from 7 column dish name = title` (a rename, with
-## `-- @drop 7 column dish title`), `-- @from 7 table meal = menu`.
-##
-## `schema.sql` says its release (`-- @release 9`), and the database
-## keeps the one it reached: a line applies to a database at its release
-## or older, and `-- @oldest 6` refuses a database older than release 6,
-## whose lines were deleted. `migrated_from` tells `init!` where it came
-## from.
+## `open!` migrates, in one transaction, before any request (Migrate.roc):
+## the database runs the steps of `ledger.sql` it has not run, in order
+## (`ALTER TABLE dish RENAME COLUMN title TO name;`, an `UPDATE`), each
+## recorded in it as it runs, and is then brought to what `schema.sql`
+## makes: new tables made, changed ones rebuilt with their rows. A table
+## or column `schema.sql` no longer makes is refused, its rows kept, unless
+## a step renamed or dropped it. Before steps run, the database is copied
+## into `<path>.before-ledger/` (the last four copies kept). A new
+## database is made from `schema.sql`, with every step recorded as run.
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
 	Database : {
 		path : Str,
 		schema : Str,
+		ledger : List(Str),
 		statements : List(Statement),
-		release : U64,
-		oldest : U64,
-		drops : List(Line(Drop)),
-		froms : List(Line(From)),
 	}
-
-	## A line of `schema.sql`, with the release it came in.
-	Line(a) : Migrate.Line(a)
-
-	## What `schema.sql` drops on purpose (`-- @drop`): a table, or a
-	## table's column, and its rows.
-	Drop : Migrate.Drop
-
-	## What `schema.sql` fills from what was there (`-- @from`): a column
-	## new to its table by an expression, or a table from another's rows.
-	From : Migrate.From
 
 	Statement : Host.SqliteStatement
 
@@ -109,9 +89,8 @@ Sqlite := [].{
 	## Where `backup!` writes copies, and how many it keeps (1 to 256).
 	Backup : { directory : Str, keep : U32 }
 
-	## The opened database, for the app's context; `from`, the release it
-	## was at before `open!` (`migrated_from`).
-	Db :: { opened : Bool, from : U64 }
+	## The opened database, for the app's context.
+	Db :: { opened : Bool }
 
 	## Reads for one request.
 	Read :: { request : U64, writer : Bool }
@@ -119,30 +98,30 @@ Sqlite := [].{
 	## One request's transaction on the writer.
 	Write :: { request : U64 }
 
-	## Opens the database, once, in `init!`, migrating it first if
-	## `schema.sql` changed; the host prints each step as it runs it.
+	## Opens the database, once, in `init!`: the ledger's new steps, then
+	## what `schema.sql` changed; the host prints each step as it runs it.
 	open! : Database, Settings => Try(Db, [DbErr(Err)])
 	open! = |database, { synchronous }| {
-		listed = Host.sqlite_inspect!(database.path, database.schema) ? |message| DbErr(Failed(message))
-		live = schema_of(listed.live)
-		pristine = schema_of(listed.pristine)
-		ledger = { at: listed.at, release: database.release, oldest: database.oldest }
-		steps = Migrate.plan(live, pristine, ledger, database.drops, database.froms) ? |refusals| DbErr(Failed(Str.join_with(refusals, "\n")))
-		copy_first = Migrate.loses(live, pristine)
-		opened = Host.sqlite_open!(database.path, database.schema, database.statements, synchronous, steps, copy_first, database.release)
-		match opened {
-			# A database made now has no older rows: it comes from this release.
-			Ok({}) => Ok(Db.{ opened: Bool.True, from: if (live.objects.is_empty()) database.release else listed.at })
-			Err(message) => Err(DbErr(Failed(message)))
-		}
+		failed = |message| DbErr(Failed(message))
+		inspected = Host.sqlite_inspect!(database.path, database.schema) ? failed
+		live = schema_of(inspected.live)
+		ran = inspected.ran.map(
+			|row|
+				match row {
+					[Text(step)] => step
+					_ => crash "Sqlite.open!: the host lists the ledger's steps as text"
+				},
+		)
+		{ run, ahead } = Migrate.pending(ran, database.ledger) ? failed
+		# A database with nothing in it is made from schema.sql: born having
+		# run every step.
+		made = live.objects.is_empty()
+		stepped = if (run.is_empty()) live else schema_of(Host.sqlite_ledger!(run, !made) ? failed)
+		pristine = schema_of(inspected.pristine)
+		steps = Migrate.plan(stepped, pristine, ahead) ? |refusals| failed(Str.join_with(refusals, "\n"))
+		Host.sqlite_open!(database.statements, synchronous, steps) ? failed
+		Ok(Db.{ opened: Bool.True })
 	}
-
-	## The release the database was at when `open!` began: for an `init!`
-	## task that fixes rows of older releases, run only for a database that
-	## came from before the release it belongs to. A database made by this
-	## `open!` came from schema.sql's release.
-	migrated_from : Db -> U64
-	migrated_from = |Db.{ from, .. }| from
 
 	## The host's listings (host/database.zig, `Listing`) as Migrate.roc's.
 	schema_of : Host.SqliteListings -> Migrate.Schema

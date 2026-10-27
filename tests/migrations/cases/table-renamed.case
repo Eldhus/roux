@@ -1,0 +1,44 @@
+A table renamed: one step, SQLite's own rename, which also rewrites the
+REFERENCES of the tables that name it. Its rows follow.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id)) STRICT;
+INSERT INTO menu VALUES (1, 'lunch'), (2, 'dinner');
+INSERT INTO course VALUES (1, 1), (2, 2);
+
+== after
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES meal (id)) STRICT;
+
+== ledger
+ALTER TABLE menu RENAME TO meal;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE menu RENAME TO meal;
+roux: migrating test.db, 8 steps
+  table `meal`: aside, to make it anew
+    ALTER TABLE "meal" RENAME TO "roux_old_meal"
+  table `meal`: as schema.sql makes it
+    CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT
+  table `meal`: its rows, by id, title
+    INSERT INTO "meal" ("id", "title") SELECT "id", "title" FROM "roux_old_meal"
+  table `meal`: the old one
+    DROP TABLE "roux_old_meal"
+  table `course`: aside, to make it anew
+    ALTER TABLE "course" RENAME TO "roux_old_course"
+  table `course`: as schema.sql makes it
+    CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES meal (id)) STRICT
+  table `course`: its rows, by id, menu_id
+    INSERT INTO "course" ("id", "menu_id") SELECT "id", "menu_id" FROM "roux_old_course"
+  table `course`: the old one
+    DROP TABLE "roux_old_course"
+
+== query
+SELECT course.id, meal.title FROM course JOIN meal ON meal.id = course.menu_id ORDER BY course.id
+
+== rows
+1 | lunch
+2 | dinner

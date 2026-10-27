@@ -17,18 +17,21 @@ pub const Output = struct {
 };
 
 /// The modules for `queries` (each `Module.sql`, sorted by name) against
-/// `schema`, and `Database.roc` last; empty when `diagnostics` is not ok.
+/// `schema`, and `Database.roc` last, with `ledger`'s steps (its text
+/// empty when there is no ledger.sql); empty when `diagnostics` is not ok.
 pub fn generate(
     arena: Allocator,
     schema: Input,
+    ledger: Input,
     queries: []const Input,
     diagnostics: *Diagnostics,
 ) ![]const Output {
     assert(std.mem.eql(u8, schema.name, "schema.sql"));
+    assert(std.mem.eql(u8, ledger.name, "ledger.sql"));
     for (queries[0..queries.len -| 1], 1..) |query, next| {
         assert(std.mem.order(u8, query.name, queries[next].name) == .lt);
     }
-    const compiled = try compile.compile(arena, schema, queries, diagnostics);
+    const compiled = try compile.compile(arena, schema, ledger, queries, diagnostics);
     if (!diagnostics.ok()) return &.{};
     const statements = compiled.statements;
     const outputs = try arena.alloc(Output, queries.len + 1);
@@ -45,13 +48,7 @@ pub fn generate(
     }
     assert(first == statements.len); // every statement belongs to a file
     var database: std.Io.Writer.Allocating = .init(arena);
-    try emit.write_database(
-        &database.writer,
-        schema,
-        queries,
-        statements,
-        compiled,
-    );
+    try emit.write_database(&database.writer, schema, queries, statements, compiled.ledger);
     outputs[queries.len] = .{ .name = "Database.roc", .text = database.written() };
     return outputs;
 }

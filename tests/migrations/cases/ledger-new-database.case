@@ -1,18 +1,31 @@
-A new database, made from schema.sql at release 3, which still has two
-releases' @drop and @from lines: there is nothing to drop or fill, and
-nothing to plan. It is made at release 3, and an `init!` task asking where
-it came from hears release 3: it has no older rows to fix.
+A new database is made from schema.sql as it is now, and records every step
+of the ledger as run, without running one: the steps name tables of older
+releases (`menu`), which it never had. A later step runs on it as on any.
 
 == before
 
 == after
--- @release 3
--- @drop 2 column dish title
--- @from 2 column dish name = title
--- @drop 3 table menu
--- @from 3 table meal = menu
-CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 
+== ledger
+ALTER TABLE menu RENAME TO meal;
+
+== after
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE menu RENAME TO meal;
+INSERT INTO meal (title) VALUES ('lunch');
+
 == plan
-migrated from release 3
+-- after 1
+-- after 2
+roux: migrating test.db, ledger.sql's step 2
+  step 2
+    INSERT INTO meal (title) VALUES ('lunch');
+
+== query
+SELECT id, title FROM meal
+
+== rows
+1 | lunch

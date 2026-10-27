@@ -1,4 +1,5 @@
-A table schema.sql no longer makes would lose its rows: refused.
+A table schema.sql no longer makes would lose its rows: refused. No table
+is new, so the rename step's new name is left for the reader.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
@@ -9,4 +10,4 @@ INSERT INTO menu VALUES (1, 'lunch');
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
-table `menu` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop 1 table menu` in schema.sql (with `-- @release 1`). Renamed? Drop it, and fill the new one from it: `-- @from 1 table <new> = menu`.
+table `menu` is in the database, not in schema.sql: its rows would go. Renamed? Add the step to ledger.sql: `ALTER TABLE menu RENAME TO <new name>;` Gone on purpose? `DROP TABLE menu;`

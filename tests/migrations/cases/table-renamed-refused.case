@@ -1,5 +1,6 @@
-A table renamed is, to SQLite's listings, one table gone and another new:
-refused, since the old one's rows would go. There is no rename.
+A table renamed in schema.sql and nothing more is, to SQLite's listings,
+one table gone and another new: refused, since the old one's rows would
+go. One table is new, so the error writes the rename step with both names.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
@@ -9,4 +10,4 @@ INSERT INTO dish VALUES (1, 'soup');
 CREATE TABLE meal (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
-table `dish` is in the database, not in schema.sql: its rows would go. Keep it, or drop it on purpose: `-- @drop 1 table dish` in schema.sql (with `-- @release 1`). Renamed? Drop it, and fill the new one from it: `-- @from 1 table <new> = dish`.
+table `dish` is in the database, not in schema.sql: its rows would go. Renamed? Add the step to ledger.sql: `ALTER TABLE dish RENAME TO meal;` Gone on purpose? `DROP TABLE dish;`

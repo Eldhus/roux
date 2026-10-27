@@ -1,0 +1,63 @@
+Two branches each add a step, and git merges ledger.sql as it merges code:
+both appended lines meet at the end of the file, a conflict the person
+settles by putting one after the other. Production, which ran neither,
+runs both in that order; the steps of one branch never see the other's
+columns, and need not.
+
+1. Release 2 renames `title` to `name`.
+2. Branch A adds `slug`, filled from the name; branch B adds `note`,
+   filled with a default text. Merged: A's steps, then B's.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup'), (2, 'Rye Bread');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL, note TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+-- Branch A: slugs.
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+-- Branch B: notes.
+ALTER TABLE dish ADD COLUMN note TEXT;
+UPDATE dish SET note = 'none yet';
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE dish RENAME COLUMN title TO name;
+-- after 2
+roux: migrating test.db, ledger.sql's steps 2 to 5
+  step 2
+    ALTER TABLE dish ADD COLUMN slug TEXT;
+  step 3
+    UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+  step 4
+    ALTER TABLE dish ADD COLUMN note TEXT;
+  step 5
+    UPDATE dish SET note = 'none yet';
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL, note TEXT NOT NULL) STRICT
+  table `dish`: its rows, by id, name, slug, note
+    INSERT INTO "dish" ("id", "name", "slug", "note") SELECT "id", "name", "slug", "note" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== query
+SELECT id, name, slug, note FROM dish ORDER BY id
+
+== rows
+1 | Pea Soup | pea-soup | none yet
+2 | Rye Bread | rye-bread | none yet

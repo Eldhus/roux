@@ -87,7 +87,7 @@ pub fn backup(
 
 /// Deletes the oldest copies in `directory` past `keep`, and partial
 /// ones: for a copy made with no rotation, kept only once what it was
-/// made for went through (the copy before a migration's drop).
+/// made for went through (the copy before ledger.sql's steps).
 pub fn prune(io: Io, directory: []const u8, keep: u32, report: *Report) error{Failed}!void {
     var dir = Io.Dir.cwd().openDir(io, directory, .{ .iterate = true }) catch |err|
         return report.fail(.failed, "backup: {s}: {t}", .{ directory, err });

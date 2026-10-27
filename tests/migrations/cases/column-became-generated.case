@@ -1,16 +1,20 @@
-A stored column becomes a generated one of the same name: its stored values
-would go, so the drop is on purpose, and the column is computed after.
+A stored column becomes a generated one of the same name: the ledger drops
+the stored one on purpose (its values go), and schema.sql computes it.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL, total_kr INTEGER NOT NULL) STRICT;
 INSERT INTO dish VALUES (1, 95, 190);
 
 == after
--- @release 1
--- @drop 1 column dish total_kr
 CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL, total_kr INTEGER GENERATED ALWAYS AS (price_kr * 2)) STRICT;
 
+== ledger
+ALTER TABLE dish DROP COLUMN total_kr;
+
 == plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE dish DROP COLUMN total_kr;
 roux: migrating test.db, 4 steps
   table `dish`: aside, to make it anew
     ALTER TABLE "dish" RENAME TO "roux_old_dish"
@@ -20,4 +24,9 @@ roux: migrating test.db, 4 steps
     INSERT INTO "dish" ("id", "price_kr") SELECT "id", "price_kr" FROM "roux_old_dish"
   table `dish`: the old one
     DROP TABLE "roux_old_dish"
-migrated from release 0
+
+== query
+SELECT id, total_kr FROM dish
+
+== rows
+1 | 190

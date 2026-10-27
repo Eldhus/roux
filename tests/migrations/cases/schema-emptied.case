@@ -1,5 +1,5 @@
-Every table leaves on purpose, and schema.sql makes nothing but drops them:
-an empty database, which opens again with nothing to do.
+Every table leaves on purpose: the ledger drops it, and schema.sql makes
+nothing. An empty database, which opens again with nothing to do.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
@@ -7,11 +7,11 @@ CREATE INDEX dish_name ON dish (name);
 INSERT INTO dish VALUES (1, 'soup');
 
 == after
--- @release 1
--- @drop 1 table dish
+
+== ledger
+DROP TABLE dish;
 
 == plan
-roux: migrating test.db, 1 step
-  table `dish`: dropped on purpose
-    DROP TABLE "dish"
-migrated from release 0
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE dish;

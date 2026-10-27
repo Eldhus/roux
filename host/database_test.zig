@@ -151,20 +151,29 @@ const Fixture = struct {
         fixture.arena_state.deinit();
     }
 
+    /// Migrated first by `migration`, when it has steps, as `Sqlite.open!`
+    /// does: in an `Opening`, committed, before the database opens.
     fn open(
         fixture: *Fixture,
         with_schema: []const u8,
         with: []const database_module.StatementDescription,
         report: *Report,
     ) !*Database {
+        const gpa = fixture.arena_state.allocator();
+        if (fixture.migration.len > 0) {
+            const path = fixture.path;
+            var opening = try database_module.Opening.begin(gpa, path, path, with_schema, report);
+            defer opening.close(gpa);
+            try opening.migrate(fixture.migration, report);
+            try opening.commit(report);
+        }
         const description: Description = .{
             .path = fixture.path,
             .schema = with_schema,
             .statements = with,
             .synchronous = fixture.synchronous,
-            .migration = fixture.migration,
         };
-        return database_module.open(fixture.arena_state.allocator(), description, limits, report);
+        return database_module.open(gpa, description, limits, report);
     }
 };
 
@@ -430,8 +439,8 @@ test "database: a migration that fails changes nothing, and says which step and 
     var pragma = good;
     pragma[0] = .{ .sql = "PRAGMA foreign_keys = ON", .why = "a pragma" };
     var update = good;
-    update[3] = .{ .sql = "UPDATE \"roux_old_dish\" SET note = 'x'", .why = "an update" };
-    // An @from's expression closing the copy and starting a statement of its own.
+    update[3] = .{ .sql = "UPDATE roux_ledger SET sql = ''", .why = "a write to the ledger" };
+    // A step closing the copy and starting a statement of its own.
     var two = good;
     two[2].sql = "INSERT INTO \"dish\" (\"id\", \"name\", \"price_kr\") SELECT \"id\", " ++
         "\"name\", (\"price_kr\") FROM \"roux_old_dish\"; INSERT INTO \"dish\" (\"id\", " ++
@@ -441,7 +450,7 @@ test "database: a migration that fails changes nothing, and says which step and 
         .{ .case = "short of schema.sql", .steps = short, .says = "roux_old_dish" },
         .{ .case = "a NOT NULL left empty", .steps = &wrong, .says = "dish's rows: NOT NULL" },
         .{ .case = "a PRAGMA", .steps = &pragma, .says = "may not hold a PRAGMA" },
-        .{ .case = "an UPDATE", .steps = &update, .says = "may not hold a write" },
+        .{ .case = "a write to roux's ledger", .steps = &update, .says = "may not hold a write" },
     };
     for (cases) |case| {
         errdefer std.debug.print("case: {s}\n", .{case.case});

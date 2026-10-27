@@ -46,8 +46,8 @@ pub fn exec(db: *c.Db, sql: []const u8) error{Sqlite}!void {
 }
 
 /// Runs `sql`, which must be exactly one statement (whitespace and comments
-/// around it aside): a migration's step, whose SQL holds text schema.sql
-/// gave (an `@from` expression), never runs a second statement.
+/// around it aside): a migration's step, a statement of ledger.sql or of
+/// the plan, never runs a second one.
 pub fn exec_one(db: *c.Db, sql: []const u8) error{ Sqlite, NotOneStatement }!void {
     var stmt: ?*c.Stmt = null;
     var tail: [*]const u8 = sql.ptr;

@@ -1,0 +1,48 @@
+A step is plain SQL, run as written: SQLite will not drop a column a view
+still reads, and says which view. The step drops the view first (deploy 2);
+schema.sql makes it again, as it is now, after the steps.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+CREATE VIEW dishes AS SELECT id, name, note FROM dish;
+INSERT INTO dish VALUES (1, 'soup', 'hot');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE VIEW dishes AS SELECT id, name FROM dish;
+
+== ledger
+ALTER TABLE dish DROP COLUMN note;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE VIEW dishes AS SELECT id, name FROM dish;
+
+== ledger
+DROP VIEW dishes;
+ALTER TABLE dish DROP COLUMN note;
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE dish DROP COLUMN note;
+-- after 2
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    DROP VIEW dishes;
+  step 2
+    ALTER TABLE dish DROP COLUMN note;
+roux: migrating test.db, 1 step
+  view `dishes`: as schema.sql makes it
+    CREATE VIEW dishes AS SELECT id, name FROM dish
+
+== error
+-- after 1
+migrating test.db: ledger.sql's step 1: error in view dishes after drop column: no such column: note
+
+== query
+SELECT id, name FROM dishes
+
+== rows
+1 | soup

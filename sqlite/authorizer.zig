@@ -69,10 +69,6 @@ pub const Verdict = struct {
     created: ?Action = null,
     created_name_buffer: [created_bytes_max]u8 = undefined,
     created_name_length: u32 = 0,
-    /// The table or view a migration's DROP names: SQLite then asks to
-    /// delete its rows, which is allowed of that one alone.
-    dropped_name_buffer: [created_bytes_max]u8 = undefined,
-    dropped_name_length: ?u32 = null,
 
     pub const created_bytes_max = 128;
 
@@ -108,7 +104,6 @@ fn authorize(
     database: ?[*:0]const u8,
     trigger: ?[*:0]const u8,
 ) callconv(.c) c_int {
-    _ = second;
     _ = database;
     _ = trigger;
     const verdict: *Verdict = @ptrCast(@alignCast(user.?));
@@ -116,7 +111,7 @@ fn authorize(
     const allowed = switch (verdict.policy) {
         .schema => allowed_in_schema(action, first),
         .query => allowed_in_query(action),
-        .migration => allowed_in_migration(verdict, action, first),
+        .migration => allowed_in_migration(action, first, second),
     };
     if (!allowed) {
         if (verdict.refused == null) verdict.refused = action;
@@ -161,44 +156,29 @@ fn allowed_in_query(action: Action) bool {
     };
 }
 
-/// A migration also drops, and renames a table aside to rebuild it
-/// (SQLite rewrites `sqlite_schema` for that, and its own tables:
-/// `sqlite_sequence` for a table with AUTOINCREMENT, `sqlite_stat1` and
-/// `sqlite_stat4` once ANALYZE ran); the only rows it writes are the ones
-/// it copies into a table (an insert from a select), and the rows of a
-/// table or view it drops (SQLite asks for that delete after the drop).
-fn allowed_in_migration(verdict: *Verdict, action: Action, first: ?[*:0]const u8) bool {
+/// A migration changes the schema (SQLite writes `sqlite_schema` for that,
+/// and its own tables: `sqlite_sequence` for a table with AUTOINCREMENT)
+/// and moves rows; it never touches `roux_ledger`, which the host writes
+/// as each step of ledger.sql runs. For ALTER TABLE SQLite names the table
+/// second, the database first. ADD COLUMN on a STRICT table, or one with a
+/// CHECK, reads `pragma_quick_check` to check the rows: that read alone of
+/// the PRAGMAs.
+fn allowed_in_migration(action: Action, first: ?[*:0]const u8, second: ?[*:0]const u8) bool {
     return switch (action) {
         .create_table, .create_index, .create_view, .create_trigger => true,
-        .drop_index, .drop_trigger, .alter_table => true,
-        .drop_table, .drop_view => record_dropped(verdict, first),
-        .read, .select, .insert, .function, .recursive, .reindex => true,
-        // `sqlite_schema` and its other names are SQLite's own too.
-        .update => is_sqlite_own(first),
-        .delete => is_sqlite_own(first) or is_dropped(verdict, first),
+        .drop_index, .drop_trigger, .drop_view => true,
+        .drop_table, .insert, .update, .delete => !is_ledger(first),
+        .alter_table => !is_ledger(second),
+        .read, .select, .function, .recursive, .reindex => true,
+        .pragma => std.mem.eql(u8, std.mem.span(first orelse return false), "quick_check"),
         else => false,
     };
 }
 
-/// SQLite's own tables, which only SQLite writes: no CREATE may name one
-/// starting `sqlite_`.
-fn is_sqlite_own(name: ?[*:0]const u8) bool {
-    return std.mem.startsWith(u8, std.mem.span(name orelse return false), "sqlite_");
-}
-
-/// False for a name too long to keep: its delete is then refused.
-fn record_dropped(verdict: *Verdict, name: ?[*:0]const u8) bool {
-    const text = std.mem.span(name orelse return false);
-    if (text.len > Verdict.created_bytes_max) return false;
-    @memcpy(verdict.dropped_name_buffer[0..text.len], text);
-    verdict.dropped_name_length = @intCast(text.len);
-    return true;
-}
-
-fn is_dropped(verdict: *const Verdict, name: ?[*:0]const u8) bool {
-    const length = verdict.dropped_name_length orelse return false;
-    const text = std.mem.span(name orelse return false);
-    return std.mem.eql(u8, text, verdict.dropped_name_buffer[0..length]);
+/// roux's record of the ledger's steps a database ran (SQLite's names fold
+/// ASCII case).
+fn is_ledger(name: ?[*:0]const u8) bool {
+    return std.ascii.eqlIgnoreCase(std.mem.span(name orelse return false), "roux_ledger");
 }
 
 /// The tables SQLite records the schema in; a TEMP object goes to the
@@ -224,13 +204,14 @@ pub fn describe(action: Action) []const u8 {
         .create_temp_view,
         => "a TEMP object",
         .create_index, .create_table, .create_trigger, .create_view => "a change to the schema",
-        .drop_index, .drop_table, .drop_trigger, .drop_view => "a DROP (schema.sql holds what " ++
-            "is; a table or column that goes is `-- @drop`ped there)",
+        .drop_index, .drop_table, .drop_trigger, .drop_view => "a DROP (a step of ledger.sql " ++
+            "drops on purpose)",
         .drop_temp_index, .drop_temp_table, .drop_temp_trigger, .drop_temp_view => "a DROP",
-        .alter_table => "ALTER TABLE (migrations are planned from schema.sql)",
+        .alter_table => "ALTER TABLE (a step of ledger.sql renames)",
         .create_vtable, .drop_vtable => "a virtual table",
         .analyze, .reindex => "ANALYZE or REINDEX (maintenance is the platform's)",
-        .insert, .update, .delete => "a write to a table (schema.sql only creates)",
+        .insert, .update, .delete => "a write to a table (schema.sql only creates; a step of " ++
+            "ledger.sql moves rows, never roux_ledger's)",
         .read, .select, .function, .recursive => "a read",
         _ => "an action this SQLite has and roux does not know",
     };

@@ -1,0 +1,17 @@
+A column dropped on purpose, by a step of the ledger; schema.sql no longer
+makes it. The database is copied first, as before any step.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+INSERT INTO dish VALUES (1, 'soup', 'hot');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish DROP COLUMN note;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE dish DROP COLUMN note;

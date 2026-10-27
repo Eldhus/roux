@@ -556,11 +556,13 @@ fn request_from(handle: u64) ?*Server.Request {
 // --- the database (Sqlite) --------------------------------------------------------
 
 const SqliteOpenResult = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".return_type.?;
-const SqliteStatements = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[2].?;
-const SqliteSteps = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[4].?;
+const SqliteStatements = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[0].?;
+const SqliteSteps = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[2].?;
 const SqliteInspectResult = @typeInfo(@TypeOf(abi.hosted_sqlite_inspect)).@"fn".return_type.?;
 const SqliteInspected = @FieldType(@FieldType(SqliteInspectResult, "payload"), "ok");
 const SqliteListings = @FieldType(SqliteInspected, "live");
+const SqliteLedger = @typeInfo(@TypeOf(abi.hosted_sqlite_ledger)).@"fn".param_types[0].?;
+const SqliteLedgerResult = @typeInfo(@TypeOf(abi.hosted_sqlite_ledger)).@"fn".return_type.?;
 const SqliteRunResult = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".return_type.?;
 const SqliteParams = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".param_types[3].?;
 const SqliteWriteResult = @typeInfo(@TypeOf(abi.hosted_sqlite_write_begin)).@"fn".return_type.?;
@@ -640,8 +642,8 @@ const Rehearsal = struct {
         return made;
     }
 
-    /// The copy, the files SQLite keeps beside it, and the copy of it a
-    /// drop made (`BeforeDrop`, rehearsed too).
+    /// The copy, the files SQLite keeps beside it, and the copy of it made
+    /// before ledger.sql's steps (`BeforeLedger`, rehearsed too).
     fn delete(rehearsal: *const Rehearsal) void {
         const io = init_io orelse std.Io.Threaded.global_single_threaded.io();
         const base = rehearsal.path();
@@ -651,7 +653,8 @@ const Rehearsal = struct {
             std.Io.Dir.cwd().deleteFile(io, name) catch {};
         }
         var buffer: [path_bytes_max + 16]u8 = undefined;
-        const copies = std.fmt.bufPrint(&buffer, "{s}.before-drop", .{base}) catch unreachable;
+        const copies = std.fmt.bufPrint(&buffer, "{s}" ++ BeforeLedger.suffix, .{base}) catch
+            unreachable;
         std.Io.Dir.cwd().deleteTree(io, copies) catch {};
     }
 };
@@ -677,36 +680,101 @@ fn rehearsal_over(went_through: bool) void {
     if (went_through) write_line(1, "roux: rehearsed: the migration and init! went through");
 }
 
-/// `Sqlite.open!`'s first look, in `init!`: the database at the path and
-/// what schema.sql makes, listed for Migrate.roc to plan from.
+/// `Sqlite.open!`'s one transaction, from `hosted_sqlite_inspect` until
+/// `hosted_sqlite_open` commits it; rolled back when `init!` ends first.
+var opening: ?database_module.Opening = null;
+
+/// Rolls back and closes what `Sqlite.open!` began and did not finish.
+fn opening_close() void {
+    if (opening) |*left| left.close(std.heap.page_allocator);
+    opening = null;
+}
+
+/// `Sqlite.open!`'s first call, in `init!`: the database at the path, its
+/// transaction begun; the ledger's steps it ran, and it and what schema.sql
+/// makes, listed for Migrate.roc.
 export fn hosted_sqlite_inspect(
     path: abi.RocStr,
     schema: abi.RocStr,
 ) callconv(.c) SqliteInspectResult {
     defer path.decref(host());
     defer schema.decref(host());
-    if (serving or database != null) return inspect_error("Sqlite.open! belongs to init!, once");
+    if (serving or database != null or opening != null) {
+        return inspect_error("Sqlite.open! belongs to init!, once");
+    }
     const gpa = std.heap.page_allocator;
     const where = environment("ROUX_DATABASE") orelse path.asSlice();
     var report: database_module.Report = .{};
     const file = database_file(where, &report) catch return inspect_error(report.message());
-    var inspection = database_module.Inspection.open(gpa, file, schema.asSlice(), &report) catch
+    opening = database_module.Opening.begin(gpa, file, where, schema.asSlice(), &report) catch
         return inspect_error(report.message());
-    defer inspection.close(gpa);
-    const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch
+    const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch {
+        opening_close();
         return inspect_error("out of memory");
+    };
     defer gpa.free(rows);
-    const at = database_module.release_of(inspection.live.db, &report) catch
-        return inspect_error(report.message());
-    const live = listings(inspection.live.db, rows, &report) catch
-        return inspect_error(report.message());
-    const pristine = listings(inspection.pristine, rows, &report) catch {
-        live.objects.deinit(host());
-        live.columns.deinit(host());
+    const inspected = inspect(&opening.?, rows, &report) catch {
+        opening_close();
         return inspect_error(report.message());
     };
-    const inspected: SqliteInspected = .{ .live = live, .pristine = pristine, .at = at };
     return .{ .tag = .Ok, .payload = .{ .ok = inspected } };
+}
+
+fn inspect(
+    made: *const database_module.Opening,
+    rows: []RocRow,
+    report: *database_module.Report,
+) error{Failed}!SqliteInspected {
+    const ran = try listing(made.connection.db, .ledger, rows, report);
+    errdefer ran.deinit(host());
+    const live = try listings(made.connection.db, rows, report);
+    errdefer {
+        live.objects.deinit(host());
+        live.columns.deinit(host());
+    }
+
+    const pristine = try listings(made.pristine, rows, report);
+    return .{ .ran = ran, .live = live, .pristine = pristine };
+}
+
+/// `Sqlite.open!`'s second: the ledger's steps the database has not run,
+/// each printed before it runs (or, for a database schema.sql makes now,
+/// recorded only); the database listed after.
+export fn hosted_sqlite_ledger(
+    steps: SqliteLedger,
+    execute: bool,
+) callconv(.c) SqliteLedgerResult {
+    defer steps.deinit(host());
+    const made = if (opening) |*begun| begun else return ledger_error("Sqlite.open! out of order");
+    const gpa = std.heap.page_allocator;
+    const roc_steps = steps.items();
+    const texts = gpa.alloc([]const u8, roc_steps.len) catch {
+        opening_close();
+        return ledger_error("out of memory");
+    };
+    defer gpa.free(texts);
+    // By pointer: a small string's bytes live inside the record.
+    for (roc_steps, texts) |*step, *text| text.* = step.asSlice();
+    if (execute) print_ledger(made.name, made.recorded, texts);
+    var report: database_module.Report = .{};
+    const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch {
+        opening_close();
+        return ledger_error("out of memory");
+    };
+    defer gpa.free(rows);
+    made.run_ledger(texts, execute, &report) catch {
+        opening_close();
+        return ledger_error(report.message());
+    };
+    const live = listings(made.connection.db, rows, &report) catch {
+        opening_close();
+        return ledger_error(report.message());
+    };
+    return .{ .tag = .Ok, .payload = .{ .ok = live } };
+}
+
+fn ledger_error(message: []const u8) SqliteLedgerResult {
+    return .{ .tag = .Err, .payload = .{ .err = .fromSlice(message, host()) } };
 }
 
 /// Both listings of one database, through `rows`, a buffer each reuses.
@@ -740,31 +808,35 @@ fn inspect_error(message: []const u8) SqliteInspectResult {
     return .{ .tag = .Err, .payload = .{ .err = .fromSlice(message, host()) } };
 }
 
-/// `Sqlite.open!`: the database, in `init!` only, once, migrated by the
-/// steps Migrate.roc planned (each printed before it runs). Every
-/// allocation here is the process's for its life (startup).
+/// `Sqlite.open!`'s last call: the database brought to schema.sql by the
+/// steps Migrate.roc planned (each printed before it runs), committed, and
+/// opened, in `init!` only, once. Every allocation here is the process's
+/// for its life (startup).
 export fn hosted_sqlite_open(
-    path: abi.RocStr,
-    schema: abi.RocStr,
     statements: SqliteStatements,
     synchronous: abi.FullOrNormal,
     steps: SqliteSteps,
-    copy_first: bool,
-    release: u64,
 ) callconv(.c) SqliteOpenResult {
-    defer path.decref(host());
-    defer schema.decref(host());
     defer statements.deinit(host());
     defer steps.deinit(host());
     if (serving or database != null) return open_error("Sqlite.open! belongs to init!, once");
+    var made = opening orelse return open_error("Sqlite.open! out of order");
+    opening = null;
     const gpa = std.heap.page_allocator;
+    // The opening's are freed as it closes: kept for the process's life.
+    const where = gpa.dupe(u8, made.name) catch "the database";
+    const file = gpa.dupe(u8, made.path) catch "";
     const roc_statements = statements.items();
-    const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch
+    const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch {
+        made.close(gpa);
         return open_error("out of memory");
+    };
     defer gpa.free(descriptions);
     const roc_steps = steps.items();
-    const migration = gpa.alloc(database_module.Step, roc_steps.len) catch
+    const migration = gpa.alloc(database_module.Step, roc_steps.len) catch {
+        made.close(gpa);
         return open_error("out of memory");
+    };
     defer gpa.free(migration);
     // By pointer, as the statements below.
     for (roc_steps, migration) |*step, *into| {
@@ -781,25 +853,20 @@ export fn hosted_sqlite_open(
             .columns = statement.columns.items(),
         };
     }
-    // Where the database is is the deployment's to say, as the port.
-    const where = environment("ROUX_DATABASE") orelse path.asSlice();
     var report: database_module.Report = .{};
-    const file = database_file(where, &report) catch return open_error(report.message());
+    const schema = gpa.dupe(u8, made.schema) catch "";
     const description: database_module.Description = .{
         .path = file,
         .name = where,
-        .schema = schema.asSlice(),
+        .schema = schema,
         .statements = descriptions,
         .synchronous = switch (synchronous) {
             .full => .full,
             .normal => .normal,
         },
-        .migration = migration,
-        // roux-db's bound: a release fits `user_version`, an i32.
-        .release = std.math.cast(u32, release) orelse return open_error("a release past 2^31"),
     };
     print_migration(where, migration);
-    database = open_migrated(gpa, description, where, copy_first, &report) catch
+    database = open_migrated(gpa, &made, migration, description, &report) catch
         return open_error(report.message());
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
         return open_error("out of memory");
@@ -811,40 +878,45 @@ export fn hosted_sqlite_open(
     return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
 }
 
-/// The database opened, migrated; copied first when the migration drops
-/// rows on purpose, the copy kept only if it commits. A rehearsal copies
-/// its own copy, beside it, so a copy that cannot be made (a full disk, a
-/// directory not writable) is foretold; that copy goes with it.
+/// The database brought to schema.sql and committed (copied first when
+/// ledger.sql's steps ran: the copy is of the last commit, made just
+/// before this one, and kept only if it commits), then opened. A
+/// rehearsal copies its own copy, beside it, so a copy that cannot be
+/// made (a full disk, a directory not writable) is foretold; that copy
+/// goes with it.
 fn open_migrated(
     gpa: std.mem.Allocator,
+    made: *database_module.Opening,
+    migration: []const database_module.Step,
     description: database_module.Description,
-    where: []const u8,
-    copy_first: bool,
     report: *database_module.Report,
 ) error{Failed}!*database_module.Database {
-    var copy: ?BeforeDrop = null;
-    if (copy_first) {
-        assert(description.migration.len > 0);
-        if (rehearsing()) try BeforeDrop.check(where, report);
-        copy = try BeforeDrop.make(gpa, description.path, report);
+    {
+        defer made.close(gpa);
+        try made.migrate(migration, report);
+        var copy: ?BeforeLedger = null;
+        if (made.ran > 0) {
+            if (rehearsing()) try BeforeLedger.check(made.name, report);
+            copy = try BeforeLedger.make(gpa, description.path, report);
+        }
+        made.commit(report) catch |err| {
+            if (copy) |*copied| copied.discard();
+            return err;
+        };
+        if (copy) |*copied| {
+            if (rehearsing()) copied.discard() else copied.keep(made.name);
+        }
     }
-    const opened = database_module.open(gpa, description, .{}, report) catch |err| {
-        if (copy) |*made| made.discard();
-        return err;
-    };
-    if (copy) |*made| {
-        if (rehearsing()) made.discard() else made.keep(where);
-    }
-    return opened;
+    return database_module.open(gpa, description, .{}, report);
 }
 
-/// The database as it was, copied before a migration that drops rows on
-/// purpose (host/backup.zig), into `<path>.before-drop/`: what a drop
-/// lost is there to read, and a forward-only migration has its way back.
-/// A copy there is always of a database that then lost rows: one made
-/// before a migration that failed is deleted, and the oldest past `kept`
-/// go only once the migration committed.
-const BeforeDrop = struct {
+/// The database as it was before ledger.sql's steps, copied
+/// (host/backup.zig) into `<path>.before-ledger/`: what a step changed or
+/// dropped is there to read, and a forward-only migration has its way
+/// back. A copy there is always of a database that then ran steps: one
+/// made before a commit that failed is deleted, and the oldest past
+/// `kept` go only once the migration committed.
+const BeforeLedger = struct {
     directory_buffer: [512]u8,
     directory_length: u32,
     name: backup_module.Name,
@@ -852,42 +924,42 @@ const BeforeDrop = struct {
     /// Copies kept.
     const kept = 4;
 
-    /// For a rehearsal: `<where>.before-drop` is a directory, or nothing
+    const suffix = ".before-ledger";
+
+    /// For a rehearsal: `<where>.before-ledger` is a directory, or nothing
     /// yet, as the deploy will need it. Only looked at.
     fn check(where: []const u8, report: *database_module.Report) error{Failed}!void {
         const io = init_io.?;
         var buffer: [512]u8 = undefined;
-        const directory = std.fmt.bufPrint(&buffer, "{s}.before-drop", .{where}) catch
-            return report.fail(.failed, "copying {s} before the drop: a path too long", .{where});
+        const directory = std.fmt.bufPrint(&buffer, "{s}" ++ suffix, .{where}) catch
+            return report.fail(.failed, "copying {s} first: a path too long", .{where});
         var dir = std.Io.Dir.cwd().openDir(io, directory, .{}) catch |err| switch (err) {
             error.FileNotFound => return,
-            else => return report.fail(.failed, "copying {s} before the drop: {s}: {t}", .{
+            else => return report.fail(.failed, "copying {s} first: {s}: {t}", .{
                 where, directory, err,
             }),
         };
         dir.close(io);
     }
 
+    /// The copy, read from the database as its last commit left it (the
+    /// steps' transaction is not committed yet).
     fn make(
         gpa: std.mem.Allocator,
         where: []const u8,
         report: *database_module.Report,
-    ) error{Failed}!BeforeDrop {
+    ) error{Failed}!BeforeLedger {
         const io = init_io.?; // Sqlite.open! runs in init!
-        var made: BeforeDrop = undefined;
-        const directory = std.fmt.bufPrint(&made.directory_buffer, "{s}.before-drop", .{
+        var made: BeforeLedger = undefined;
+        const directory = std.fmt.bufPrint(&made.directory_buffer, "{s}" ++ suffix, .{
             where,
-        }) catch return report.fail(.failed, "copying {s} before the drop: a path too long", .{
-            where,
-        });
+        }) catch return report.fail(.failed, "copying {s} first: a path too long", .{where});
         made.directory_length = @intCast(directory.len);
         std.Io.Dir.cwd().createDirPath(io, directory) catch |err|
-            return report.fail(.failed, "copying {s} before the drop: {s}: {t}", .{
-                where, directory, err,
-            });
+            return report.fail(.failed, "copying {s} first: {s}: {t}", .{ where, directory, err });
         const source = try database_module.open_copy_source(gpa, where, report);
         defer database_module.close_connection(gpa, source);
-        // No rotation yet: the oldest copies stay until the drop is done.
+        // No rotation yet: the oldest copies stay until the steps commit.
         made.name = backup_module.backup(source, io, .{
             .directory = directory,
             .keep = backup_module.keep_max,
@@ -896,20 +968,20 @@ const BeforeDrop = struct {
             var said: @TypeOf(report.buffer) = undefined;
             const message = said[0..report.length];
             @memcpy(message, report.message());
-            return report.fail(.failed, "copying {s} before the drop into {s}: {s}", .{
+            return report.fail(.failed, "copying {s} first, into {s}: {s}", .{
                 where, directory, message,
             });
         };
         return made;
     }
 
-    /// `<path>.before-drop`.
-    fn path(made: *const BeforeDrop) []const u8 {
+    /// `<path>.before-ledger`.
+    fn path(made: *const BeforeLedger) []const u8 {
         return made.directory_buffer[0..made.directory_length];
     }
 
-    /// The migration did not commit: nothing was lost, the copy goes.
-    fn discard(made: *const BeforeDrop) void {
+    /// The migration did not commit: nothing changed, the copy goes.
+    fn discard(made: *const BeforeLedger) void {
         const io = init_io.?;
         var dir = std.Io.Dir.cwd().openDir(io, made.path(), .{}) catch return;
         defer dir.close(io);
@@ -918,15 +990,38 @@ const BeforeDrop = struct {
 
     /// The migration committed: the copy is kept, and the oldest past
     /// `kept` go. A failure to prune is said, and the app starts anyway.
-    fn keep(made: *const BeforeDrop, where: []const u8) void {
+    fn keep(made: *const BeforeLedger, where: []const u8) void {
         const io = init_io.?;
         const into = made.path();
-        write_parts(1, &.{ "roux: copied ", where, " before the drop to ", into, "/", &made.name });
+        const said = " before ledger.sql's steps to ";
+        write_parts(1, &.{ "roux: copied ", where, said, into, "/", &made.name });
         var report: database_module.Report = .{};
         backup_module.prune(io, into, kept, &report) catch
             write_parts(2, &.{ "roux: ", report.message() });
     }
 };
+
+/// The ledger's steps a database runs now, before they run: `recorded`
+/// the steps it ran before, so the first here is the one after.
+fn print_ledger(where: []const u8, recorded: u32, steps: []const []const u8) void {
+    if (steps.len == 0) return;
+    var buffer: [64]u8 = undefined;
+    const first = recorded + 1;
+    const last = recorded + steps.len;
+    const which = if (steps.len == 1)
+        std.fmt.bufPrint(&buffer, ", ledger.sql's step {d}", .{first}) catch unreachable
+    else
+        std.fmt.bufPrint(&buffer, ", ledger.sql's steps {d} to {d}", .{ first, last }) catch
+            unreachable;
+    write_parts(1, &.{ "roux: migrating ", where, which });
+    for (steps, first..) |step, number| {
+        var label: [32]u8 = undefined;
+        const step_label = std.fmt.bufPrint(&label, "step {d}", .{number}) catch unreachable;
+        write_parts(1, &.{ "  ", step_label });
+        var lines = std.mem.splitScalar(u8, step, '\n');
+        while (lines.next()) |line| write_parts(1, &.{ "    ", line });
+    }
+}
 
 /// What a migration will do, step by step, before it runs: why, then the
 /// statement, indented. One transaction: a failure after names its step.
@@ -1594,6 +1689,8 @@ export fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
 /// says it and reloads when roux dev starts the fixed build.
 fn init_app() InitResult {
     const init = abi.roc_init_for_host();
+    // `Sqlite.open!` refused between its calls: what it began is undone.
+    opening_close();
     if (rehearsing()) {
         // A rehearsal ends with `init!`: its copy deleted, nothing served.
         rehearsal_over(init.tag == .Ok);

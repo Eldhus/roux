@@ -50,6 +50,11 @@ pub extern fn sqlite3_prepare_v3(
     stmt: *?*Stmt,
     tail: ?*[*]const u8,
 ) c_int;
+/// 1 when `sql` ends with a whole statement (outside strings, comments and
+/// a trigger's body): where a statement ends, by SQLite's own tokenizer,
+/// without preparing it.
+pub extern fn sqlite3_complete(sql: [*:0]const u8) c_int;
+
 pub extern fn sqlite3_step(stmt: *Stmt) c_int;
 pub extern fn sqlite3_reset(stmt: *Stmt) c_int;
 pub extern fn sqlite3_finalize(stmt: ?*Stmt) c_int;

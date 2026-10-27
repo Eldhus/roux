@@ -32,9 +32,6 @@ const schema_text =
     \\
 ;
 
-/// `schema_text` as release 3: what `-- @drop` and `-- @from` lines need.
-const released = schema_text ++ "-- @release 3\n";
-
 const Run = struct {
     arena: std.heap.ArenaAllocator,
     diagnostics: Diagnostics,
@@ -61,6 +58,15 @@ const Run = struct {
 };
 
 fn run_generator(schema: []const u8, query_name: []const u8, query: []const u8) !*Run {
+    return run_with_ledger(schema, "", query_name, query);
+}
+
+fn run_with_ledger(
+    schema: []const u8,
+    ledger: []const u8,
+    query_name: []const u8,
+    query: []const u8,
+) !*Run {
     const run = try testing.allocator.create(Run);
     run.arena = .init(testing.allocator);
     const arena = run.arena.allocator();
@@ -69,6 +75,7 @@ fn run_generator(schema: []const u8, query_name: []const u8, query: []const u8) 
     run.outputs = try gen.generate(
         arena,
         .{ .name = "schema.sql", .text = schema },
+        .{ .name = "ledger.sql", .text = ledger },
         &queries,
         &run.diagnostics,
     );
@@ -80,13 +87,14 @@ fn free(run: *Run) void {
     testing.allocator.destroy(run);
 }
 
-fn run_directory(schema: []const u8, queries: []const gen.Input) !*Run {
+fn run_directory(schema: []const u8, ledger: []const u8, queries: []const gen.Input) !*Run {
     const run = try testing.allocator.create(Run);
     run.arena = .init(testing.allocator);
     run.diagnostics = .init(run.arena.allocator());
     run.outputs = try gen.generate(
         run.arena.allocator(),
         .{ .name = "schema.sql", .text = schema },
+        .{ .name = "ledger.sql", .text = ledger },
         queries,
         &run.diagnostics,
     );
@@ -100,7 +108,8 @@ test "roux-db: testdata/ generates the Roc committed beside it" {
         .{ .name = "Dishes.sql", .text = @embedFile("testdata/Dishes.sql") },
         .{ .name = "Tags.sql", .text = @embedFile("testdata/Tags.sql") },
     };
-    const run = try run_directory(@embedFile("testdata/schema.sql"), &queries);
+    const schema = @embedFile("testdata/schema.sql");
+    const run = try run_directory(schema, @embedFile("testdata/ledger.sql"), &queries);
     defer free(run);
     try testing.expect(run.diagnostics.ok());
     try testing.expectEqualStrings(@embedFile("testdata/Dishes.roc"), run.output("Dishes.roc"));
@@ -152,6 +161,7 @@ const Refusal = struct {
     /// What the case is about.
     case: []const u8,
     schema: []const u8 = schema_text,
+    ledger: []const u8 = "",
     file: []const u8 = "Dishes.sql",
     query: []const u8 = "",
     /// Part of the message expected.
@@ -159,6 +169,36 @@ const Refusal = struct {
 };
 
 const refusals = [_]Refusal{
+    .{
+        .case = "a ledger step with no `;`",
+        .ledger = "ALTER TABLE dish RENAME COLUMN title TO name;\nUPDATE dish SET note = ''\n",
+        .says = "a step with no `;` after it",
+    },
+    .{
+        .case = "a step whose `;` is inside a string",
+        .ledger = "UPDATE dish SET note = 'a;b'",
+        .says = "a step with no `;` after it",
+    },
+    .{
+        .case = "an annotation in the ledger",
+        .ledger = "-- name: q :exec\nDELETE FROM dish;\n",
+        .says = "annotations belong to query files, not ledger.sql",
+    },
+    .{
+        .case = "a misspelt annotation in the ledger",
+        .ledger = "-- @drop table menu\nDROP TABLE menu;\n",
+        .says = "unknown annotation @drop",
+    },
+    .{
+        .case = "a schema name starting roux_ (any case)",
+        .schema = schema_text ++ "CREATE TABLE ROUX_notes (id INTEGER PRIMARY KEY) STRICT;\n",
+        .says = "names starting `roux_` are roux's",
+    },
+    .{
+        .case = "an index named as roux's",
+        .schema = schema_text ++ "CREATE INDEX roux_ledger_by ON dish (note);\n",
+        .says = "names starting `roux_` are roux's",
+    },
     .{
         .case = "a vertical tab beginning a file (not a space to SQLite there)",
         .query = "\x0b-- name: q :exec\nDELETE FROM dish;",
@@ -190,65 +230,9 @@ const refusals = [_]Refusal{
         .says = "annotations belong",
     },
     .{
-        .case = "a drop of a table the schema makes (any case is the same name)",
-        .schema = released ++ "-- @drop 3 table DISH\n",
-        .says = "@drop table DISH, but schema.sql makes it",
-    },
-    .{
-        .case = "a drop of a column the schema makes",
-        .schema = released ++ "-- @drop 3 column dish note\n",
-        .says = "@drop column dish note, but schema.sql makes it",
-    },
-    .{
-        .case = "a drop misspelt",
-        .schema = released ++ "-- @drop 3 dish note\n",
-        .says = "write `-- @drop N table name`",
-    },
-    .{
-        .case = "a drop without the release it came in",
-        .schema = released ++ "-- @drop table menu\n",
-        .says = "write `-- @drop N table name`",
-    },
-    .{
-        .case = "a line, and no release in schema.sql",
-        .schema = schema_text ++ "-- @drop 1 table menu\n",
-        .says = "a line of release 1, but schema.sql says no release",
-    },
-    .{
-        .case = "a line of a release after schema.sql's",
-        .schema = released ++ "-- @drop 4 table menu\n",
-        .says = "a line of release 4, but schema.sql is release 3",
-    },
-    .{
-        .case = "a line every database is past",
-        .schema = released ++ "-- @oldest 2\n-- @drop 2 table menu\n",
-        .says = "a line of release 2, and every database is past it (`-- @oldest 2`): delete it",
-    },
-    .{
-        .case = "an oldest release after schema.sql's",
-        .schema = released ++ "-- @oldest 4\n",
-        .says = "@oldest 4, but schema.sql is release 3",
-    },
-    .{
-        .case = "an oldest release and no release",
-        .schema = schema_text ++ "-- @oldest 2\n",
-        .says = "@oldest, but no `-- @release N`",
-    },
-    .{
-        .case = "a release that is no release number",
-        .schema = schema_text ++ "-- @release 0\n",
-        .says = "write `-- @release N`, N a release from 1",
-    },
-    .{
-        .case = "a second release",
-        .schema = released ++ "CREATE TABLE plate (id INTEGER PRIMARY KEY) STRICT;\n" ++
-            "-- @release 4\n",
-        .says = "a second @release",
-    },
-    .{
-        .case = "a release in a query file",
-        .query = "-- @release 3\n-- name: q :exec\nDELETE FROM tag;",
-        .says = "`-- @release` and `-- @oldest` belong to schema.sql",
+        .case = "an annotation of the old kind in the schema",
+        .schema = schema_text ++ "-- @drop 3 table menu\n",
+        .says = "unknown annotation @drop",
     },
     .{
         .case = "a view of a column the schema no longer makes",
@@ -319,66 +303,6 @@ const refusals = [_]Refusal{
             "CREATE VIEW names AS SELECT name FROM dish;\n" ++
             "CREATE TRIGGER add_name INSTEAD OF INSERT ON names BEGIN SELECT 1; END;\n",
         .says = "names starting `roux probe` are roux-db's",
-    },
-    .{
-        .case = "a drop's quoted name not closed",
-        .schema = released ++ "-- @drop 3 table \"dish of the day\n",
-        .says = "write `-- @drop N table name`",
-    },
-    .{
-        .case = "a drop's name in single quotes (a string to SQL)",
-        .schema = released ++ "-- @drop 3 table 'menu'\n",
-        .says = "in double quotes",
-    },
-    .{
-        .case = "a from without its kind",
-        .schema = released ++ "-- @from 3 dish note = title\n",
-        .says = "write `-- @from N column table name = expression`",
-    },
-    .{
-        .case = "a from without the release it came in",
-        .schema = released ++ "-- @from column dish note = title\n",
-        .says = "write `-- @from N column table name = expression`",
-    },
-    .{
-        .case = "a from with no expression",
-        .schema = released ++ "-- @from 3 column dish note =\n",
-        .says = "write `-- @from N column table name = expression`",
-    },
-    .{
-        .case = "a from filling a column the schema does not make",
-        .schema = released ++ "-- @from 3 column dish photo = picture\n",
-        .says = "@from column dish photo, but schema.sql makes no such column to fill",
-    },
-    .{
-        .case = "a from of a table the schema does not make",
-        .schema = released ++ "-- @from 3 table meal = menu\n",
-        .says = "@from table meal, but schema.sql makes no such table",
-    },
-    .{
-        .case = "a from of a table from itself (any case is the same name)",
-        .schema = released ++ "-- @from 3 table dish = DISH\n",
-        .says = "a table from itself",
-    },
-    .{
-        .case = "a from of a table the schema still makes",
-        .schema = released ++ "-- @from 3 table dish = tag\n",
-        .says = "@from table dish = tag, but schema.sql still makes tag",
-    },
-    .{
-        .case = "a column filled twice",
-        .schema = released ++ "-- @from 3 column dish note = a\n-- @from 3 column dish NOTE = b\n",
-        .says = "a second @from for dish.NOTE",
-    },
-    .{
-        .case = "a from in a query file",
-        .query = "-- @from 3 column dish note = title\n-- name: q :exec\nDELETE FROM tag;",
-        .says = "`-- @from` belongs to schema.sql",
-    },
-    .{
-        .case = "a drop in a query file",
-        .query = "-- @drop 3 table menu\n-- name: q :exec\nDELETE FROM tag;",
-        .says = "belongs to schema.sql",
     },
     .{
         .case = "bad SQL in the schema",
@@ -514,7 +438,7 @@ test "roux-db: every refusal, by name" {
     for (refusals) |refusal| {
         const any_query = "-- name: q :exec\nDELETE FROM dish;";
         const query = if (refusal.query.len > 0) refusal.query else any_query;
-        const run = try run_generator(refusal.schema, refusal.file, query);
+        const run = try run_with_ledger(refusal.schema, refusal.ledger, refusal.file, query);
         defer free(run);
         if (!run.says(refusal.says)) {
             std.debug.print("case \"{s}\": expected \"{s}\", got:\n", .{
@@ -545,19 +469,39 @@ test "roux-db: triggers that compile are accepted, a view's and one firing anoth
     try testing.expect(run.diagnostics.ok());
 }
 
-test "roux-db: a drop of what holds rows no more: a table now a view, a column now generated" {
-    const schema = released ++
-        \\-- @drop 3 table menu
-        \\CREATE VIEW menu AS SELECT id, name FROM dish;
-        \\-- @drop 3 column plate twice
-        \\CREATE TABLE plate (id INTEGER PRIMARY KEY, n INTEGER NOT NULL,
-        \\  twice INTEGER GENERATED ALWAYS AS (n * 2)) STRICT;
+test "roux-db: the ledger's steps, where SQLite says each ends, its comments left out" {
+    // Names the schema no longer makes: a step is never prepared here.
+    const ledger =
+        \\-- 2026-03: menus became meals.
+        \\ALTER TABLE menu RENAME TO meal;
+        \\UPDATE dish SET note = 'a; b' /* a ; in a comment */ WHERE note IS NULL; -- after
+        \\CREATE TRIGGER stamp AFTER UPDATE ON dish BEGIN
+        \\  UPDATE dish SET note = 'x;' WHERE id = new.id;
+        \\END;
+        \\;;
         \\
     ;
-    const run = try run_generator(schema, "Dishes.sql", "-- name: q :exec\nDELETE FROM dish;");
+    const query = "-- name: q :exec\nDELETE FROM dish;";
+    const run = try run_with_ledger(schema_text, ledger, "Dishes.sql", query);
     defer free(run);
     for (run.diagnostics.items()) |d| std.debug.print("  {s}\n", .{d.message});
     try testing.expect(run.diagnostics.ok());
+    const database = run.output("Database.roc");
+    const steps = [_][]const u8{
+        "\"ALTER TABLE menu RENAME TO meal;\"",
+        "\"UPDATE dish SET note = 'a; b' /* a ; in a comment */ WHERE note IS NULL;\"",
+        "\"CREATE TRIGGER stamp AFTER UPDATE ON dish BEGIN\\n  UPDATE dish SET note = 'x;' " ++
+            "WHERE id = new.id;\\nEND;\"",
+    };
+    for (steps, 1..) |step, number| {
+        var buffer: [256]u8 = undefined;
+        const entry = try std.fmt.bufPrint(&buffer, "\t# step {d}\n\t{s},\n", .{ number, step });
+        testing.expect(std.mem.indexOf(u8, database, entry) != null) catch |err| {
+            std.debug.print("no {s} in:\n{s}\n", .{ entry, database });
+            return err;
+        };
+    }
+    try testing.expect(std.mem.indexOf(u8, database, "# step 4") == null);
 }
 
 const sqlite = @import("sqlite");
@@ -623,7 +567,8 @@ test "roux-db: nullability from SQLite's resolver, against the rows the shapes r
     var diagnostics = Diagnostics.init(arena);
     const queries = [_]compile.Input{.{ .name = "Shapes.sql", .text = text.written() }};
     const schema: compile.Input = .{ .name = "schema.sql", .text = join_schema };
-    const compiled = try compile.compile(arena, schema, &queries, &diagnostics);
+    const ledger: compile.Input = .{ .name = "ledger.sql", .text = "" };
+    const compiled = try compile.compile(arena, schema, ledger, &queries, &diagnostics);
     for (diagnostics.items()) |d| std.debug.print("{s}\n", .{d.message});
     try testing.expect(diagnostics.ok());
     try testing.expectEqual(shapes.len, compiled.statements.len);

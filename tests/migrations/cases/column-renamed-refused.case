@@ -1,6 +1,7 @@
 A column renamed in schema.sql and nothing more: to SQLite's listings, one
 column gone and another new. Refused, since the old one's values would
-go; the error gives the two lines a rename takes, a @drop and a @from.
+go; the table has one new column, so the error writes the rename step with
+both names, ready to paste into ledger.sql.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
@@ -10,4 +11,4 @@ INSERT INTO dish VALUES (1, 'soup');
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '') STRICT;
 
 == error
-column `dish.title` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop 1 column dish title` in schema.sql (with `-- @release 1`). Renamed? Drop it, and fill the new one from it: `-- @from 1 column dish <new> = "title"`.
+column `dish.title` is in the database, not in schema.sql: its values would go. Renamed? Add the step to ledger.sql: `ALTER TABLE dish RENAME COLUMN title TO name;` Gone on purpose? `ALTER TABLE dish DROP COLUMN title;`

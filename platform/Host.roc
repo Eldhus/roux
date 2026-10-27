@@ -58,21 +58,27 @@ Host := [].{
 	## Why a statement failed: `code` is host/database.zig's `Failure`.
 	SqliteErr : { code : U8, message : Str }
 
-	## Opens the app's one database, in `init!` (path, schema.sql, the
-	## statements, when a commit is durable, the migration Migrate.roc
-	## planned, whether to copy the database before it, as it loses rows on
-	## purpose, and the release it brings the database to, kept in `PRAGMA
-	## user_version`, never lowered); `Err` says why not.
-	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous, List(SqliteStep), Bool, U64 => Try({}, Str)
+	## `Sqlite.open!`, in `init!`, once, in three calls inside one
+	## transaction, which the last commits (or, failing, rolls back).
+	##
+	## First the database at the path (schema.sql's text next): the steps of
+	## ledger.sql it ran, in order (`roux_ledger`, a row each, its text),
+	## and host/database.zig's listings of it and of what schema.sql makes.
+	sqlite_inspect! : Str, Str => Try({ ran : List(List(SqliteValue)), live : SqliteListings, pristine : SqliteListings }, Str)
+
+	## Then the steps of ledger.sql it has not run, each recorded as it
+	## runs; with `False`, recorded only (a database schema.sql makes now).
+	## The database's listing after.
+	sqlite_ledger! : List(Str), Bool => Try(SqliteListings, Str)
+
+	## Last, the database brought to schema.sql by Migrate.roc's steps,
+	## checked, committed, and its statements prepared (when a commit is
+	## durable); `Err` says why not.
+	sqlite_open! : List(SqliteStatement), SqliteSynchronous, List(SqliteStep) => Try({}, Str)
 
 	## A statement of a migration, and why it runs: `Migrate.Step`, as the
 	## host reads it.
 	SqliteStep : { sql : Str, why : Str }
-
-	## What a migration is planned from: host/database.zig's listings,
-	## over the database at the path, and over what schema.sql makes; and
-	## the release the database is at (`PRAGMA user_version`).
-	sqlite_inspect! : Str, Str => Try({ live : SqliteListings, pristine : SqliteListings, at : U64 }, Str)
 
 	## `objects`: type, name, tbl_name, sql. `columns`: table, name, hidden,
 	## autoincrement.

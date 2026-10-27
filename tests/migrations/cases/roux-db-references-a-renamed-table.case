@@ -1,7 +1,9 @@
-A table others refer to is renamed, and a child's REFERENCES still names
-the old one. With no child rows, the migration would go through and every
-later insert into the child would fail. roux-db checks every REFERENCES as
-the schema builds, and says so there.
+A table others refer to is renamed, and schema.sql's child still names the
+old one in its REFERENCES. (The step's rename rewrites the database's own
+REFERENCES; schema.sql is the person's to fix.) With no child rows, the
+migration would go through and every later insert into the child would
+fail. roux-db checks every REFERENCES as the schema builds, and says so
+there.
 
 == before
 CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
@@ -9,11 +11,11 @@ CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES
 INSERT INTO menu VALUES (1, 'lunch');
 
 == after
--- @release 1
--- @drop 1 table menu
--- @from 1 table meal = menu
 CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
 CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE menu RENAME TO meal;
 
 == error
 roux-db: table course's REFERENCES: no such table: main.menu

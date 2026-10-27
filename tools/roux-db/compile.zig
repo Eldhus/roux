@@ -11,6 +11,11 @@
 //!   patch to SQLite (`sqlite3_column_nullable`);
 //! - what SQLite cannot say (a parameter's type, an expression's) comes
 //!   from the annotations, and an annotation SQLite contradicts is an error.
+//!
+//! `ledger.sql` is split into its steps, each where `sqlite3_complete` says
+//! a statement ends: a step names tables as the database was when it first
+//! ran, which schema.sql no longer makes, so it is not prepared here. What
+//! a step does is checked as it runs, on a database (the host's policy).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -34,8 +39,6 @@ pub const file_bytes_max = 1 << 20;
 const file_statements_max = 4096;
 
 pub const Field = annotation.Field;
-pub const Drop = annotation.Drop;
-pub const From = annotation.From;
 
 pub const Statement = struct {
     /// The query file's index in the run (0 is schema.sql).
@@ -54,7 +57,7 @@ pub const Statement = struct {
 };
 
 pub const Input = struct {
-    /// The file's name: `schema.sql`, or `Module.sql`.
+    /// The file's name: `schema.sql`, `ledger.sql`, or `Module.sql`.
     name: []const u8,
     text: []const u8,
 };
@@ -62,18 +65,15 @@ pub const Input = struct {
 pub const Compiled = struct {
     /// Every statement, by file in the order given, then by position.
     statements: []const Statement,
-    /// schema.sql's `-- @drop`s, in its order.
-    drops: []const annotation.Drop = &.{},
-    /// schema.sql's `-- @from`s, in its order.
-    froms: []const annotation.From = &.{},
-    /// `-- @release N`, 0 when schema.sql has none (and then no lines).
-    release: u32 = 0,
-    /// `-- @oldest N`, 0 when schema.sql has none.
-    oldest: u32 = 0,
+    /// ledger.sql's steps, in its order, each a statement as written.
+    ledger: []const []const u8 = &.{},
 };
 
-/// `-- @drop`s in schema.sql, in all; `-- @from`s likewise.
-pub const drops_max = 256;
+/// What diagnostics call ledger.sql: past every query file.
+pub const ledger_file: u16 = files_max + 1;
+
+/// Steps in ledger.sql.
+pub const ledger_steps_max = 4096;
 
 const Compiler = struct {
     arena: Allocator,
@@ -81,10 +81,6 @@ const Compiler = struct {
     diagnostics: *Diagnostics,
     verdict: authorizer.Verdict,
     statements: std.ArrayList(Statement),
-    drops: std.ArrayList(annotation.Drop),
-    froms: std.ArrayList(annotation.From),
-    release: ?annotation.Mark = null,
-    oldest: ?annotation.Mark = null,
     views: std.ArrayList(Made),
     triggers: std.ArrayList(Made),
     tables: std.ArrayList(Made),
@@ -93,11 +89,13 @@ const Compiler = struct {
 /// A table, view or trigger of schema.sql, and where its CREATE begins.
 const Made = struct { name: []const u8, offset: u32 };
 
-/// Compiles `queries` against `schema`; what is wrong goes to
-/// `diagnostics`, and the result means something only when it is ok.
+/// Compiles `queries` against `schema`, and splits `ledger` (empty when
+/// there is no ledger.sql); what is wrong goes to `diagnostics`, and the
+/// result means something only when it is ok.
 pub fn compile(
     arena: Allocator,
     schema: Input,
+    ledger: Input,
     queries: []const Input,
     diagnostics: *Diagnostics,
 ) !Compiled {
@@ -111,30 +109,20 @@ pub fn compile(
         .diagnostics = diagnostics,
         .verdict = .{ .policy = .schema },
         .statements = try .initCapacity(arena, statements_max),
-        .drops = try .initCapacity(arena, drops_max),
-        .froms = try .initCapacity(arena, drops_max),
         .views = try .initCapacity(arena, file_statements_max),
         .triggers = try .initCapacity(arena, file_statements_max),
         .tables = try .initCapacity(arena, file_statements_max),
     };
+    const steps = try split_ledger(&compiler, ledger.text);
     load_schema(&compiler, schema.text);
     if (!diagnostics.ok()) return .{ .statements = &.{} };
     try check_views(&compiler);
     try check_probed(&compiler, schema.text);
-    check_drops(&compiler);
-    check_froms(&compiler);
-    check_releases(&compiler);
     compiler.verdict = .{ .policy = .query };
     for (queries, 1..) |query, file| {
         compile_file(&compiler, @intCast(file), query);
     }
-    return .{
-        .statements = compiler.statements.items,
-        .drops = compiler.drops.items,
-        .froms = compiler.froms.items,
-        .release = if (compiler.release) |mark| mark.value else 0,
-        .oldest = if (compiler.oldest) |mark| mark.value else 0,
-    };
+    return .{ .statements = compiler.statements.items, .ledger = steps };
 }
 
 fn open_memory() !*c.Db {
@@ -261,22 +249,6 @@ fn load_schema(compiler: *Compiler, text: []const u8) void {
             compiler.diagnostics.add(0, next.start, "annotations belong to query files, " ++
                 "not schema.sql", .{});
         }
-        for (annotations.drop_list()) |drop| {
-            if (compiler.drops.items.len == drops_max) {
-                compiler.diagnostics.add(0, drop.offset, "more than {d} @drop", .{drops_max});
-                break;
-            }
-            compiler.drops.appendAssumeCapacity(drop);
-        }
-        for (annotations.from_list()) |from| {
-            if (compiler.froms.items.len == drops_max) {
-                compiler.diagnostics.add(0, from.offset, "more than {d} @from", .{drops_max});
-                break;
-            }
-            compiler.froms.appendAssumeCapacity(from);
-        }
-        keep_mark(compiler, &compiler.release, annotations.release, "@release");
-        keep_mark(compiler, &compiler.oldest, annotations.oldest, "@oldest");
         const statement = next.statement orelse continue;
         defer _ = c.sqlite3_finalize(statement);
         load_schema_statement(compiler, statement, next.start);
@@ -285,55 +257,61 @@ fn load_schema(compiler: *Compiler, text: []const u8) void {
     }
 }
 
-/// One `@release` (or `@oldest`) in all schema.sql.
-fn keep_mark(
-    compiler: *Compiler,
-    kept: *?annotation.Mark,
-    found: ?annotation.Mark,
-    what: []const u8,
-) void {
-    const mark = found orelse return;
-    if (kept.* != null) return compiler.diagnostics.add(0, mark.offset, "a second {s}", .{what});
-    kept.* = mark;
-}
+// --- ledger.sql -------------------------------------------------------------
 
-/// Each line's release against schema.sql's: a line needs `@release`, came
-/// in no later than it, and after `@oldest` (every database is at that
-/// release or later, done with it: a line of it applies to none).
-fn check_releases(compiler: *Compiler) void {
-    const release = compiler.release orelse {
-        if (compiler.oldest) |oldest| {
-            compiler.diagnostics.add(0, oldest.offset, "@oldest, but no `-- @release N`", .{});
+/// The steps of `text`: each statement from its first byte to its `;`,
+/// the comments between them left out (they are prose, free to change).
+/// A step ends at the first `;` where `sqlite3_complete` says the text
+/// since the last one ends a statement: a `;` in a string, a comment or a
+/// trigger's body does not.
+fn split_ledger(compiler: *Compiler, text: []const u8) ![]const []const u8 {
+    const file = ledger_file;
+    const arena = compiler.arena;
+    var steps: std.ArrayList([]const u8) = .empty;
+    var at: u32 = 0;
+    for (0..ledger_steps_max + 1) |_| {
+        var annotations: annotation.Annotations = .{};
+        const sink: annotation.Sink = .{
+            .annotations = &annotations,
+            .diagnostics = compiler.diagnostics,
+            .file = file,
+        };
+        const start = annotation.scan(text, at, @intCast(text.len), sink);
+        if (annotations.name != null or annotations.params_count + annotations.columns_count > 0) {
+            compiler.diagnostics.add(file, at, "annotations belong to query files, " ++
+                "not ledger.sql", .{});
         }
-        for (compiler.drops.items) |drop| check_release(compiler, drop.release, drop.offset, 0);
-        for (compiler.froms.items) |from| check_release(compiler, from.release, from.offset, 0);
-        return;
-    };
-    const oldest = if (compiler.oldest) |mark| mark.value else 0;
-    if (oldest > release.value) {
-        compiler.diagnostics.add(0, compiler.oldest.?.offset, "@oldest {d}, but schema.sql " ++
-            "is release {d}", .{ oldest, release.value });
+        assert(prepares_to_nothing(compiler.db, text[at..start]));
+        if (start == text.len) return steps.items;
+        const end = try statement_end(arena, text, start) orelse {
+            compiler.diagnostics.add(file, start, "a step with no `;` after it: each step " ++
+                "of ledger.sql is one statement, ended by `;`", .{});
+            return steps.items;
+        };
+        if (steps.items.len == ledger_steps_max) break;
+        try steps.append(arena, text[start..end]);
+        at = end;
     }
-    const at = release.value;
-    for (compiler.drops.items) |drop| check_release(compiler, drop.release, drop.offset, at);
-    for (compiler.froms.items) |from| check_release(compiler, from.release, from.offset, at);
+    compiler.diagnostics.add(file, at, "more than {d} steps", .{ledger_steps_max});
+    return steps.items;
 }
 
-fn check_release(compiler: *Compiler, line: u32, offset: u32, release: u32) void {
-    if (release == 0) {
-        return compiler.diagnostics.add(0, offset, "a line of release {d}, but schema.sql " ++
-            "says no release: `-- @release N`", .{line});
-    }
-    if (line > release) {
-        return compiler.diagnostics.add(0, offset, "a line of release {d}, but schema.sql " ++
-            "is release {d}", .{ line, release });
-    }
-    // Every database is at `@oldest` or later, and has finished it.
-    const oldest = if (compiler.oldest) |mark| mark.value else 0;
-    if (line <= oldest) {
-        compiler.diagnostics.add(0, offset, "a line of release {d}, and every database is " ++
-            "past it (`-- @oldest {d}`): delete it", .{ line, oldest });
-    }
+/// The byte after the `;` that ends the statement at `start`, or null if
+/// none does.
+fn statement_end(arena: Allocator, text: []const u8, start: u32) !?u32 {
+    const rest = try arena.dupeSentinel(u8, text[start..], 0);
+    var at: usize = 0;
+    for (0..rest.len + 1) |_| {
+        const semicolon = std.mem.indexOfScalarPos(u8, rest, at, ';') orelse return null;
+        // SQLite reads the text up to here as a C string: cut it there.
+        const after = semicolon + 1;
+        const saved = if (after < rest.len) rest[after] else 0;
+        if (after < rest.len) rest[after] = 0;
+        const complete = c.sqlite3_complete(rest.ptr) == 1;
+        if (after < rest.len) rest[after] = saved;
+        if (complete) return start + @as(u32, @intCast(semicolon + 1));
+        at = semicolon + 1;
+    } else unreachable;
 }
 
 /// Runs one statement of schema.sql: it must create something (the
@@ -352,18 +330,22 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
         return;
     }
     const created = verdict.created.?;
-    const list = switch (created) {
-        .create_view => &compiler.views,
-        .create_trigger => &compiler.triggers,
-        .create_table => &compiler.tables,
-        else => return,
-    };
     // A name at the verdict's bound may have been cut: never read.
     const name = verdict.created_name();
     if (name.len >= authorizer.Verdict.created_bytes_max) {
         const bound = authorizer.Verdict.created_bytes_max;
         return compiler.diagnostics.add(0, start, "a name of {d} bytes or more", .{bound});
     }
+    if (name.len >= 5 and std.ascii.eqlIgnoreCase(name[0..5], "roux_")) {
+        return compiler.diagnostics.add(0, start, "{s}: names starting `roux_` are roux's " ++
+            "(its ledger, and a table set aside while it is rebuilt)", .{name});
+    }
+    const list = switch (created) {
+        .create_view => &compiler.views,
+        .create_trigger => &compiler.triggers,
+        .create_table => &compiler.tables,
+        else => return,
+    };
     const kept = compiler.arena.dupe(u8, name) catch
         return compiler.diagnostics.add(0, start, "out of memory", .{});
     list.appendAssumeCapacity(.{ .name = kept, .offset = start });
@@ -376,7 +358,7 @@ fn load_schema_statement(compiler: *Compiler, statement: *c.Stmt, start: u32) vo
 }
 
 /// Each view read once schema.sql is whole: SQLite makes a view that names
-/// a table or column not there (one `-- @drop`ped, say), and fails only
+/// a table or column not there (one dropped, say), and fails only
 /// where it is read, at a request.
 fn check_views(compiler: *Compiler) !void {
     for (compiler.views.items) |view| {
@@ -541,83 +523,6 @@ fn sql_literal(arena: Allocator, text: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "'{s}'", .{doubled});
 }
 
-/// A drop names what schema.sql no longer makes, by SQLite's own lookup
-/// of the name (any case of an ASCII letter is the same name).
-fn check_drops(compiler: *Compiler) void {
-    for (compiler.drops.items) |drop| {
-        if (drop.column) |column| {
-            if (count_of(compiler.db, column_lookup, drop.table, column) > 0) {
-                compiler.diagnostics.add(0, drop.offset, "@drop column {s} {s}, but " ++
-                    "schema.sql makes it", .{ drop.table, column });
-            }
-        } else if (count_of(compiler.db, table_lookup, drop.table, "") > 0) {
-            compiler.diagnostics.add(0, drop.offset, "@drop table {s}, but schema.sql " ++
-                "makes it", .{drop.table});
-        }
-    }
-}
-
-/// A from fills what schema.sql makes, from what it no longer makes: a
-/// stored column of a table it makes, or a table it makes from one it
-/// does not; once each. The expression is SQLite's to read, over the old
-/// table's row, when the migration copies it.
-fn check_froms(compiler: *Compiler) void {
-    for (compiler.froms.items, 0..) |from, index| {
-        for (compiler.froms.items[0..index]) |earlier| {
-            const same_column = if (from.column) |column|
-                if (earlier.column) |other| std.ascii.eqlIgnoreCase(column, other) else false
-            else
-                earlier.column == null;
-            if (same_column and std.ascii.eqlIgnoreCase(from.table, earlier.table)) {
-                compiler.diagnostics.add(0, from.offset, "a second @from for {s}{s}{s}", .{
-                    from.table, if (from.column != null) "." else "", from.column orelse "",
-                });
-            }
-        }
-        if (from.column) |column| {
-            if (count_of(compiler.db, column_lookup, from.table, column) == 0) {
-                compiler.diagnostics.add(0, from.offset, "@from column {s} {s}, but " ++
-                    "schema.sql makes no such column to fill", .{ from.table, column });
-            }
-            continue;
-        }
-        // A table renamed twice over two releases: the middle one is made
-        // no more, and is the old side of the second line.
-        const chained = for (compiler.froms.items) |other| {
-            if (other.column == null and std.ascii.eqlIgnoreCase(other.source, from.table)) {
-                break true;
-            }
-        } else false;
-        if (count_of(compiler.db, table_lookup, from.table, "") == 0 and !chained) {
-            compiler.diagnostics.add(0, from.offset, "@from table {s}, but schema.sql " ++
-                "makes no such table", .{from.table});
-        } else if (std.ascii.eqlIgnoreCase(from.table, from.source)) {
-            compiler.diagnostics.add(0, from.offset, "@from table {s} = {s}: a table " ++
-                "from itself", .{ from.table, from.source });
-        } else if (count_of(compiler.db, table_lookup, from.source, "") > 0) {
-            compiler.diagnostics.add(0, from.offset, "@from table {s} = {s}, but schema.sql " ++
-                "still makes {s}", .{ from.table, from.source, from.source });
-        }
-    }
-}
-
-// NOCASE folds ASCII letters alone, as SQLite does names. What a drop
-// loses is rows and values: a view of the table's name holds none, nor
-// does a generated column of the column's (as Migrate.roc counts them).
-const table_lookup = "SELECT count(*) FROM pragma_table_list WHERE schema = 'main' " ++
-    "AND type = 'table' AND name = ?1 COLLATE NOCASE AND ?2 = ''";
-const column_lookup = "SELECT count(*) FROM pragma_table_xinfo(?1) " ++
-    "WHERE hidden = 0 AND name = ?2 COLLATE NOCASE";
-
-fn count_of(db: *c.Db, sql: []const u8, first: []const u8, second: []const u8) i64 {
-    const lookup = prepare_own(db, sql) catch unreachable;
-    defer _ = c.sqlite3_finalize(lookup);
-    assert(c.sqlite3_bind_text64(lookup, 1, first.ptr, first.len, null, c.utf8) == c.ok);
-    assert(c.sqlite3_bind_text64(lookup, 2, second.ptr, second.len, null, c.utf8) == c.ok);
-    assert(c.sqlite3_step(lookup) == c.row);
-    return c.sqlite3_column_int64(lookup, 0);
-}
-
 fn is_strict(db: *c.Db, table: []const u8) bool {
     const lookup = prepare_own(db,
         \\SELECT strict FROM pragma_table_list WHERE schema = 'main' AND name = ?1
@@ -644,17 +549,6 @@ fn compile_file(compiler: *Compiler, file: u16, input: Input) void {
     for (0..file_statements_max) |_| {
         var annotations: annotation.Annotations = .{};
         const next = next_statement(compiler, file, input.text, &at, &annotations) orelse break;
-        for (annotations.drop_list()) |drop| {
-            compiler.diagnostics.add(file, drop.offset, "`-- @drop` belongs to schema.sql", .{});
-        }
-        for (annotations.from_list()) |from| {
-            compiler.diagnostics.add(file, from.offset, "`-- @from` belongs to schema.sql", .{});
-        }
-        for ([_]?annotation.Mark{ annotations.release, annotations.oldest }) |found| {
-            const mark = found orelse continue;
-            compiler.diagnostics.add(file, mark.offset, "`-- @release` and `-- @oldest` " ++
-                "belong to schema.sql", .{});
-        }
         const statement = next.statement orelse {
             if (annotations.name != null) {
                 compiler.diagnostics.add(file, annotations.name_offset, "`-- name:` with " ++

@@ -1,6 +1,6 @@
 A column schema.sql no longer makes would lose its values: refused, and
-nothing changes. The error gives the line that drops it on purpose, and
-the one that would fill a renamed column from it.
+nothing changes. The error gives the step that drops it on purpose, and the
+one that renames it.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
@@ -10,4 +10,4 @@ INSERT INTO dish VALUES (1, 'soup', 'hot');
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
 == error
-column `dish.note` is in the database, not in schema.sql: its values would go. Keep it, or drop it on purpose: `-- @drop 1 column dish note` in schema.sql (with `-- @release 1`). Renamed? Drop it, and fill the new one from it: `-- @from 1 column dish <new> = "note"`.
+column `dish.note` is in the database, not in schema.sql: its values would go. Renamed? Add the step to ledger.sql: `ALTER TABLE dish RENAME COLUMN note TO <new name>;` Gone on purpose? `ALTER TABLE dish DROP COLUMN note;`

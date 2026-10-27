@@ -1,0 +1,49 @@
+Foreign keys are off while the steps run, as SQLite's own way of changing
+tables has it, so nothing cascades: a step that deletes a menu leaves its
+courses pointing nowhere, and the check before the commit refuses that,
+naming the rows. The fix (deploy 2) deletes the courses first.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id) ON DELETE CASCADE) STRICT;
+INSERT INTO menu VALUES (1, 'lunch'), (2, 'brunch');
+INSERT INTO course VALUES (1, 1), (2, 2), (3, 2);
+
+== after
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id) ON DELETE CASCADE) STRICT;
+
+== ledger
+-- No more brunch.
+DELETE FROM menu WHERE title = 'brunch';
+
+== after
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id) ON DELETE CASCADE) STRICT;
+
+== ledger
+-- No more brunch.
+DELETE FROM course WHERE menu_id IN (SELECT id FROM menu WHERE title = 'brunch');
+DELETE FROM menu WHERE title = 'brunch';
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DELETE FROM menu WHERE title = 'brunch';
+-- after 2
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    DELETE FROM course WHERE menu_id IN (SELECT id FROM menu WHERE title = 'brunch');
+  step 2
+    DELETE FROM menu WHERE title = 'brunch';
+
+== error
+-- after 1
+migrating test.db: rows that would break a foreign key: 2; course row 2 names no menu; course row 3 names no menu
+
+== query
+SELECT course.id, menu.title FROM course JOIN menu ON menu.id = course.menu_id ORDER BY course.id
+
+== rows
+1 | lunch

@@ -14,29 +14,6 @@
 //!   -- @param id : I64
 //!   -- @column n : I64
 //!
-//! and in schema.sql, the release it is, and the oldest release every
-//! database has finished (its lines, and those before, were deleted):
-//!
-//!   -- @release 9
-//!   -- @oldest 6
-//!
-//! what it no longer makes and whose rows may go when a database is
-//! migrated (Migrate.roc refuses to lose them otherwise), each with the
-//! release it came in:
-//!
-//!   -- @drop 7 table meal
-//!   -- @drop 7 column dish note
-//!   -- @drop 8 table "dish of the day"   (a name with a space, quoted)
-//!
-//! and how a migration fills what is new, from what was there:
-//!
-//!   -- @from 7 column dish name = title    (a column new to its table)
-//!   -- @from 8 column dish slug = lower(name)
-//!   -- @from 9 table meal = menu           (a table made from another)
-//!
-//! The expression is SQL, read by SQLite in the migration's copy, over the
-//! old table's row; roux-db keeps it as text and never reads it.
-//!
 //! Any other comment is prose. A `--` comment beginning with `@` that is
 //! not one of these is an error, so a misspelt annotation is never prose.
 
@@ -52,8 +29,6 @@ pub const fields_max = 64;
 pub const rows_max_limit = 100_000;
 /// Words on an annotation line: `@param id : Nullable(I64)` has four.
 const words_max = 8;
-/// `@drop` lines before one statement of schema.sql.
-pub const drops_max = 64;
 
 pub const Kind = enum {
     /// At most one row: the function returns it, or `NotFound`.
@@ -71,32 +46,6 @@ pub const Field = struct {
     offset: u32,
 };
 
-/// `@drop 7 table meal` (`column` null), or `@drop 7 column dish note`: 7
-/// the release it came in.
-pub const Drop = struct {
-    release: u32,
-    table: []const u8,
-    column: ?[]const u8,
-    offset: u32,
-};
-
-/// `@from 7 column dish name = title` (`column` set, `source` the
-/// expression), or `@from 7 table meal = menu` (`source` the old table).
-pub const From = struct {
-    release: u32,
-    table: []const u8,
-    column: ?[]const u8,
-    source: []const u8,
-    offset: u32,
-};
-
-/// `@release 9`, or `@oldest 6`: a release number, and where it is.
-pub const Mark = struct { value: u32, offset: u32 };
-
-/// The largest release: SQLite keeps a database's in `user_version`, a
-/// signed 32-bit integer.
-pub const release_max = std.math.maxInt(i32);
-
 pub const Annotations = struct {
     name: ?[]const u8 = null,
     name_offset: u32 = 0,
@@ -107,20 +56,6 @@ pub const Annotations = struct {
     params_count: u32 = 0,
     columns: [fields_max]Field = undefined,
     columns_count: u32 = 0,
-    drops: [drops_max]Drop = undefined,
-    drops_count: u32 = 0,
-    froms: [drops_max]From = undefined,
-    froms_count: u32 = 0,
-    release: ?Mark = null,
-    oldest: ?Mark = null,
-
-    pub fn drop_list(annotations: *const Annotations) []const Drop {
-        return annotations.drops[0..annotations.drops_count];
-    }
-
-    pub fn from_list(annotations: *const Annotations) []const From {
-        return annotations.froms[0..annotations.froms_count];
-    }
 
     pub fn param_list(annotations: *const Annotations) []const Field {
         return annotations.params[0..annotations.params_count];
@@ -198,160 +133,8 @@ fn parse_line(line: []const u8, offset: u32, sink: Sink) void {
     if (words[0][0] != '@') return; // prose
     if (std.mem.eql(u8, words[0], "@param")) return parse_field(words, offset, sink, .param);
     if (std.mem.eql(u8, words[0], "@column")) return parse_field(words, offset, sink, .column);
-    if (std.mem.eql(u8, words[0], "@drop")) return parse_drop(line, offset, sink);
-    if (std.mem.eql(u8, words[0], "@from")) return parse_from(line, offset, sink);
-    if (std.mem.eql(u8, words[0], "@release")) return parse_mark(words, offset, sink, .release);
-    if (std.mem.eql(u8, words[0], "@oldest")) return parse_mark(words, offset, sink, .oldest);
     sink.diagnostics.add(sink.file, offset, "unknown annotation {s}: roux-db knows " ++
-        "`-- name:`, `-- @param`, `-- @column`, `-- @release`, `-- @oldest`, `-- @drop` " ++
-        "and `-- @from`", .{words[0]});
-}
-
-/// `@release 9`: the release schema.sql is; `@oldest 6`: the oldest
-/// release a database may be at to be migrated by it.
-fn parse_mark(
-    words: []const []const u8,
-    offset: u32,
-    sink: Sink,
-    which: enum { release, oldest },
-) void {
-    const value = if (words.len == 2) release_of(words[1]) else null;
-    const mark = switch (which) {
-        .release => &sink.annotations.release,
-        .oldest => &sink.annotations.oldest,
-    };
-    if (value == null) {
-        return sink.diagnostics.add(sink.file, offset, "write `-- @{t} N`, N a release " ++
-            "from 1 to {d}", .{ which, release_max });
-    }
-    if (mark.* != null) return sink.diagnostics.add(sink.file, offset, "a second @{t}", .{which});
-    mark.* = .{ .value = value.?, .offset = offset };
-}
-
-/// A release number: digits, from 1 to `release_max`.
-fn release_of(word: []const u8) ?u32 {
-    const value = std.fmt.parseInt(u32, word, 10) catch return null;
-    if (value == 0 or value > release_max) return null;
-    return value;
-}
-
-/// The names before the first `=` outside double quotes are words, as a
-/// drop's; what follows is an expression (a column's) or one name (a
-/// table's).
-fn parse_from(line: []const u8, offset: u32, sink: Sink) void {
-    const usage = "write `-- @from N column table name = expression` or " ++
-        "`-- @from N table name = old_name`, N the release it came in (a name with a " ++
-        "space in double quotes)";
-    var quoted = false;
-    const equals = for (line, 0..) |byte, index| {
-        if (byte == '"') quoted = !quoted;
-        if (byte == '=' and !quoted) break index;
-    } else return sink.diagnostics.add(sink.file, offset, usage, .{});
-    var words_buffer: [6][]const u8 = undefined;
-    const words = drop_words(line[0..equals], &words_buffer) orelse &.{};
-    const source = std.mem.trim(u8, line[equals + 1 ..], " \t\r");
-    const release = if (words.len >= 2) release_of(words[1]) else null;
-    const column_form = words.len == 5 and std.mem.eql(u8, words[2], "column");
-    var table_source: [2][]const u8 = undefined;
-    const old: []const []const u8 = drop_words(source, &table_source) orelse &.{};
-    const table_form = words.len == 4 and std.mem.eql(u8, words[2], "table") and old.len == 1;
-    if ((!column_form and !table_form) or source.len == 0 or release == null) {
-        return sink.diagnostics.add(sink.file, offset, usage, .{});
-    }
-    const annotations = sink.annotations;
-    if (annotations.froms_count == drops_max) {
-        return sink.diagnostics.add(sink.file, offset, "more than {d} @from together", .{
-            drops_max,
-        });
-    }
-    annotations.froms[annotations.froms_count] = .{
-        .release = release.?,
-        .table = words[3],
-        .column = if (column_form) words[4] else null,
-        .source = if (column_form) source else table_source[0],
-        .offset = offset,
-    };
-    annotations.froms_count += 1;
-}
-
-/// A name as SQLite keeps it: one word, or in double quotes when it has a
-/// space (`"dish of the day"`). What a drop names is compared with the
-/// database's own names, never parsed as SQL.
-fn parse_drop(line: []const u8, offset: u32, sink: Sink) void {
-    var words_buffer: [6][]const u8 = undefined;
-    const words = drop_words(line, &words_buffer) orelse &.{};
-    const release = if (words.len >= 2) release_of(words[1]) else null;
-    const table_form = words.len == 4 and std.mem.eql(u8, words[2], "table");
-    const column_form = words.len == 5 and std.mem.eql(u8, words[2], "column");
-    if ((!table_form and !column_form) or release == null) {
-        sink.diagnostics.add(sink.file, offset, "write `-- @drop N table name` or " ++
-            "`-- @drop N column table name`, N the release it came in (a name with a " ++
-            "space in double quotes)", .{});
-        return;
-    }
-    const annotations = sink.annotations;
-    if (annotations.drops_count == drops_max) {
-        sink.diagnostics.add(sink.file, offset, "more than {d} @drop together", .{drops_max});
-        return;
-    }
-    annotations.drops[annotations.drops_count] = .{
-        .release = release.?,
-        .table = words[3],
-        .column = if (column_form) words[4] else null,
-        .offset = offset,
-    };
-    annotations.drops_count += 1;
-}
-
-/// The words of a `@drop` line, a quoted one without its quotes; null for
-/// more words than `buffer` holds, a quote not closed, or a quote inside
-/// one (a name with `"` in it is not dropped by name).
-fn drop_words(line: []const u8, buffer: [][]const u8) ?[]const []const u8 {
-    var count: usize = 0;
-    var at: usize = 0;
-    for (0..line.len + 1) |_| {
-        while (at < line.len and (line[at] == ' ' or line[at] == '\t' or line[at] == '\r')) at += 1;
-        if (at == line.len) return buffer[0..count];
-        if (count == buffer.len) return null;
-        const start = at;
-        if (line[at] == '"') {
-            const close = std.mem.indexOfScalarPos(u8, line, at + 1, '"') orelse return null;
-            const after = close + 1;
-            if (after < line.len and line[after] != ' ' and line[after] != '\t' and
-                line[after] != '\r') return null;
-            buffer[count] = line[start + 1 .. close];
-            at = after;
-        } else {
-            // In single quotes it would be a string to SQL, never a name.
-            if (line[at] == '\'') return null;
-            while (at < line.len and line[at] != ' ' and line[at] != '\t' and line[at] != '\r') {
-                if (line[at] == '"') return null;
-                at += 1;
-            }
-            buffer[count] = line[start..at];
-        }
-        if (buffer[count].len == 0) return null;
-        count += 1;
-    } else unreachable;
-}
-
-test drop_words {
-    var buffer: [5][]const u8 = undefined;
-    const words = drop_words(" @drop table \"dish of the day\"", &buffer).?;
-    try std.testing.expectEqual(3, words.len);
-    try std.testing.expectEqualStrings("dish of the day", words[2]);
-    try std.testing.expect(drop_words("@drop table \"open", &buffer) == null);
-    try std.testing.expect(drop_words("@drop table \"say \"\"hi\"\"\"", &buffer) == null);
-    try std.testing.expect(drop_words("@drop table \"\"", &buffer) == null);
-    try std.testing.expect(drop_words("@drop table 'menu'", &buffer) == null);
-}
-
-test release_of {
-    try std.testing.expectEqual(7, release_of("7"));
-    try std.testing.expectEqual(null, release_of("0"));
-    try std.testing.expectEqual(null, release_of("-1"));
-    try std.testing.expectEqual(null, release_of("2147483648"));
-    try std.testing.expectEqual(null, release_of("table"));
+        "`-- name:`, `-- @param` and `-- @column`", .{words[0]});
 }
 
 fn parse_name(words: []const []const u8, offset: u32, sink: Sink) void {

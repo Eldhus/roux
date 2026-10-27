@@ -1,5 +1,5 @@
-A table whose name has spaces goes on purpose: `-- @drop` takes the name in
-double quotes, as the refusal wrote it.
+A table whose name has spaces goes on purpose: the step names it in double
+quotes, as SQL does (and as the refusal wrote it: quoted-name-refused).
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
@@ -7,12 +7,12 @@ CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRI
 INSERT INTO "dish of the day" VALUES (1, 'soup');
 
 == after
--- @release 1
--- @drop 1 table "dish of the day"
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
 
+== ledger
+DROP TABLE "dish of the day";
+
 == plan
-roux: migrating test.db, 1 step
-  table `dish of the day`: dropped on purpose
-    DROP TABLE "dish of the day"
-migrated from release 0
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE "dish of the day";

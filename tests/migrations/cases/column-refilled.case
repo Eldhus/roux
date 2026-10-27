@@ -1,0 +1,25 @@
+A column the table has already, filled where it is NULL: a step is plain
+SQL, so it may update any rows. It runs once; the rows it left alone keep
+their values.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup', NULL), (2, 'Rye Bread', 'bread');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+UPDATE dish SET slug = lower(replace(name, ' ', '-')) WHERE slug IS NULL;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    UPDATE dish SET slug = lower(replace(name, ' ', '-')) WHERE slug IS NULL;
+
+== query
+SELECT id, slug FROM dish ORDER BY id
+
+== rows
+1 | pea-soup
+2 | bread

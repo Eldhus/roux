@@ -1,0 +1,13 @@
+Names beginning `roux_` are roux's (its ledger, `roux_ledger`, and
+`roux_old_` for a table set aside while it is rebuilt): roux-db refuses
+one in schema.sql.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY) STRICT;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY) STRICT;
+CREATE TABLE roux_old_dish (id INTEGER PRIMARY KEY) STRICT;
+
+== error
+roux-db: roux_old_dish: names starting `roux_` are roux's (its ledger, and a table set aside while it is rebuilt)

@@ -1,5 +1,6 @@
-A table becomes a view of the same name: its rows would go, so the drop is
-on purpose, and a view of the name holds no rows of its own.
+A table becomes a view of the same name: the ledger drops the table on
+purpose (its rows go), and schema.sql makes the view, which holds no rows
+of its own.
 
 == before
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
@@ -8,15 +9,16 @@ INSERT INTO dish VALUES (1, 'soup', 95);
 INSERT INTO menu VALUES (1, 'soup');
 
 == after
--- @release 1
--- @drop 1 table menu
 CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
 CREATE VIEW menu AS SELECT id, name FROM dish;
 
+== ledger
+DROP TABLE menu;
+
 == plan
-roux: migrating test.db, 2 steps
-  table `menu`: dropped on purpose
-    DROP TABLE "menu"
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE menu;
+roux: migrating test.db, 1 step
   view `menu`: as schema.sql makes it
     CREATE VIEW menu AS SELECT id, name FROM dish
-migrated from release 0

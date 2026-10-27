@@ -1,0 +1,48 @@
+A table split in two: a dish's tags move out of a comma-separated column
+into a table of their own. The ledger makes the new table (as schema.sql
+will have it), fills it from the old column with a recursive query, and
+drops the column. SQL does it all; no task in `init!`.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, tags TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup', 'hot,vegan'), (2, 'bread', 'vegan'), (3, 'roast', '');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE tag (dish_id INTEGER NOT NULL REFERENCES dish (id), label TEXT NOT NULL, PRIMARY KEY (dish_id, label)) STRICT, WITHOUT ROWID;
+
+== ledger
+CREATE TABLE tag (dish_id INTEGER NOT NULL REFERENCES dish (id), label TEXT NOT NULL, PRIMARY KEY (dish_id, label)) STRICT, WITHOUT ROWID;
+INSERT INTO tag (dish_id, label)
+WITH RECURSIVE split (dish_id, label, rest) AS (
+  SELECT id, '', tags || ',' FROM dish
+  UNION ALL
+  SELECT dish_id, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
+  FROM split WHERE rest <> ''
+)
+SELECT dish_id, label FROM split WHERE label <> '';
+ALTER TABLE dish DROP COLUMN tags;
+
+== plan
+roux: migrating test.db, ledger.sql's steps 1 to 3
+  step 1
+    CREATE TABLE tag (dish_id INTEGER NOT NULL REFERENCES dish (id), label TEXT NOT NULL, PRIMARY KEY (dish_id, label)) STRICT, WITHOUT ROWID;
+  step 2
+    INSERT INTO tag (dish_id, label)
+    WITH RECURSIVE split (dish_id, label, rest) AS (
+      SELECT id, '', tags || ',' FROM dish
+      UNION ALL
+      SELECT dish_id, substr(rest, 1, instr(rest, ',') - 1), substr(rest, instr(rest, ',') + 1)
+      FROM split WHERE rest <> ''
+    )
+    SELECT dish_id, label FROM split WHERE label <> '';
+  step 3
+    ALTER TABLE dish DROP COLUMN tags;
+
+== query
+SELECT dish.name, tag.label FROM tag JOIN dish ON dish.id = tag.dish_id ORDER BY dish.id, tag.label
+
+== rows
+soup | hot
+soup | vegan
+bread | vegan

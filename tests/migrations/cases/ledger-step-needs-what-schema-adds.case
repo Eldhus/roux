@@ -1,0 +1,47 @@
+A step runs on the database as the last deploy left it, before schema.sql's
+changes: it cannot use a column schema.sql adds in the same release. Here
+the step fills `slug`, which only schema.sql makes: refused, the database
+unchanged. A dev database that took schema.sql's column first would have
+run it: the rehearsal of production's says it before the deploy does.
+
+The fix (deploy 2): the step adds the column itself. Nothing had run, so
+the step could still be changed.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+-- after 2
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    ALTER TABLE dish ADD COLUMN slug TEXT;
+  step 2
+    UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+
+== error
+-- after 1
+migrating test.db: ledger.sql's step 1: no such column: slug
+
+== query
+SELECT id, slug FROM dish
+
+== rows
+1 | pea-soup

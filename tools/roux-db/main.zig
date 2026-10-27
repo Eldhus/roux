@@ -2,11 +2,12 @@
 //!
 //!   roux-db gen DIR
 //!
-//! DIR holds `schema.sql` (CREATE statements, STRICT tables) and query
+//! DIR holds `schema.sql` (CREATE statements, STRICT tables), maybe
+//! `ledger.sql` (what changed by hand, a step each, in order) and query
 //! files, `Module.sql` each; roux-db writes `Module.roc` beside each and
 //! `Database.roc`, leaving a file untouched when its text would not change.
 //! Problems are printed as `DIR/file:line:column: message`, all of them,
-//! and nothing is written. No migrations yet.
+//! and nothing is written.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -30,20 +31,31 @@ pub fn main(init: std.process.Init) !void {
     defer dir.close(io);
     const schema_text = try read(io, arena, dir, "schema.sql");
     const schema: gen.Input = .{ .name = "schema.sql", .text = schema_text };
+    const ledger_text = read_if_there(io, arena, dir, "ledger.sql") catch |err| switch (err) {
+        error.FileNotFound => "",
+        else => return err,
+    };
+    const ledger: gen.Input = .{ .name = "ledger.sql", .text = ledger_text };
     const queries = try read_queries(io, arena, dir);
     var diagnostics = Diagnostics.init(arena);
-    const outputs = try gen.generate(arena, schema, queries, &diagnostics);
+    const outputs = try gen.generate(arena, schema, ledger, queries, &diagnostics);
     if (!diagnostics.ok()) {
-        report(dir_path, schema, queries, &diagnostics);
+        report(dir_path, .{ .schema = schema, .ledger = ledger, .queries = queries }, &diagnostics);
         std.process.exit(1);
     }
     for (outputs) |output| try write_if_changed(io, arena, dir, output);
 }
 
 fn read(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8) ![]const u8 {
+    return read_if_there(io, arena, dir, name) catch |err| switch (err) {
+        error.FileNotFound => fatal("roux-db: no {s}\n", .{name}),
+        else => return err,
+    };
+}
+
+fn read_if_there(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8) ![]const u8 {
     return dir.readFileAlloc(io, name, arena, .limited(compile.file_bytes_max)) catch |err|
         switch (err) {
-            error.FileNotFound => fatal("roux-db: no {s}\n", .{name}),
             error.StreamTooLong => fatal("roux-db: {s}: over {d} bytes\n", .{
                 name, compile.file_bytes_max,
             }),
@@ -51,8 +63,8 @@ fn read(io: Io, arena: Allocator, dir: Io.Dir, name: []const u8) ![]const u8 {
         };
 }
 
-/// Every `*.sql` but schema.sql, sorted by name, so statements are
-/// numbered the same on every machine.
+/// Every `*.sql` but schema.sql and ledger.sql, sorted by name, so
+/// statements are numbered the same on every machine.
 fn read_queries(io: Io, arena: Allocator, dir: Io.Dir) ![]const gen.Input {
     var list: std.ArrayList(gen.Input) = try .initCapacity(arena, compile.files_max);
     var iterator = dir.iterate();
@@ -62,6 +74,7 @@ fn read_queries(io: Io, arena: Allocator, dir: Io.Dir) ![]const gen.Input {
         const entry = try iterator.next(io) orelse break;
         if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".sql")) continue;
         if (std.mem.eql(u8, entry.name, "schema.sql")) continue;
+        if (std.mem.eql(u8, entry.name, "ledger.sql")) continue;
         if (list.items.len == compile.files_max) {
             fatal("roux-db: more than {d} query files\n", .{compile.files_max});
         }
@@ -76,14 +89,19 @@ fn by_name(_: void, a: gen.Input, b: gen.Input) bool {
     return std.mem.order(u8, a.name, b.name) == .lt;
 }
 
-fn report(
-    dir_path: []const u8,
+const Files = struct {
     schema: gen.Input,
+    ledger: gen.Input,
     queries: []const gen.Input,
-    diagnostics: *const Diagnostics,
-) void {
+};
+
+fn report(dir_path: []const u8, files: Files, diagnostics: *const Diagnostics) void {
     for (diagnostics.items()) |diagnostic| {
-        const input = if (diagnostic.file == 0) schema else queries[diagnostic.file - 1];
+        const input = switch (diagnostic.file) {
+            0 => files.schema,
+            compile.ledger_file => files.ledger,
+            else => files.queries[diagnostic.file - 1],
+        };
         const at = diagnostics_module.position(input.text, diagnostic.offset);
         std.debug.print("{s}/{s}:{d}:{d}: {s}\n", .{
             dir_path, input.name, at.line, at.column, diagnostic.message,
