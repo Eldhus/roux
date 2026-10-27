@@ -85,6 +85,16 @@ pub fn backup(
     return name;
 }
 
+/// Deletes the oldest copies in `directory` past `keep`, and partial
+/// ones: for a copy made with no rotation, kept only once what it was
+/// made for went through (the copy before ledger.sql's steps).
+pub fn prune(io: Io, directory: []const u8, keep: u32, report: *Report) error{Failed}!void {
+    var dir = Io.Dir.cwd().openDir(io, directory, .{ .iterate = true }) catch |err|
+        return report.fail(.failed, "backup: {s}: {t}", .{ directory, err });
+    defer dir.close(io);
+    try rotate(io, dir, keep, report);
+}
+
 /// The copy, under its dated name, synced.
 fn make(
     source: *Connection,
@@ -109,7 +119,7 @@ fn make(
     delete_if_there(io, dir, &partial) catch |err|
         return report.fail(.failed, "backup: {s}: {t}", .{ &partial, err });
     errdefer delete_if_there(io, dir, &partial) catch {};
-    try copy(source, path, report);
+    try copy(source.db, path, report);
     const file = dir.openFile(io, &partial, .{}) catch |err|
         return report.fail(.failed, "backup: {s}: {t}", .{ &partial, err });
     defer file.close(io);
@@ -122,8 +132,8 @@ fn make(
 }
 
 /// `source`'s pages into a new database at `path`, in one read
-/// transaction.
-fn copy(source: *Connection, path: [:0]const u8, report: *Report) error{Failed}!void {
+/// transaction; not synced (a backup syncs it; a rehearsal throws it away).
+pub fn copy(source: *c.Db, path: [:0]const u8, report: *Report) error{Failed}!void {
     var db: ?*c.Db = null;
     const flags = c.open_readwrite | c.open_create | c.open_nomutex | c.open_exrescode;
     if (c.sqlite3_open_v2(path, &db, flags, null) != c.ok) {
@@ -138,7 +148,7 @@ fn copy(source: *Connection, path: [:0]const u8, report: *Report) error{Failed}!
     );
     sqlite.exec(destination, settings) catch
         return report.fail(.failed, "backup: {s}", .{c.sqlite3_errmsg(destination)});
-    const handle = c.sqlite3_backup_init(destination, "main", source.db, "main") orelse
+    const handle = c.sqlite3_backup_init(destination, "main", source, "main") orelse
         return report.fail(.failed, "backup: {s}", .{c.sqlite3_errmsg(destination)});
     const stepped = c.sqlite3_backup_step(handle, -1);
     const finished = c.sqlite3_backup_finish(handle);

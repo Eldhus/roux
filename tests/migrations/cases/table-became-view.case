@@ -1,0 +1,24 @@
+A table becomes a view of the same name: the ledger drops the table on
+purpose (its rows go), and schema.sql makes the view, which holds no rows
+of its own.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE TABLE menu (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup', 95);
+INSERT INTO menu VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE VIEW menu AS SELECT id, name FROM dish;
+
+== ledger
+DROP TABLE menu;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE menu;
+roux: migrating test.db, 1 step
+  view `menu`: as schema.sql makes it
+    CREATE VIEW menu AS SELECT id, name FROM dish

@@ -58,13 +58,35 @@ Host := [].{
 	## Why a statement failed: `code` is host/database.zig's `Failure`.
 	SqliteErr : { code : U8, message : Str }
 
-	## Opens the app's one database, in `init!` (path, schema.sql, the
-	## statements, when a commit is durable, then the waits as
-	## host/database.zig's `Waits`: read_wait_ms, write_wait_ms,
-	## writers_waiting, 0 for the host's default); `Err` says why not. The
-	## waits go as numbers, not a record: Zig 0.17 broke on reading a record
-	## an exported function takes by value (an LLVM memcpy, -Osafe).
-	sqlite_open! : Str, Str, List(SqliteStatement), SqliteSynchronous, U32, U32, U32 => Try({}, Str)
+	## `Sqlite.open!`, in `init!`, once, in three calls inside one
+	## transaction, which the last commits (or, failing, rolls back).
+	##
+	## First the database at the path (schema.sql's text next): the steps of
+	## ledger.sql it ran, in order (`roux_ledger`, a row each, its text),
+	## and host/database.zig's listings of it and of what schema.sql makes.
+	sqlite_inspect! : Str, Str => Try({ ran : List(List(SqliteValue)), live : SqliteListings, pristine : SqliteListings }, Str)
+
+	## Then the steps of ledger.sql it has not run, each recorded as it
+	## runs; with `False`, recorded only (a database schema.sql makes now).
+	## The database's listing after.
+	sqlite_ledger! : List(Str), Bool => Try(SqliteListings, Str)
+
+	## Last, the database brought to schema.sql by Migrate.roc's steps,
+	## checked, committed, and its statements prepared (when a commit is
+	## durable, then the waits as host/database.zig's `Waits`: read_wait_ms,
+	## write_wait_ms, writers_waiting, 0 for the host's default); `Err` says
+	## why not. The waits go as numbers, not a record: Zig 0.17 broke on
+	## reading a record an exported function takes by value (an LLVM memcpy,
+	## -Osafe).
+	sqlite_open! : List(SqliteStatement), SqliteSynchronous, List(SqliteStep), U32, U32, U32 => Try({}, Str)
+
+	## A statement of a migration, and why it runs: `Migrate.Step`, as the
+	## host reads it.
+	SqliteStep : { sql : Str, why : Str }
+
+	## `objects`: type, name, tbl_name, sql. `columns`: table, name, hidden,
+	## autoincrement.
+	SqliteListings : { objects : List(List(SqliteValue)), columns : List(List(SqliteValue)) }
 
 	## As host/database.zig's `Synchronous`.
 	SqliteSynchronous : [Full, Normal]

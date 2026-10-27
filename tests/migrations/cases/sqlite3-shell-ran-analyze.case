@@ -1,0 +1,13 @@
+ANALYZE ran on the database (a `sqlite3` shell, a backup tool): it made
+`sqlite_stat1`, which schema.sql never makes. SQLite's own tables are not
+the schema's: it opens, with nothing to do.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_name ON dish (name);
+INSERT INTO dish (name) VALUES ('soup'), ('bread');
+ANALYZE;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_name ON dish (name);

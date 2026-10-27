@@ -1,0 +1,18 @@
+A trigger changes and its table does not: the trigger alone is dropped and
+made again; the table and its rows are not touched.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, changed INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TRIGGER dish_changed AFTER UPDATE OF name ON dish BEGIN UPDATE dish SET changed = 1 WHERE id = new.id; END;
+INSERT INTO dish (id, name) VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, changed INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TRIGGER dish_changed AFTER UPDATE OF name ON dish BEGIN UPDATE dish SET changed = changed + 1 WHERE id = new.id; END;
+
+== plan
+roux: migrating test.db, 2 steps
+  trigger `dish_changed`: changed in schema.sql
+    DROP TRIGGER "dish_changed"
+  trigger `dish_changed`: as schema.sql makes it
+    CREATE TRIGGER dish_changed AFTER UPDATE OF name ON dish BEGIN UPDATE dish SET changed = changed + 1 WHERE id = new.id; END

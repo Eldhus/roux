@@ -1,0 +1,24 @@
+A parent table is rebuilt while a child's rows refer to it with ON DELETE
+CASCADE. Foreign keys are off through the migration, so dropping the old
+parent cascades nowhere: every child row stays.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE review (id INTEGER PRIMARY KEY, dish_id INTEGER NOT NULL REFERENCES dish (id) ON DELETE CASCADE, words TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup'), (2, 'bread');
+INSERT INTO review VALUES (1, 1, 'hot'), (2, 2, 'warm');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+CREATE TABLE review (id INTEGER PRIMARY KEY, dish_id INTEGER NOT NULL REFERENCES dish (id) ON DELETE CASCADE, words TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

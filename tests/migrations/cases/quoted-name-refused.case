@@ -1,0 +1,13 @@
+A table whose name has spaces would go: the refusal writes the steps with
+the name quoted, ready to paste.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO "dish of the day" VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== error
+table `dish of the day` is in the database, not in schema.sql: its rows would go. Renamed? Add the step to ledger.sql: `ALTER TABLE "dish of the day" RENAME TO <new name>;` Gone on purpose? `DROP TABLE "dish of the day";`

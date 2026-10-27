@@ -1,0 +1,20 @@
+A WITHOUT ROWID table, rebuilt: its key's own index (SQLite's, unnamed by
+schema.sql) goes and comes with it.
+
+== before
+CREATE TABLE tag (dish_id INTEGER NOT NULL, label TEXT NOT NULL, PRIMARY KEY (dish_id, label)) STRICT, WITHOUT ROWID;
+INSERT INTO tag VALUES (1, 'hot'), (1, 'vegan');
+
+== after
+CREATE TABLE tag (dish_id INTEGER NOT NULL, label TEXT NOT NULL, weight INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (dish_id, label)) STRICT, WITHOUT ROWID;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `tag`: aside, to make it anew
+    ALTER TABLE "tag" RENAME TO "roux_old_tag"
+  table `tag`: as schema.sql makes it
+    CREATE TABLE tag (dish_id INTEGER NOT NULL, label TEXT NOT NULL, weight INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (dish_id, label)) STRICT, WITHOUT ROWID
+  table `tag`: its rows, by dish_id, label
+    INSERT INTO "tag" ("dish_id", "label") SELECT "dish_id", "label" FROM "roux_old_tag"
+  table `tag`: the old one
+    DROP TABLE "roux_old_tag"

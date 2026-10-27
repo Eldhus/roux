@@ -45,6 +45,33 @@ pub fn exec(db: *c.Db, sql: []const u8) error{Sqlite}!void {
     } else unreachable; // a script longer than exec_statements_max
 }
 
+/// Runs `sql`, which must be exactly one statement (whitespace and comments
+/// around it aside): a migration's step, a statement of ledger.sql or of
+/// the plan, never runs a second one.
+pub fn exec_one(db: *c.Db, sql: []const u8) error{ Sqlite, NotOneStatement }!void {
+    var stmt: ?*c.Stmt = null;
+    var tail: [*]const u8 = sql.ptr;
+    if (c.sqlite3_prepare_v3(db, sql.ptr, @intCast(sql.len), 0, &stmt, &tail) != c.ok) {
+        return error.Sqlite;
+    }
+    const statement = stmt orelse return error.NotOneStatement;
+    defer _ = c.sqlite3_finalize(statement);
+    const consumed: usize = @intFromPtr(tail) - @intFromPtr(sql.ptr);
+    assert(consumed <= sql.len);
+    const rest = sql[consumed..];
+    if (rest.len > 0) {
+        // Only whitespace and comments: they prepare to nothing, all of it.
+        var after: ?*c.Stmt = null;
+        var after_tail: [*]const u8 = rest.ptr;
+        const length: c_int = @intCast(rest.len);
+        const prepared = c.sqlite3_prepare_v3(db, rest.ptr, length, 0, &after, &after_tail);
+        _ = c.sqlite3_finalize(after);
+        const whole = @intFromPtr(after_tail) == @intFromPtr(rest.ptr) + rest.len;
+        if (prepared != c.ok or after != null or !whole) return error.NotOneStatement;
+    }
+    try step_to_end(statement);
+}
+
 /// Steps a statement until it is done; rows are discarded. A statement that
 /// returns rows forever is a bug in the caller's script.
 fn step_to_end(statement: *c.Stmt) error{Sqlite}!void {

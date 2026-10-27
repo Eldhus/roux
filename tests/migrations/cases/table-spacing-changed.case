@@ -1,0 +1,28 @@
+A CREATE that changed only in its spacing (or a comment inside it) is
+still a change: SQLite keeps each CREATE as written, and roux compares it
+to the byte rather than guess which differences matter. The table is
+rebuilt, which costs a copy of its rows and nothing else.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (
+  id INTEGER PRIMARY KEY, -- the rowid
+  name TEXT NOT NULL
+) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (
+      id INTEGER PRIMARY KEY, -- the rowid
+      name TEXT NOT NULL
+    ) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

@@ -1,0 +1,58 @@
+What is left of the chaining gap. Release 9 adds `price_ore` by schema.sql
+alone, NULL in every row. Release 10's step fills it: on a dev database,
+long at release 9, it runs. Production is at release 8 and deploys 10
+straight away: the steps run first, on the database as release 8 left it,
+where no `price_ore` is yet. Refused, nothing changed (the rehearsal says
+so before the deploy does). Deploying release 9 first, then 10, goes
+through.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup', 95);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, price_ore INTEGER) STRICT;
+
+== ledger
+UPDATE dish SET price_ore = price_kr * 100;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, price_ore INTEGER) STRICT;
+
+== ledger
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, price_ore INTEGER) STRICT;
+
+== ledger
+UPDATE dish SET price_ore = price_kr * 100;
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    UPDATE dish SET price_ore = price_kr * 100;
+-- after 2
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL, price_ore INTEGER) STRICT
+  table `dish`: its rows, by id, name, price_kr
+    INSERT INTO "dish" ("id", "name", "price_kr") SELECT "id", "name", "price_kr" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+-- after 3
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    UPDATE dish SET price_ore = price_kr * 100;
+
+== error
+-- after 1
+migrating test.db: ledger.sql's step 1: no such column: price_ore (a step runs on the database as the last deploy left it, before schema.sql's changes)
+
+== query
+SELECT id, price_ore FROM dish
+
+== rows
+1 | 9500

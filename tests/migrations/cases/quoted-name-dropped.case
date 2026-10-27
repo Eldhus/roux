@@ -1,0 +1,18 @@
+A table whose name has spaces goes on purpose: the step names it in double
+quotes, as SQL does (and as the refusal wrote it: quoted-name-refused).
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO "dish of the day" VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+DROP TABLE "dish of the day";
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE "dish of the day";

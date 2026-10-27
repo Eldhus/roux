@@ -130,6 +130,7 @@ const Fixture = struct {
     dir: testing.TmpDir,
     path: []const u8,
     synchronous: database_module.Synchronous = .full,
+    migration: []const database_module.Step = &.{},
 
     fn init() !Fixture {
         // roux's VFS waits through the testing Io.
@@ -150,19 +151,29 @@ const Fixture = struct {
         fixture.arena_state.deinit();
     }
 
+    /// Migrated first by `migration`, when it has steps, as `Sqlite.open!`
+    /// does: in an `Opening`, committed, before the database opens.
     fn open(
         fixture: *Fixture,
         with_schema: []const u8,
         with: []const database_module.StatementDescription,
         report: *Report,
     ) !*Database {
+        const gpa = fixture.arena_state.allocator();
+        if (fixture.migration.len > 0) {
+            const path = fixture.path;
+            var opening = try database_module.Opening.begin(gpa, path, path, with_schema, report);
+            defer opening.close(gpa);
+            try opening.migrate(fixture.migration, report);
+            try opening.commit(report);
+        }
         const description: Description = .{
             .path = fixture.path,
             .schema = with_schema,
             .statements = with,
             .synchronous = fixture.synchronous,
         };
-        return database_module.open(fixture.arena_state.allocator(), description, limits, report);
+        return database_module.open(gpa, description, limits, report);
     }
 };
 
@@ -367,7 +378,27 @@ test "database: a new file gets the schema, and opens again as it is" {
     try testing.expectEqual(Value.null, rows.cells.items[2]);
 }
 
-test "database: a schema changed since the file was made does not open (no migrations yet)" {
+test "database: a file another process owns is refused, saying so" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const first = try fixture.open(schema, &statements, &report);
+    database_module.close(fixture.arena_state.allocator(), first);
+    // An open file description lock of its own, as another process's
+    // roux would hold: it conflicts with this process's own.
+    const file = try fixture.dir.dir.openFile(testing.io, "test.db", .{ .mode = .read_write });
+    defer file.close(testing.io);
+    const Flock = extern struct { type: i16, whence: i16, start: i64, length: i64, pid: i32 };
+    var whole: Flock = .{ .type = 1, .whence = 0, .start = 0, .length = 0, .pid = 0 };
+    const ofd_set_lock = 37;
+    const locked = std.os.linux.fcntl(file.handle, ofd_set_lock, @intFromPtr(&whole));
+    try testing.expectEqual(.SUCCESS, std.os.linux.errno(locked));
+    try testing.expectError(error.Failed, fixture.open(schema, &statements, &report));
+    const said = report.message();
+    try testing.expect(std.mem.indexOf(u8, said, "another process has it open") != null);
+}
+
+test "database: a schema changed since the file was made does not open without a migration" {
     var fixture: Fixture = try .init();
     defer fixture.deinit();
     var report: Report = .{};
@@ -380,6 +411,153 @@ test "database: a schema changed since the file was made does not open (no migra
     const respaced = try std.mem.replaceOwned(u8, testing.allocator, schema, "  name", "    name");
     defer testing.allocator.free(respaced);
     try testing.expectError(error.Failed, fixture.open(respaced, &statements, &report));
+}
+
+/// `schema` with a column more, and its table's CREATE as SQLite keeps it.
+const dish_rated =
+    \\CREATE TABLE dish (
+    \\  id INTEGER PRIMARY KEY,
+    \\  name TEXT NOT NULL UNIQUE,
+    \\  price_kr INTEGER NOT NULL,
+    \\  note TEXT,
+    \\  vegetarian INTEGER NOT NULL DEFAULT 0,
+    \\  stars INTEGER
+    \\) STRICT
+;
+const schema_rated = dish_rated ++ ";\n";
+
+/// As Migrate.roc plans a table rebuilt: aside, made anew, copied, dropped.
+fn rebuild(create: []const u8) [4]database_module.Step {
+    const columns = "\"id\", \"name\", \"price_kr\", \"note\", \"vegetarian\"";
+    return .{
+        .{ .sql = "ALTER TABLE \"dish\" RENAME TO \"roux_old_dish\"", .why = "dish aside" },
+        .{ .sql = create, .why = "dish anew" },
+        .{
+            .sql = "INSERT INTO \"dish\" (" ++ columns ++ ") SELECT " ++ columns ++
+                " FROM \"roux_old_dish\"",
+            .why = "dish's rows",
+        },
+        .{ .sql = "DROP TABLE \"roux_old_dish\"", .why = "dish's old table" },
+    };
+}
+
+test "database: a migration rebuilds a table, its rows kept, and the file opens as schema.sql" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    errdefer std.debug.print("said: {s}\n", .{report.message()});
+    const arena = fixture.arena_state.allocator();
+    const first = try fixture.open(schema, &statements, &report);
+    var added = collect(&fixture);
+    try write_one(first, add, &.{ .{ .text = "soup" }, .{ .integer = 95 }, .null }, &added);
+    database_module.close(arena, first);
+    const steps = rebuild(dish_rated);
+    fixture.migration = &steps;
+    const migrated = try fixture.open(schema_rated, &statements, &report);
+    database_module.close(arena, migrated);
+    // Done once: the file is now as schema.sql makes it, and opens with no plan.
+    fixture.migration = &.{};
+    const again = try fixture.open(schema_rated, &statements, &report);
+    defer database_module.close(arena, again);
+    var rows = collect(&fixture);
+    try database_module.run(again, again.writer, all, &.{}, testing.io, &rows, &report);
+    try testing.expectEqual(1, rows.rows);
+    try testing.expectEqualStrings("soup", rows.cells.items[1].text);
+    // Foreign keys are on again.
+    try testing.expectEqual(1, try integer_of(again.writer.db, "PRAGMA foreign_keys"));
+}
+
+test "database: a migration that fails changes nothing, and says which step and why" {
+    const Case = struct {
+        case: []const u8,
+        steps: []const database_module.Step,
+        says: []const u8,
+    };
+    const good = rebuild(dish_rated);
+    const short = good[0..2]; // its rows never copied, the old table left
+    var wrong = good;
+    wrong[2].sql = "INSERT INTO \"dish\" (\"id\") SELECT \"id\" FROM \"roux_old_dish\"";
+    var pragma = good;
+    pragma[0] = .{ .sql = "PRAGMA foreign_keys = ON", .why = "a pragma" };
+    var update = good;
+    update[3] = .{ .sql = "UPDATE roux_ledger SET sql = ''", .why = "a write to the ledger" };
+    // A step closing the copy and starting a statement of its own.
+    var two = good;
+    two[2].sql = "INSERT INTO \"dish\" (\"id\", \"name\", \"price_kr\") SELECT \"id\", " ++
+        "\"name\", (\"price_kr\") FROM \"roux_old_dish\"; INSERT INTO \"dish\" (\"id\", " ++
+        "\"name\", \"price_kr\") VALUES (9, 'smuggled', 1)";
+    const cases = [_]Case{
+        .{ .case = "two statements in a step", .steps = &two, .says = "more than one statement" },
+        .{ .case = "short of schema.sql", .steps = short, .says = "roux_old_dish" },
+        .{ .case = "a NOT NULL left empty", .steps = &wrong, .says = "dish's rows: NOT NULL" },
+        .{ .case = "a PRAGMA", .steps = &pragma, .says = "may not hold a PRAGMA" },
+        .{ .case = "a write to roux's ledger", .steps = &update, .says = "may not hold a write" },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case: {s}\n", .{case.case});
+        var fixture: Fixture = try .init();
+        defer fixture.deinit();
+        var report: Report = .{};
+        const arena = fixture.arena_state.allocator();
+        const first = try fixture.open(schema, &statements, &report);
+        var added = collect(&fixture);
+        try write_one(first, add, &.{ .{ .text = "soup" }, .{ .integer = 95 }, .null }, &added);
+        database_module.close(arena, first);
+        fixture.migration = case.steps;
+        try testing.expectError(error.Failed, fixture.open(schema_rated, &statements, &report));
+        if (std.mem.indexOf(u8, report.message(), case.says) == null) {
+            std.debug.print("said: {s}\n", .{report.message()});
+            return error.TestUnexpectedResult;
+        }
+        // Nothing changed: the file opens as the old schema, its row there.
+        fixture.migration = &.{};
+        const again = try fixture.open(schema, &statements, &report);
+        defer database_module.close(arena, again);
+        try testing.expectEqual(1, try integer_of(again.writer.db, "SELECT count(*) FROM dish"));
+        try testing.expectEqual(1, try integer_of(again.writer.db, "PRAGMA foreign_keys"));
+    }
+}
+
+test "database: a migration that breaks a foreign key changes nothing" {
+    const parent =
+        \\CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+        \\CREATE TABLE review (id INTEGER PRIMARY KEY, dish_id INTEGER REFERENCES dish (id)) STRICT;
+        \\
+    ;
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const arena = fixture.arena_state.allocator();
+    const first = try fixture.open(parent, &.{}, &report);
+    try sqlite.exec(first.writer.db, "INSERT INTO dish VALUES (1, 'soup'); " ++
+        "INSERT INTO review VALUES (1, 1);");
+    database_module.close(arena, first);
+    // The dish table made anew and left empty: the review points nowhere.
+    const steps = [_]database_module.Step{
+        .{ .sql = "DROP TABLE \"dish\"", .why = "dish gone" },
+        .{
+            .sql = "CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT",
+            .why = "dish anew",
+        },
+    };
+    fixture.migration = &steps;
+    errdefer std.debug.print("said: {s}\n", .{report.message()});
+    try testing.expectError(error.Failed, fixture.open(parent, &.{}, &report));
+    try testing.expect(std.mem.indexOf(u8, report.message(), "foreign key") != null);
+    fixture.migration = &.{};
+    const again = try fixture.open(parent, &.{}, &report);
+    defer database_module.close(arena, again);
+    try testing.expectEqual(1, try integer_of(again.writer.db, "SELECT count(*) FROM dish"));
+}
+
+test "database: a migration for a new file is a mistake" {
+    var fixture: Fixture = try .init();
+    defer fixture.deinit();
+    var report: Report = .{};
+    const steps = rebuild(dish_rated);
+    fixture.migration = &steps;
+    try testing.expectError(error.Failed, fixture.open(schema_rated, &statements, &report));
+    try testing.expectEqual(database_module.Failure.misuse, report.failure);
 }
 
 test "database: statements Database.roc misdescribes are refused at open" {

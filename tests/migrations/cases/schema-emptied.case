@@ -1,0 +1,17 @@
+Every table leaves on purpose: the ledger drops it, and schema.sql makes
+nothing. An empty database, which opens again with nothing to do.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_name ON dish (name);
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+
+== ledger
+DROP TABLE dish;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE dish;

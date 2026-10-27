@@ -1,0 +1,31 @@
+A new database is made from schema.sql as it is now, and records every step
+of the ledger as run, without running one: the steps name tables of older
+releases (`menu`), which it never had. A later step runs on it as on any.
+
+== before
+
+== after
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE menu RENAME TO meal;
+
+== after
+CREATE TABLE meal (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE menu RENAME TO meal;
+INSERT INTO meal (title) VALUES ('lunch');
+
+== plan
+-- after 1
+-- after 2
+roux: migrating test.db, ledger.sql's step 2
+  step 2
+    INSERT INTO meal (title) VALUES ('lunch');
+
+== query
+SELECT id, title FROM meal
+
+== rows
+1 | lunch

@@ -1,5 +1,6 @@
 import Host
 import Server
+import Migrate
 
 ## The app's one SQLite database, queried through the typed modules
 ## `roux-db gen db` writes from `db/schema.sql` and `db/*.sql`
@@ -28,11 +29,24 @@ import Server
 ## committed when `respond!` returns is rolled back: an error answer stays
 ## as it is (a constraint the handler made a 400), a success becomes a
 ## 500, since what it did was undone. `ROUX_DATABASE` overrides the path.
-## No migrations yet: an existing database must hold exactly the schema
-## `schema.sql` makes, or `open!` fails.
+##
+## `open!` migrates, in one transaction, before any request (Migrate.roc):
+## the database runs the steps of `ledger.sql` it has not run, in order
+## (`ALTER TABLE dish RENAME COLUMN title TO name;`, an `UPDATE`), each
+## recorded in it as it runs, and is then brought to what `schema.sql`
+## makes: new tables made, changed ones rebuilt with their rows. A table
+## or column `schema.sql` no longer makes is refused, its rows kept, unless
+## a step renamed or dropped it. Before steps run, the database is copied
+## into `<path>.before-ledger/` (the last four copies kept). A new
+## database is made from `schema.sql`, with every step recorded as run.
 Sqlite := [].{
 	## What `Database.at(path)` gives `open!`.
-	Database : { path : Str, schema : Str, statements : List(Statement) }
+	Database : {
+		path : Str,
+		schema : Str,
+		ledger : List(Str),
+		statements : List(Statement),
+	}
 
 	Statement : Host.SqliteStatement
 
@@ -95,21 +109,57 @@ Sqlite := [].{
 	## One request's transaction on the writer.
 	Write :: { request : U64 }
 
-	## Opens the database, once, in `init!`.
+	## Opens the database, once, in `init!`: the ledger's new steps, then
+	## what `schema.sql` changed; the host prints each step as it runs it.
 	open! : Database, Settings => Try(Db, [DbErr(Err)])
 	open! = |database, settings| {
+		failed = |message| DbErr(Failed(message))
 		# 0 is the host's default, so a 0 given is refused here.
 		read_wait_ms = settings.?read_wait_ms ?? 0
 		write_wait_ms = settings.?write_wait_ms ?? 0
 		writers_waiting = settings.?writers_waiting ?? 0
 		given_zero = [settings.?read_wait_ms, settings.?write_wait_ms, settings.?writers_waiting].contains(Ok(0))
 		if given_zero {
-			return Err(DbErr(Failed("read_wait_ms, write_wait_ms and writers_waiting are more than 0")))
+			return Err(failed("read_wait_ms, write_wait_ms and writers_waiting are more than 0"))
 		}
-		match Host.sqlite_open!(database.path, database.schema, database.statements, settings.synchronous, read_wait_ms, write_wait_ms, writers_waiting) {
-			Ok({}) => Ok(Db.{ opened: Bool.True })
-			Err(message) => Err(DbErr(Failed(message)))
-		}
+		inspected = Host.sqlite_inspect!(database.path, database.schema) ? failed
+		live = schema_of(inspected.live)
+		ran = inspected.ran.map(
+			|row|
+				match row {
+					[Text(step)] => step
+					_ => crash "Sqlite.open!: the host lists the ledger's steps as text"
+				},
+		)
+		{ run, ahead } = Migrate.pending(ran, database.ledger) ? failed
+		# A database with nothing in it is made from schema.sql: born having
+		# run every step.
+		made = live.objects.is_empty()
+		stepped = if (run.is_empty()) live else schema_of(Host.sqlite_ledger!(run, !made) ? failed)
+		pristine = schema_of(inspected.pristine)
+		steps = Migrate.plan(stepped, pristine, ahead) ? |refusals| failed(Str.join_with(refusals, "\n"))
+		Host.sqlite_open!(database.statements, settings.synchronous, steps, read_wait_ms, write_wait_ms, writers_waiting) ? failed
+		Ok(Db.{ opened: Bool.True })
+	}
+
+	## The host's listings (host/database.zig, `Listing`) as Migrate.roc's.
+	schema_of : Host.SqliteListings -> Migrate.Schema
+	schema_of = |{ objects, columns }| {
+		objects: objects.map(
+			|row|
+				match row {
+					[Text(kind), Text(name), Text(table), Text(sql)] => { kind, name, table, sql }
+					_ => crash "Sqlite.schema_of: the host lists objects as text"
+				},
+		),
+		columns: columns.map(
+			|row|
+				match row {
+					[Text(table), Text(name), Integer(hidden), Integer(autoincrement)] =>
+						{ table, name, hidden, autoincrement: autoincrement == 1 }
+					_ => crash "Sqlite.schema_of: the host lists columns as text, then integers"
+				},
+		),
 	}
 
 	read : Db, Server.Request -> Read

@@ -50,6 +50,11 @@ pub extern fn sqlite3_prepare_v3(
     stmt: *?*Stmt,
     tail: ?*[*]const u8,
 ) c_int;
+/// 1 when `sql` ends with a whole statement (outside strings, comments and
+/// a trigger's body): where a statement ends, by SQLite's own tokenizer,
+/// without preparing it.
+pub extern fn sqlite3_complete(sql: [*:0]const u8) c_int;
+
 pub extern fn sqlite3_step(stmt: *Stmt) c_int;
 pub extern fn sqlite3_reset(stmt: *Stmt) c_int;
 pub extern fn sqlite3_finalize(stmt: ?*Stmt) c_int;
@@ -95,9 +100,23 @@ pub extern fn sqlite3_column_decltype(stmt: *Stmt, column: c_int) ?[*:0]const u8
 /// Our patch (vendor/sqlite/README.md): 1 when the result column can be
 /// NULL, 0 when it never is, -1 for an expression SQLite cannot prove.
 pub extern fn sqlite3_column_nullable(stmt: *Stmt, column: c_int) c_int;
+/// A table's column as declared (`SQLITE_ENABLE_COLUMN_METADATA`); each
+/// out-pointer may be null.
+pub extern fn sqlite3_table_column_metadata(
+    db: *Db,
+    database: ?[*:0]const u8,
+    table: [*:0]const u8,
+    column: ?[*:0]const u8,
+    declared_type: ?*?[*:0]const u8,
+    collation: ?*?[*:0]const u8,
+    not_null: ?*c_int,
+    primary_key: ?*c_int,
+    autoincrement: ?*c_int,
+) c_int;
 
 pub const interrupt = 9;
 pub const constraint = 19;
+pub const constraint_notnull = constraint | (5 << 8);
 
 pub const open_nomutex = 0x00008000;
 /// For `prepare_v3`: kept for the connection's life.
@@ -155,6 +174,7 @@ pub const limit_trigger_steps = 14;
 pub extern fn sqlite3_db_config(db: *Db, op: c_int, ...) c_int;
 pub const dbconfig_enable_trigger = 1003;
 pub const dbconfig_defensive = 1010;
+pub const dbconfig_legacy_alter_table = 1012;
 pub const dbconfig_dqs_dml = 1013;
 pub const dbconfig_dqs_ddl = 1014;
 pub const dbconfig_enable_view = 1015;

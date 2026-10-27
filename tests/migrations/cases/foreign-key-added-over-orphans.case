@@ -1,0 +1,27 @@
+A REFERENCES added to a column whose rows already point nowhere (a course
+of a menu deleted long ago). Every step runs, then the foreign key check
+before the commit names the rows, and it all rolls back.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL, name TEXT NOT NULL) STRICT;
+INSERT INTO menu VALUES (1, 'lunch');
+INSERT INTO course VALUES (1, 1, 'soup'), (2, 9, 'roast');
+
+== after
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `course`: aside, to make it anew
+    ALTER TABLE "course" RENAME TO "roux_old_course"
+  table `course`: as schema.sql makes it
+    CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL) STRICT
+  table `course`: its rows, by id, menu_id, name
+    INSERT INTO "course" ("id", "menu_id", "name") SELECT "id", "menu_id", "name" FROM "roux_old_course"
+  table `course`: the old one
+    DROP TABLE "roux_old_course"
+
+== error
+migrating test.db: rows that would break a foreign key: 1; course row 2 names no menu

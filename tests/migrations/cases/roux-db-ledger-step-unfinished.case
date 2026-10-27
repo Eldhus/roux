@@ -1,0 +1,16 @@
+A step of ledger.sql with no `;` after it: roux-db splits the ledger where
+SQLite says each statement ends, and refuses one that does not. Nothing
+runs.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name
+
+== error
+roux-db: a step with no `;` after it: each step of ledger.sql is one statement, ended by `;`

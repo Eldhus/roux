@@ -1,0 +1,18 @@
+A table dropped on purpose, by a step of the ledger; schema.sql no longer
+makes it. The database is copied first.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO menu VALUES (1, 'lunch');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+DROP TABLE menu;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DROP TABLE menu;

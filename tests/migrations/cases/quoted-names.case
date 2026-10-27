@@ -1,0 +1,20 @@
+Names that need quoting, a space and a double quote in them: the plan
+quotes every name it writes, its own double quotes doubled.
+
+== before
+CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, "chef's ""pick""" TEXT) STRICT;
+INSERT INTO "dish of the day" VALUES (1, 'soup');
+
+== after
+CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, "chef's ""pick""" TEXT, note TEXT) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish of the day`: aside, to make it anew
+    ALTER TABLE "dish of the day" RENAME TO "roux_old_dish of the day"
+  table `dish of the day`: as schema.sql makes it
+    CREATE TABLE "dish of the day" (id INTEGER PRIMARY KEY, "chef's ""pick""" TEXT, note TEXT) STRICT
+  table `dish of the day`: its rows, by id, chef's "pick"
+    INSERT INTO "dish of the day" ("id", "chef's ""pick""") SELECT "id", "chef's ""pick""" FROM "roux_old_dish of the day"
+  table `dish of the day`: the old one
+    DROP TABLE "roux_old_dish of the day"

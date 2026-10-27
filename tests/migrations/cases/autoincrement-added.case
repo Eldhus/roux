@@ -1,0 +1,20 @@
+A key gains AUTOINCREMENT. There was no counter to carry: SQLite starts
+one from the largest id copied, so an id deleted before is not known.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup'), (2, 'bread');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

@@ -7,6 +7,9 @@
 //!                          roux-db, the typed-query generator, and
 //!                          roux-load, fourneau's load generator
 //!   zig build examples     the examples' databases, regenerated
+//!   zig build migrations   the migration cases (tests/migrations), through a
+//!                          real app: `-Dbless` writes what they printed,
+//!                          `-Dcase=TEXT` runs those named so
 //!   zig build db-floor     the database workloads without Roc (host/floor.zig)
 //!   zig build sqlite-floor SQLite alone, timed (sqlite/floor.zig)
 //!
@@ -103,6 +106,48 @@ pub fn build(b: *std.Build) void {
     tools_step(b, target, fourneau, test_step);
     floor_step(b, target);
     db_floor_step(b, fourneau);
+    migrations_step(b, target);
+}
+
+/// `zig build migrations`: tests/migrations/runner.zig over every case,
+/// with roux-db's compiler for the schema and the platform for the app
+/// (built with the pinned roc).
+fn migrations_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
+    const bless = b.option(bool, "bless", "migrations: write what each case printed") orelse false;
+    const case = b.option([]const u8, "case", "migrations: only the cases named so");
+    const sqlite = sqlite_module(b, .{ .target = target, .optimize = .debug, .pic = null });
+    const runner = b.addExecutable(.{
+        .name = "migrations",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/migrations/runner.zig"),
+            .target = target,
+            .optimize = .debug,
+            .imports = &.{
+                .{ .name = "sqlite", .module = sqlite },
+                .{ .name = "roux_db", .module = b.createModule(.{
+                    .root_source_file = b.path("tools/roux-db/compile.zig"),
+                    .target = target,
+                    .optimize = .debug,
+                    .imports = &.{
+                        .{ .name = "sqlite", .module = sqlite },
+                        .{ .name = "rocstache", .module = b.createModule(.{
+                            .root_source_file = b.path("tools/rocstache/root.zig"),
+                            .target = target,
+                            .optimize = .debug,
+                        }) },
+                    },
+                }) },
+            },
+        }),
+    });
+    const run = b.addRunArtifact(runner);
+    run.setCwd(b.path("."));
+    run.has_side_effects = true;
+    run.addArg(roc_path(b));
+    if (bless) run.addArg("--bless");
+    if (case) |text| run.addArg(text);
+    run.step.dependOn(&b.top_level_steps.get("platform").?.step);
+    b.step("migrations", "Run the migration cases (tests/migrations)").dependOn(&run.step);
 }
 
 /// `zig build db-floor`: examples/sqlite's workloads on fourneau and the

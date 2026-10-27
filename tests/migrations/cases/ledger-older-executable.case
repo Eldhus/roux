@@ -1,0 +1,77 @@
+The old executable put back over a database a newer release migrated.
+
+1. Release 5 renames `title`.
+2. Release 6 fixes rows (a step) and changes no table.
+3. Release 5 again: its ledger is the start of the database's, and
+   schema.sql is what the database holds: it opens as it is, and the
+   database still records release 6's step.
+4. Release 7 adds a column.
+5. Release 5 again: refused, rather than drop the column.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+UPDATE dish SET name = upper(name);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+UPDATE dish SET name = upper(name);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE dish RENAME COLUMN title TO name;
+-- after 2
+roux: migrating test.db, ledger.sql's step 2
+  step 2
+    UPDATE dish SET name = upper(name);
+-- after 3
+-- after 4
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+-- after 5
+
+== error
+-- after 5
+the database ran steps of a ledger.sql newer than this one, and its schema differs: an older executable over a newer database opens it only as it is.
+
+== query
+SELECT id, name FROM dish
+
+== rows
+1 | SOUP

@@ -1,0 +1,61 @@
+What a step may not do: a PRAGMA (the platform sets them), a transaction
+(the platform begins and ends the one migration), ATTACH, and any write to
+roux's own record of the steps. Each refused by the migration's policy, as
+it is prepared, and nothing changes. Each deploy is a ledger that ran
+nothing yet, so each may replace the one before.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+PRAGMA foreign_keys = ON;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+COMMIT;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ATTACH 'other.db' AS other;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+DELETE FROM roux_ledger;
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    PRAGMA foreign_keys = ON;
+-- after 2
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    COMMIT;
+-- after 3
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ATTACH 'other.db' AS other;
+-- after 4
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    DELETE FROM roux_ledger;
+
+== error
+-- after 1
+migrating test.db: ledger.sql's step 1: a migration may not hold a PRAGMA (the platform sets them)
+-- after 2
+migrating test.db: ledger.sql's step 1: a migration may not hold a transaction (the platform begins and ends them)
+-- after 3
+migrating test.db: ledger.sql's step 1: a migration may not hold ATTACH or DETACH (one database per app)
+-- after 4
+migrating test.db: ledger.sql's step 1: a migration may not hold a write to a table (schema.sql only creates; a step of ledger.sql moves rows, never roux_ledger's)

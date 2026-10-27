@@ -1,0 +1,21 @@
+A step SQLite refuses (a column misspelt): the migration rolls back, the
+database is as it was, recording nothing, and no copy is left. The error
+names the step.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+
+== ledger
+UPDATE dish SET title = upper(titel);
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    UPDATE dish SET title = upper(titel);
+
+== error
+migrating test.db: ledger.sql's step 1: no such column: titel (a step runs on the database as the last deploy left it, before schema.sql's changes)

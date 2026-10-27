@@ -1,0 +1,44 @@
+A dev database of branch B ran B's step as the ledger's step 2. Branch A
+merged first, so after the merge step 2 is A's and B's is step 3: to that
+database, its step 2 was edited. Refused rather than skip A's step or run
+B's twice; a dev database is remade, or each branch keeps its own
+(`ROUX_DATABASE=dev-$(git branch --show-current).db`).
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+-- Branch B: notes.
+ALTER TABLE dish ADD COLUMN note TEXT;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT, note TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+-- Branch A: slugs.
+ALTER TABLE dish ADD COLUMN slug TEXT;
+-- Branch B: notes.
+ALTER TABLE dish ADD COLUMN note TEXT;
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    ALTER TABLE dish RENAME COLUMN title TO name;
+  step 2
+    ALTER TABLE dish ADD COLUMN note TEXT;
+-- after 2
+
+== error
+-- after 2
+ledger.sql's step 2 is not what the database ran. It ran:
+  ALTER TABLE dish ADD COLUMN note TEXT;
+ledger.sql says:
+  ALTER TABLE dish ADD COLUMN slug TEXT;
+A step that ran stays as it is: put it back, and add a step after it. (A database that ran a draft of the step, a dev one: put back the copy made before it, in `<database>.before-ledger/`.)

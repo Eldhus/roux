@@ -556,7 +556,13 @@ fn request_from(handle: u64) ?*Server.Request {
 // --- the database (Sqlite) --------------------------------------------------------
 
 const SqliteOpenResult = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".return_type.?;
-const SqliteStatements = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[2].?;
+const SqliteStatements = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[0].?;
+const SqliteSteps = @typeInfo(@TypeOf(abi.hosted_sqlite_open)).@"fn".param_types[2].?;
+const SqliteInspectResult = @typeInfo(@TypeOf(abi.hosted_sqlite_inspect)).@"fn".return_type.?;
+const SqliteInspected = @FieldType(@FieldType(SqliteInspectResult, "payload"), "ok");
+const SqliteListings = @FieldType(SqliteInspected, "live");
+const SqliteLedger = @typeInfo(@TypeOf(abi.hosted_sqlite_ledger)).@"fn".param_types[0].?;
+const SqliteLedgerResult = @typeInfo(@TypeOf(abi.hosted_sqlite_ledger)).@"fn".return_type.?;
 const SqliteRunResult = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".return_type.?;
 const SqliteParams = @typeInfo(@TypeOf(abi.hosted_sqlite_run)).@"fn".param_types[3].?;
 const SqliteWriteResult = @typeInfo(@TypeOf(abi.hosted_sqlite_write_begin)).@"fn".return_type.?;
@@ -576,34 +582,275 @@ fn ListItem(comptime List: type) type {
     return @typeInfo(pointer).pointer.child;
 }
 
-/// `Sqlite.open!`: the database, in `init!` only, once. Every allocation
-/// here is the process's for its life (startup).
-export fn hosted_sqlite_open(
+/// `ROUX_REHEARSE`: the deploy's migration tried first, on a copy. The
+/// database at the path (`ROUX_DATABASE`'s, if set) is only read: it is
+/// copied beside itself (`<path>.rehearsal`), the copy is migrated and
+/// `init!` runs over it, then the copy is deleted and the process exits,
+/// 0 when both went through, serving nothing. Every message names the
+/// database copied, so a rehearsal prints what the deploy will.
+const Rehearsal = struct {
+    path_buffer: [path_bytes_max]u8,
+    path_length: u32,
+    const path_bytes_max = 1024;
+    const suffix = ".rehearsal";
+
+    fn path(rehearsal: *const Rehearsal) [:0]const u8 {
+        return rehearsal.path_buffer[0..rehearsal.path_length :0];
+    }
+
+    /// The copy of `where` (none when there is no database yet: a new one
+    /// is rehearsed as made).
+    fn make(where: []const u8, report: *database_module.Report) error{Failed}!Rehearsal {
+        const io = init_io.?; // Sqlite.open! runs in init!
+        var made: Rehearsal = undefined;
+        const copy_path = std.fmt.bufPrintSentinel(&made.path_buffer, "{s}" ++ suffix, .{
+            where,
+        }, 0) catch return report.fail(.failed, "rehearsing {s}: a path too long", .{where});
+        made.path_length = @intCast(copy_path.len);
+        made.delete(); // a rehearsal killed before it ended
+        if (std.Io.Dir.cwd().access(io, where, .{})) |_| {
+            // Read only, set up in no way: the database is not touched.
+            var where_buffer: [path_bytes_max]u8 = undefined;
+            const where_z = std.fmt.bufPrintSentinel(&where_buffer, "{s}", .{where}, 0) catch
+                unreachable; // shorter than the copy's path
+            var source: ?*sqlite.c.Db = null;
+            const flags = sqlite.c.open_readonly | sqlite.c.open_exrescode;
+            defer _ = sqlite.c.sqlite3_close_v2(source);
+            const opened = sqlite.c.sqlite3_open_v2(where_z, &source, flags, null);
+            if (opened & 0xff == sqlite.c.busy) {
+                return report.fail(.failed, "rehearsing {s}: another process has it open " ++
+                    "(one process owns a database): stop the app first, or rehearse a copy " ++
+                    "Sqlite.backup! made", .{where});
+            }
+            if (opened != sqlite.c.ok) {
+                return report.fail(.failed, "rehearsing {s}: {s}", .{
+                    where, sqlite.c.sqlite3_errmsg(source),
+                });
+            }
+            backup_module.copy(source.?, copy_path, report) catch {
+                var said: @TypeOf(report.buffer) = undefined;
+                const message = said[0..report.length];
+                @memcpy(message, report.message());
+                return report.fail(.failed, "rehearsing {s}: making its copy {s}: {s}", .{
+                    where, copy_path, message,
+                });
+            };
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return report.fail(.failed, "rehearsing {s}: {t}", .{ where, err }),
+        }
+        return made;
+    }
+
+    /// The copy, the files SQLite keeps beside it, and the copy of it made
+    /// before ledger.sql's steps (`BeforeLedger`, rehearsed too).
+    fn delete(rehearsal: *const Rehearsal) void {
+        const io = init_io orelse std.Io.Threaded.global_single_threaded.io();
+        const base = rehearsal.path();
+        for ([_][]const u8{ "", "-wal", "-shm", "-journal" }) |side| {
+            var buffer: [path_bytes_max + 16]u8 = undefined;
+            const name = std.fmt.bufPrint(&buffer, "{s}{s}", .{ base, side }) catch unreachable;
+            std.Io.Dir.cwd().deleteFile(io, name) catch {};
+        }
+        var buffer: [path_bytes_max + 16]u8 = undefined;
+        const copies = std.fmt.bufPrint(&buffer, "{s}" ++ BeforeLedger.suffix, .{base}) catch
+            unreachable;
+        std.Io.Dir.cwd().deleteTree(io, copies) catch {};
+    }
+};
+
+/// Set by the first `Sqlite.open!` of a rehearsal.
+var rehearsal_made: ?Rehearsal = null;
+
+fn rehearsing() bool {
+    return environment("ROUX_REHEARSE") != null;
+}
+
+/// The file `Sqlite.open!` opens: the path, `ROUX_DATABASE`'s, or in a
+/// rehearsal the copy of it, made at the first call.
+fn database_file(where: []const u8, report: *database_module.Report) error{Failed}![]const u8 {
+    if (!rehearsing()) return where;
+    if (rehearsal_made == null) rehearsal_made = try Rehearsal.make(where, report);
+    return rehearsal_made.?.path();
+}
+
+/// A rehearsal's end, whatever `init!` did: the copy goes.
+fn rehearsal_over(went_through: bool) void {
+    if (rehearsal_made) |*made| made.delete();
+    if (went_through) write_line(1, "roux: rehearsed: the migration and init! went through");
+}
+
+/// `Sqlite.open!`'s one transaction, from `hosted_sqlite_inspect` until
+/// `hosted_sqlite_open` commits it; rolled back when `init!` ends first.
+var opening: ?database_module.Opening = null;
+
+/// Rolls back and closes what `Sqlite.open!` began and did not finish.
+fn opening_close() void {
+    if (opening) |*left| left.close(std.heap.page_allocator);
+    opening = null;
+}
+
+/// `Sqlite.open!`'s first call, in `init!`: the database at the path, its
+/// transaction begun; the ledger's steps it ran, and it and what schema.sql
+/// makes, listed for Migrate.roc.
+export fn hosted_sqlite_inspect(
     path: abi.RocStr,
     schema: abi.RocStr,
+) callconv(.c) SqliteInspectResult {
+    defer path.decref(host());
+    defer schema.decref(host());
+    if (serving or database != null or opening != null) {
+        return inspect_error("Sqlite.open! belongs to init!, once");
+    }
+    const gpa = std.heap.page_allocator;
+    const where = environment("ROUX_DATABASE") orelse path.asSlice();
+    var report: database_module.Report = .{};
+    const file = database_file(where, &report) catch return inspect_error(report.message());
+    opening = database_module.Opening.begin(gpa, file, where, schema.asSlice(), &report) catch
+        return inspect_error(report.message());
+    const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch {
+        opening_close();
+        return inspect_error("out of memory");
+    };
+    defer gpa.free(rows);
+    const inspected = inspect(&opening.?, rows, &report) catch {
+        opening_close();
+        return inspect_error(report.message());
+    };
+    return .{ .tag = .Ok, .payload = .{ .ok = inspected } };
+}
+
+fn inspect(
+    made: *const database_module.Opening,
+    rows: []RocRow,
+    report: *database_module.Report,
+) error{Failed}!SqliteInspected {
+    const ran = try listing(made.connection.db, .ledger, rows, report);
+    errdefer ran.deinit(host());
+    const live = try listings(made.connection.db, rows, report);
+    errdefer {
+        live.objects.deinit(host());
+        live.columns.deinit(host());
+    }
+
+    const pristine = try listings(made.pristine, rows, report);
+    return .{ .ran = ran, .live = live, .pristine = pristine };
+}
+
+/// `Sqlite.open!`'s second: the ledger's steps the database has not run,
+/// each printed before it runs (or, for a database schema.sql makes now,
+/// recorded only); the database listed after.
+export fn hosted_sqlite_ledger(
+    steps: SqliteLedger,
+    execute: bool,
+) callconv(.c) SqliteLedgerResult {
+    defer steps.deinit(host());
+    const made = if (opening) |*begun| begun else return ledger_error("Sqlite.open! out of order");
+    const gpa = std.heap.page_allocator;
+    const roc_steps = steps.items();
+    const texts = gpa.alloc([]const u8, roc_steps.len) catch {
+        opening_close();
+        return ledger_error("out of memory");
+    };
+    defer gpa.free(texts);
+    // By pointer: a small string's bytes live inside the record.
+    for (roc_steps, texts) |*step, *text| text.* = step.asSlice();
+    if (execute) print_ledger(made.name, made.recorded, texts);
+    var report: database_module.Report = .{};
+    const rows = gpa.alloc(RocRow, database_module.listing_rows_max) catch {
+        opening_close();
+        return ledger_error("out of memory");
+    };
+    defer gpa.free(rows);
+    made.run_ledger(texts, execute, &report) catch {
+        opening_close();
+        return ledger_error(report.message());
+    };
+    const live = listings(made.connection.db, rows, &report) catch {
+        opening_close();
+        return ledger_error(report.message());
+    };
+    return .{ .tag = .Ok, .payload = .{ .ok = live } };
+}
+
+fn ledger_error(message: []const u8) SqliteLedgerResult {
+    return .{ .tag = .Err, .payload = .{ .err = .fromSlice(message, host()) } };
+}
+
+/// Both listings of one database, through `rows`, a buffer each reuses.
+fn listings(
+    db: *sqlite.c.Db,
+    rows: []RocRow,
+    report: *database_module.Report,
+) error{Failed}!SqliteListings {
+    comptime assert(@FieldType(SqliteListings, "objects") == RocRows);
+    const objects = try listing(db, .objects, rows, report);
+    errdefer objects.deinit(host());
+    const columns = try listing(db, .columns, rows, report);
+    return .{ .objects = objects, .columns = columns };
+}
+
+fn listing(
+    db: *sqlite.c.Db,
+    which: database_module.Listing,
+    rows: []RocRow,
+    report: *database_module.Report,
+) error{Failed}!RocRows {
+    var sink: RowsToRoc = .{ .rows = rows, .columns = which.width() };
+    database_module.list(db, which, &sink, report) catch |err| {
+        sink.discard();
+        return err;
+    };
+    return sink.finish();
+}
+
+fn inspect_error(message: []const u8) SqliteInspectResult {
+    return .{ .tag = .Err, .payload = .{ .err = .fromSlice(message, host()) } };
+}
+
+/// `Sqlite.open!`'s last call: the database brought to schema.sql by the
+/// steps Migrate.roc planned (each printed before it runs), committed, and
+/// opened, in `init!` only, once. Every allocation here is the process's
+/// for its life (startup).
+export fn hosted_sqlite_open(
     statements: SqliteStatements,
     synchronous: abi.FullOrNormal,
+    steps: SqliteSteps,
     read_wait_ms: u32,
     write_wait_ms: u32,
     writers_waiting: u32,
 ) callconv(.c) SqliteOpenResult {
-    defer path.decref(host());
-    defer schema.decref(host());
     defer statements.deinit(host());
+    defer steps.deinit(host());
     if (serving or database != null) return open_error("Sqlite.open! belongs to init!, once");
+    // Refused, the opening is rolled back as init! ends (`opening_close`).
     const limits = database_module.limits_with(.{
         .read_wait_ms = read_wait_ms,
         .write_wait_ms = write_wait_ms,
         .writers_waiting = writers_waiting,
-    }) orelse return open_error(std.fmt.comptimePrint(
-        "a wait past {d} ms, or more than {d} writers waiting",
-        .{ database_module.wait_ms_max, database_module.writers_waiting_max },
-    ));
+    }) orelse return open_error(waits_refused);
+    var made = opening orelse return open_error("Sqlite.open! out of order");
+    opening = null;
     const gpa = std.heap.page_allocator;
+    // The opening's are freed as it closes: kept for the process's life.
+    const where = gpa.dupe(u8, made.name) catch "the database";
+    const file = gpa.dupe(u8, made.path) catch "";
     const roc_statements = statements.items();
-    const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch
+    const descriptions = gpa.alloc(database_module.StatementDescription, roc_statements.len) catch {
+        made.close(gpa);
         return open_error("out of memory");
+    };
     defer gpa.free(descriptions);
+    const roc_steps = steps.items();
+    const migration = gpa.alloc(database_module.Step, roc_steps.len) catch {
+        made.close(gpa);
+        return open_error("out of memory");
+    };
+    defer gpa.free(migration);
+    // By pointer, as the statements below.
+    for (roc_steps, migration) |*step, *into| {
+        into.* = .{ .sql = step.sql.asSlice(), .why = step.why.asSlice() };
+    }
     // By pointer: a small string's bytes live inside the record.
     for (roc_statements, descriptions) |*statement, *description| {
         description.* = .{
@@ -615,30 +862,220 @@ export fn hosted_sqlite_open(
             .columns = statement.columns.items(),
         };
     }
-    // Where the database is is the deployment's to say, as the port.
-    const where = environment("ROUX_DATABASE") orelse path.asSlice();
     var report: database_module.Report = .{};
+    const schema = gpa.dupe(u8, made.schema) catch "";
     const description: database_module.Description = .{
-        .path = where,
-        .schema = schema.asSlice(),
+        .path = file,
+        .name = where,
+        .schema = schema,
         .statements = descriptions,
         .synchronous = switch (synchronous) {
             .full => .full,
             .normal => .normal,
         },
     };
-    database = database_module.open(gpa, description, limits, &report) catch
+    print_migration(where, migration);
+    database = open_migrated(gpa, &made, migration, description, limits, &report) catch
         return open_error(report.message());
     writer_rows = gpa.alloc(RocRow, rows_max_of(database.?)) catch
         return open_error("out of memory");
+    print_opened(description, limits);
+    return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+const waits_refused = std.fmt.comptimePrint(
+    "a wait past {d} ms, or more than {d} writers waiting",
+    .{ database_module.wait_ms_max, database_module.writers_waiting_max },
+);
+
+/// The startup banner: the database, and the waits it was opened with.
+fn print_opened(description: database_module.Description, limits: database_module.Limits) void {
     var banner: [512]u8 = undefined;
     const line = "roux: database {s}, {d} statements, synchronous {t}, " ++
         "waits up to {d} ms for a reader, {d} ms for the writer, {d} writers";
     write_line(1, std.fmt.bufPrint(&banner, line, .{
-        where,               descriptions.len,     description.synchronous,
-        limits.read_wait_ms, limits.write_wait_ms, limits.writers_waiting,
+        description.name orelse description.path,
+        description.statements.len,
+        description.synchronous,
+        limits.read_wait_ms,
+        limits.write_wait_ms,
+        limits.writers_waiting,
     }) catch "roux: database");
-    return .{ .tag = .Ok, .payload = .{ .ok = .{} } };
+}
+
+/// The database brought to schema.sql and committed (copied first when
+/// ledger.sql's steps ran: the copy is of the last commit, made just
+/// before this one, and kept only if it commits), then opened. A
+/// rehearsal copies its own copy, beside it, so a copy that cannot be
+/// made (a full disk, a directory not writable) is foretold; that copy
+/// goes with it.
+fn open_migrated(
+    gpa: std.mem.Allocator,
+    made: *database_module.Opening,
+    migration: []const database_module.Step,
+    description: database_module.Description,
+    limits: database_module.Limits,
+    report: *database_module.Report,
+) error{Failed}!*database_module.Database {
+    {
+        defer made.close(gpa);
+        try made.migrate(migration, report);
+        var copy: ?BeforeLedger = null;
+        if (made.ran > 0) {
+            if (rehearsing()) try BeforeLedger.check(made.name, report);
+            copy = try BeforeLedger.make(gpa, description.path, report);
+        }
+        made.commit(report) catch |err| {
+            if (copy) |*copied| copied.discard();
+            return err;
+        };
+        if (copy) |*copied| {
+            if (rehearsing()) copied.discard() else copied.keep(made.name);
+        }
+    }
+    return database_module.open(gpa, description, limits, report);
+}
+
+/// The database as it was before ledger.sql's steps, copied
+/// (host/backup.zig) into `<path>.before-ledger/`: what a step changed or
+/// dropped is there to read, and a forward-only migration has its way
+/// back. A copy there is always of a database that then ran steps: one
+/// made before a commit that failed is deleted, and the oldest past
+/// `kept` go only once the migration committed.
+const BeforeLedger = struct {
+    directory_buffer: [512]u8,
+    directory_length: u32,
+    name: backup_module.Name,
+
+    /// Copies kept.
+    const kept = 4;
+
+    const suffix = ".before-ledger";
+
+    /// For a rehearsal: `<where>.before-ledger` is a directory, or nothing
+    /// yet, as the deploy will need it. Only looked at.
+    fn check(where: []const u8, report: *database_module.Report) error{Failed}!void {
+        const io = init_io.?;
+        var buffer: [512]u8 = undefined;
+        const directory = std.fmt.bufPrint(&buffer, "{s}" ++ suffix, .{where}) catch
+            return report.fail(.failed, "copying {s} first: a path too long", .{where});
+        var dir = std.Io.Dir.cwd().openDir(io, directory, .{}) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return report.fail(.failed, "copying {s} first: {s}: {t}", .{
+                where, directory, err,
+            }),
+        };
+        dir.close(io);
+    }
+
+    /// The copy, read from the database as its last commit left it (the
+    /// steps' transaction is not committed yet).
+    fn make(
+        gpa: std.mem.Allocator,
+        where: []const u8,
+        report: *database_module.Report,
+    ) error{Failed}!BeforeLedger {
+        const io = init_io.?; // Sqlite.open! runs in init!
+        var made: BeforeLedger = undefined;
+        const directory = std.fmt.bufPrint(&made.directory_buffer, "{s}" ++ suffix, .{
+            where,
+        }) catch return report.fail(.failed, "copying {s} first: a path too long", .{where});
+        made.directory_length = @intCast(directory.len);
+        std.Io.Dir.cwd().createDirPath(io, directory) catch |err|
+            return report.fail(.failed, "copying {s} first: {s}: {t}", .{ where, directory, err });
+        const source = try database_module.open_copy_source(gpa, where, report);
+        defer database_module.close_connection(gpa, source);
+        // No rotation yet: the oldest copies stay until the steps commit.
+        made.name = backup_module.backup(source, io, .{
+            .directory = directory,
+            .keep = backup_module.keep_max,
+            .now_s = std.Io.Timestamp.now(io, .real).toSeconds(),
+        }, report) catch {
+            var said: @TypeOf(report.buffer) = undefined;
+            const message = said[0..report.length];
+            @memcpy(message, report.message());
+            return report.fail(.failed, "copying {s} first, into {s}: {s}", .{
+                where, directory, message,
+            });
+        };
+        return made;
+    }
+
+    /// `<path>.before-ledger`.
+    fn path(made: *const BeforeLedger) []const u8 {
+        return made.directory_buffer[0..made.directory_length];
+    }
+
+    /// The migration did not commit: nothing changed, the copy goes.
+    fn discard(made: *const BeforeLedger) void {
+        const io = init_io.?;
+        var dir = std.Io.Dir.cwd().openDir(io, made.path(), .{}) catch return;
+        defer dir.close(io);
+        dir.deleteFile(io, &made.name) catch {};
+    }
+
+    /// The migration committed: the copy is kept, and the oldest past
+    /// `kept` go. A failure to prune is said, and the app starts anyway.
+    fn keep(made: *const BeforeLedger, where: []const u8) void {
+        const io = init_io.?;
+        const into = made.path();
+        const said = " before ledger.sql's steps to ";
+        write_parts(1, &.{ "roux: copied ", where, said, into, "/", &made.name });
+        var report: database_module.Report = .{};
+        backup_module.prune(io, into, kept, &report) catch
+            write_parts(2, &.{ "roux: ", report.message() });
+    }
+};
+
+/// The ledger's steps a database runs now, before they run: `recorded`
+/// the steps it ran before, so the first here is the one after.
+fn print_ledger(where: []const u8, recorded: u32, steps: []const []const u8) void {
+    if (steps.len == 0) return;
+    var buffer: [64]u8 = undefined;
+    const first = recorded + 1;
+    const last = recorded + steps.len;
+    const which = if (steps.len == 1)
+        std.fmt.bufPrint(&buffer, ", ledger.sql's step {d}", .{first}) catch unreachable
+    else
+        std.fmt.bufPrint(&buffer, ", ledger.sql's steps {d} to {d}", .{ first, last }) catch
+            unreachable;
+    write_parts(1, &.{ "roux: migrating ", where, which });
+    for (steps, first..) |step, number| {
+        var label: [32]u8 = undefined;
+        const step_label = std.fmt.bufPrint(&label, "step {d}", .{number}) catch unreachable;
+        write_parts(1, &.{ "  ", step_label });
+        var lines = std.mem.splitScalar(u8, step, '\n');
+        while (lines.next()) |line| write_parts(1, &.{ "    ", line });
+    }
+}
+
+/// What a migration will do, step by step, before it runs: why, then the
+/// statement, indented. One transaction: a failure after names its step.
+fn print_migration(where: []const u8, migration: []const database_module.Step) void {
+    if (migration.len == 0) return;
+    var count: [32]u8 = undefined;
+    write_parts(1, &.{
+        "roux: migrating ",
+        where,
+        std.fmt.bufPrint(&count, ", {d} step{s}", .{
+            migration.len, if (migration.len == 1) "" else "s",
+        }) catch unreachable,
+    });
+    for (migration) |step| {
+        write_parts(1, &.{ "  ", step.why });
+        var lines = std.mem.splitScalar(u8, step.sql, '\n');
+        while (lines.next()) |line| write_parts(1, &.{ "    ", line });
+    }
+}
+
+fn write_parts(fd: i32, parts: []const []const u8) void {
+    var vectors: [8]std.posix.iovec_const = undefined;
+    assert(parts.len < vectors.len);
+    for (parts, vectors[0..parts.len]) |part, *vector| {
+        vector.* = .{ .base = part.ptr, .len = part.len };
+    }
+    vectors[parts.len] = .{ .base = "\n", .len = 1 };
+    _ = std.os.linux.writev(fd, &vectors, parts.len + 1);
 }
 
 fn open_error(message: []const u8) SqliteOpenResult {
@@ -1278,6 +1715,14 @@ export fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
 /// says it and reloads when roux dev starts the fixed build.
 fn init_app() InitResult {
     const init = abi.roc_init_for_host();
+    // `Sqlite.open!` refused between its calls: what it began is undone.
+    opening_close();
+    if (rehearsing()) {
+        // A rehearsal ends with `init!`: its copy deleted, nothing served.
+        rehearsal_over(init.tag == .Ok);
+        if (init.tag == .Ok) std.process.exit(0);
+        std.process.exit(@intCast(@max(0, @min(init.payload_err(), 255))));
+    }
     if (init.tag == .Ok) return init.payload_ok();
     if (dev_build == null) {
         const code = init.payload_err();

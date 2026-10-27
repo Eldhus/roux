@@ -1,0 +1,46 @@
+One column split in two: the ledger adds both, fills them from the old one,
+and drops it. schema.sql then makes them NOT NULL.
+
+== before
+CREATE TABLE cook (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO cook VALUES (1, 'Ada Lovelace'), (2, 'Grace Hopper');
+
+== after
+CREATE TABLE cook (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE cook ADD COLUMN first_name TEXT;
+ALTER TABLE cook ADD COLUMN last_name TEXT;
+UPDATE cook SET
+  first_name = substr(name, 1, instr(name, ' ') - 1),
+  last_name = substr(name, instr(name, ' ') + 1);
+ALTER TABLE cook DROP COLUMN name;
+
+== plan
+roux: migrating test.db, ledger.sql's steps 1 to 4
+  step 1
+    ALTER TABLE cook ADD COLUMN first_name TEXT;
+  step 2
+    ALTER TABLE cook ADD COLUMN last_name TEXT;
+  step 3
+    UPDATE cook SET
+      first_name = substr(name, 1, instr(name, ' ') - 1),
+      last_name = substr(name, instr(name, ' ') + 1);
+  step 4
+    ALTER TABLE cook DROP COLUMN name;
+roux: migrating test.db, 4 steps
+  table `cook`: aside, to make it anew
+    ALTER TABLE "cook" RENAME TO "roux_old_cook"
+  table `cook`: as schema.sql makes it
+    CREATE TABLE cook (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL) STRICT
+  table `cook`: its rows, by id, first_name, last_name
+    INSERT INTO "cook" ("id", "first_name", "last_name") SELECT "id", "first_name", "last_name" FROM "roux_old_cook"
+  table `cook`: the old one
+    DROP TABLE "roux_old_cook"
+
+== query
+SELECT id, first_name, last_name FROM cook ORDER BY id
+
+== rows
+1 | Ada | Lovelace
+2 | Grace | Hopper

@@ -1,0 +1,31 @@
+A parent and its child both change in one migration: each rebuilt in
+schema.sql's order, and the child's references hold after.
+
+== before
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL) STRICT;
+INSERT INTO menu VALUES (1, 'lunch');
+INSERT INTO course VALUES (1, 1, 'soup');
+
+== after
+CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL, served TEXT) STRICT;
+CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL, position INTEGER) STRICT;
+
+== plan
+roux: migrating test.db, 8 steps
+  table `menu`: aside, to make it anew
+    ALTER TABLE "menu" RENAME TO "roux_old_menu"
+  table `menu`: as schema.sql makes it
+    CREATE TABLE menu (id INTEGER PRIMARY KEY, title TEXT NOT NULL, served TEXT) STRICT
+  table `menu`: its rows, by id, title
+    INSERT INTO "menu" ("id", "title") SELECT "id", "title" FROM "roux_old_menu"
+  table `menu`: the old one
+    DROP TABLE "roux_old_menu"
+  table `course`: aside, to make it anew
+    ALTER TABLE "course" RENAME TO "roux_old_course"
+  table `course`: as schema.sql makes it
+    CREATE TABLE course (id INTEGER PRIMARY KEY, menu_id INTEGER NOT NULL REFERENCES menu (id), name TEXT NOT NULL, position INTEGER) STRICT
+  table `course`: its rows, by id, menu_id, name
+    INSERT INTO "course" ("id", "menu_id", "name") SELECT "id", "menu_id", "name" FROM "roux_old_course"
+  table `course`: the old one
+    DROP TABLE "roux_old_course"

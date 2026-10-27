@@ -1,0 +1,24 @@
+A CHECK that rows already break: SQLite refuses the copy, nothing
+changes. A CHECK is part of the CREATE's text alone: no pragma lists it,
+which is why roux compares the text, never a reading of it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 95), (2, 0);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL CHECK (price_kr > 0)) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, price_kr INTEGER NOT NULL CHECK (price_kr > 0)) STRICT
+  table `dish`: its rows, by id, price_kr
+    INSERT INTO "dish" ("id", "price_kr") SELECT "id", "price_kr" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== error
+migrating test.db: table `dish`: its rows, by id, price_kr: CHECK constraint failed: price_kr > 0

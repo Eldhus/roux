@@ -1,0 +1,55 @@
+The most common two-release edit: a column every row should have.
+
+1. Release 2 adds `slug` and fills it; it may still hold NULL, for the rows
+   the old executable writes while the new one is rolled out.
+2. Release 3 makes it NOT NULL, with one more step filling the rows still
+   NULL (none here; written so, the step is right whatever came between).
+   The rebuild then finds a slug in every row.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup'), (2, 'Rye Bread');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE) STRICT;
+
+== ledger
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+-- Rows written since release 2 by the old executable.
+UPDATE dish SET slug = lower(replace(name, ' ', '-')) WHERE slug IS NULL;
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    ALTER TABLE dish ADD COLUMN slug TEXT;
+  step 2
+    UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+-- after 2
+roux: migrating test.db, ledger.sql's step 3
+  step 3
+    UPDATE dish SET slug = lower(replace(name, ' ', '-')) WHERE slug IS NULL;
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE) STRICT
+  table `dish`: its rows, by id, name, slug
+    INSERT INTO "dish" ("id", "name", "slug") SELECT "id", "name", "slug" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== query
+SELECT id, slug FROM dish ORDER BY id
+
+== rows
+1 | pea-soup
+2 | rye-bread

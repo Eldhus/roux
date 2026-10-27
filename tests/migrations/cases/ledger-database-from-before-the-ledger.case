@@ -1,0 +1,23 @@
+A database an older roux made, with no record of any step: it ran none,
+so it runs them all, in order.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, title TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== ledger
+ALTER TABLE dish RENAME COLUMN title TO name;
+
+== plan
+roux: migrating test.db, ledger.sql's step 1
+  step 1
+    ALTER TABLE dish RENAME COLUMN title TO name;
+
+== query
+SELECT id, name FROM dish
+
+== rows
+1 | soup

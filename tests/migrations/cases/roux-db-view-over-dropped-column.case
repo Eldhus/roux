@@ -1,0 +1,18 @@
+A column goes on purpose, and schema.sql's view still reads it. SQLite
+would make the view and fail at the request that reads it; roux-db reads
+every view of schema.sql, so the build says it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+CREATE VIEW notes AS SELECT id, note FROM dish;
+INSERT INTO dish VALUES (1, 'soup', 'hot');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE VIEW notes AS SELECT id, note FROM dish;
+
+== ledger
+ALTER TABLE dish DROP COLUMN note;
+
+== error
+roux-db: view notes: no such column: note

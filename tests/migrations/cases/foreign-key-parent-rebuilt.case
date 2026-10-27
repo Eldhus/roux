@@ -1,0 +1,26 @@
+A table others refer to, rebuilt: their REFERENCES clauses are left as
+written (the rename aside rewrites nothing), and the foreign keys hold
+once the rows are back.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE review (id INTEGER PRIMARY KEY, dish_id INTEGER NOT NULL REFERENCES dish (id), stars INTEGER NOT NULL) STRICT;
+CREATE INDEX review_by_dish ON review (dish_id);
+INSERT INTO dish VALUES (1, 'soup'), (2, 'bread');
+INSERT INTO review VALUES (1, 1, 5), (2, 2, 3);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE review (id INTEGER PRIMARY KEY, dish_id INTEGER NOT NULL REFERENCES dish (id), stars INTEGER NOT NULL) STRICT;
+CREATE INDEX review_by_dish ON review (dish_id);
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL DEFAULT 0) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

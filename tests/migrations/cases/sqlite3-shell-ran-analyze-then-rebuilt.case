@@ -1,0 +1,26 @@
+ANALYZE ran on the database, then its table changes. Dropping the old table
+makes SQLite delete its rows of `sqlite_stat1`: SQLite's own write, which
+the migration allows.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE INDEX dish_name ON dish (name);
+INSERT INTO dish (name) VALUES ('soup'), ('bread');
+ANALYZE;
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT;
+CREATE INDEX dish_name ON dish (name);
+
+== plan
+roux: migrating test.db, 5 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+  index `dish_name`: as schema.sql makes it
+    CREATE INDEX dish_name ON dish (name)

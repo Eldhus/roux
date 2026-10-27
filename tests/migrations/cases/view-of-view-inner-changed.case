@@ -1,0 +1,20 @@
+A view reads another view, and only the inner one changes: it alone is
+made again, and the outer one reads it as before.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE VIEW cheap AS SELECT id, name FROM dish WHERE price_kr < 100;
+CREATE VIEW cheap_names AS SELECT name FROM cheap;
+INSERT INTO dish VALUES (1, 'soup', 95);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price_kr INTEGER NOT NULL) STRICT;
+CREATE VIEW cheap AS SELECT id, name FROM dish WHERE price_kr < 80;
+CREATE VIEW cheap_names AS SELECT name FROM cheap;
+
+== plan
+roux: migrating test.db, 2 steps
+  view `cheap`: changed in schema.sql
+    DROP VIEW "cheap"
+  view `cheap`: as schema.sql makes it
+    CREATE VIEW cheap AS SELECT id, name FROM dish WHERE price_kr < 80

@@ -1,0 +1,12 @@
+schema.sql that SQLite cannot read: roux-db says so at the build, and the
+database is never touched.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL,) STRICT;
+
+== error
+roux-db: near ")": syntax error

@@ -1,0 +1,55 @@
+A step that ran is edited: the database ran the step as it was, so the
+ledger no longer says what happened to it, and a database that had not run
+it would get another history. Refused, saying both texts and what to do;
+nothing changes. Comments between steps are not part of them, so a
+comment changed or added is no edit (deploy 2).
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(name);
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+-- Slugs, for URLs.
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(name); -- spaces stay: see below
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT) STRICT;
+
+== ledger
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+
+== plan
+-- after 1
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    ALTER TABLE dish ADD COLUMN slug TEXT;
+  step 2
+    UPDATE dish SET slug = lower(name);
+-- after 2
+-- after 3
+
+== error
+-- after 3
+ledger.sql's step 2 is not what the database ran. It ran:
+  UPDATE dish SET slug = lower(name);
+ledger.sql says:
+  UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+A step that ran stays as it is: put it back, and add a step after it. (A database that ran a draft of the step, a dev one: put back the copy made before it, in `<database>.before-ledger/`.)
+
+== query
+SELECT id, slug FROM dish
+
+== rows
+1 | pea soup

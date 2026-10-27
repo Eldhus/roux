@@ -1,0 +1,38 @@
+A new NOT NULL column filled from the others: the ledger adds it, as NULL
+may be for now, and fills it; schema.sql then makes it NOT NULL, and the
+rebuild checks every row has a value. One deploy, no DEFAULT to invent.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+INSERT INTO dish VALUES (1, 'Pea Soup'), (2, 'Rye Bread');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE) STRICT;
+
+== ledger
+-- Dishes get a slug, for URLs.
+ALTER TABLE dish ADD COLUMN slug TEXT;
+UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+
+== plan
+roux: migrating test.db, ledger.sql's steps 1 to 2
+  step 1
+    ALTER TABLE dish ADD COLUMN slug TEXT;
+  step 2
+    UPDATE dish SET slug = lower(replace(name, ' ', '-'));
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL UNIQUE) STRICT
+  table `dish`: its rows, by id, name, slug
+    INSERT INTO "dish" ("id", "name", "slug") SELECT "id", "name", "slug" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"
+
+== query
+SELECT id, slug FROM dish ORDER BY id
+
+== rows
+1 | pea-soup
+2 | rye-bread

@@ -1,0 +1,21 @@
+A table loses AUTOINCREMENT. SQLite keeps `sqlite_sequence` once made,
+though no table needs it now; it is SQLite's own, and neither the plan nor
+the final comparison counts it.
+
+== before
+CREATE TABLE dish (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) STRICT;
+INSERT INTO dish (name) VALUES ('soup'), ('bread');
+
+== after
+CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT;
+
+== plan
+roux: migrating test.db, 4 steps
+  table `dish`: aside, to make it anew
+    ALTER TABLE "dish" RENAME TO "roux_old_dish"
+  table `dish`: as schema.sql makes it
+    CREATE TABLE dish (id INTEGER PRIMARY KEY, name TEXT NOT NULL) STRICT
+  table `dish`: its rows, by id, name
+    INSERT INTO "dish" ("id", "name") SELECT "id", "name" FROM "roux_old_dish"
+  table `dish`: the old one
+    DROP TABLE "roux_old_dish"

@@ -15,9 +15,12 @@
 //! - The writer: one connection for the process, behind `WriterLock`, a
 //!   bounded queue with a bounded wait (`writer_busy`, a 503). SQLite never
 //!   sees two writers, so `busy_timeout` is 0.
-//! - No migrations yet: a new database gets `schema.sql`; an existing one
-//!   must hold exactly the schema `schema.sql` makes (`sqlite_schema`
-//!   compared row by row), or it does not open.
+//! - Before that, `Opening` brings the database to `schema.sql`, on a
+//!   connection of its own, in one transaction: the steps of ledger.sql it
+//!   has not run, each recorded in `roux_ledger`, then Migrate.roc's plan
+//!   (a new database: `schema.sql` itself). It must then hold exactly the
+//!   schema `schema.sql` makes (`sqlite_schema` compared row by row), or
+//!   nothing changes and it does not open.
 //!
 //! Values cross as `Value`; rows go to a sink the caller passes at compile
 //! time (host.zig builds Roc lists; the tests a record of what came), so
@@ -191,6 +194,9 @@ pub const StatementDescription = struct {
 
 pub const Description = struct {
     path: []const u8,
+    /// What messages call the database, when not `path`: a rehearsal
+    /// migrates a copy, and speaks of the database it copied.
+    name: ?[]const u8 = null,
     schema: []const u8,
     statements: []const StatementDescription,
     synchronous: Synchronous,
@@ -275,7 +281,7 @@ pub fn open(
         report,
     );
     errdefer close_connection(gpa, writer);
-    try ensure_schema(writer.db, description.schema, description.path, report);
+    try ensure_schema(writer.db, description, report);
     try prepare_statements(writer, statements, report);
     const database = gpa.create(Database) catch return out_of_memory(report);
     database.* = .{
@@ -415,6 +421,19 @@ pub fn open_reader(
     return reader;
 }
 
+/// A connection to the database at `path` with no statements: what
+/// host/backup.zig copies before ledger.sql's steps commit (a reader, it
+/// sees the database as the last commit left it).
+pub fn open_copy_source(
+    gpa: Allocator,
+    path: []const u8,
+    report: *Report,
+) error{Failed}!*Connection {
+    const path_z = dupe_sentinel(gpa, path) catch return out_of_memory(report);
+    defer gpa.free(path_z);
+    return open_connection(gpa, path_z, .reader, &.{}, .full, report);
+}
+
 /// `bytes` with a 0 after them, as SQLite reads a path or a statement.
 fn dupe_sentinel(gpa: Allocator, bytes: []const u8) error{OutOfMemory}![:0]u8 {
     const copy = try gpa.allocSentinel(u8, bytes.len, 0);
@@ -483,8 +502,12 @@ fn open_connection(
 ) error{Failed}!*Connection {
     var db: ?*c.Db = null;
     const flags = c.open_readwrite | c.open_create | c.open_nomutex | c.open_exrescode;
-    if (c.sqlite3_open_v2(path, &db, flags, null) != c.ok) {
-        const text = if (db) |handle| std.mem.span(c.sqlite3_errmsg(handle)) else "out of memory";
+    const opened = c.sqlite3_open_v2(path, &db, flags, null);
+    if (opened != c.ok) {
+        const text = if (opened & 0xff == c.busy)
+            "another process has it open (one process owns a database: is the app " ++
+                "still running, or a sqlite3 shell?)"
+        else if (db) |handle| std.mem.span(c.sqlite3_errmsg(handle)) else "out of memory";
         _ = c.sqlite3_close_v2(db);
         return report.fail(.failed, "open {s}: {s}", .{ path, text });
     }
@@ -493,7 +516,13 @@ fn open_connection(
     @memset(prepared, null);
     const connection = gpa.create(Connection) catch return out_of_memory(report);
     connection.* = .{ .db = db.?, .role = role, .prepared = prepared };
-    try configure(connection, synchronous, report);
+    configure(connection, synchronous, report) catch {
+        // Which database: a directory it cannot write fails here (WAL).
+        var said: @TypeOf(report.buffer) = undefined;
+        const message = said[0..report.length];
+        @memcpy(message, report.message());
+        return report.fail(report.failure, "open {s}: {s}", .{ path, message });
+    };
     c.sqlite3_progress_handler(connection.db, progress_instructions, progress, connection);
     return connection;
 }
@@ -708,50 +737,434 @@ fn prepare_own(db: *c.Db, sql: []const u8, report: *Report) error{Failed}!*c.Stm
 // --- the schema ---------------------------------------------------------------
 
 /// A new database (nothing in `sqlite_schema`) gets `schema`; an existing
-/// one must already be exactly what `schema` makes.
-fn ensure_schema(
-    db: *c.Db,
-    schema: []const u8,
-    path: []const u8,
-    report: *Report,
-) error{Failed}!void {
+/// one must be exactly what `schema` makes (`Opening` saw to it).
+fn ensure_schema(db: *c.Db, description: Description, report: *Report) error{Failed}!void {
     const objects = try pragma_integer(db, "SELECT count(*) FROM sqlite_schema", report);
-    if (objects == 0) return create_schema(db, schema, report);
-    var expected: ?*c.Db = null;
-    const flags = c.open_readwrite | c.open_create | c.open_memory | c.open_exrescode;
-    if (c.sqlite3_open_v2(":memory:", &expected, flags, null) != c.ok) {
-        _ = c.sqlite3_close_v2(expected);
-        return out_of_memory(report);
+    if (objects == 0) {
+        sqlite.exec(db, "BEGIN IMMEDIATE") catch
+            return report.fail(.failed, "BEGIN: {s}", .{c.sqlite3_errmsg(db)});
+        create_schema(db, description.schema, report) catch |err| {
+            sqlite.exec(db, "ROLLBACK") catch {};
+            return err;
+        };
+        sqlite.exec(db, "COMMIT") catch
+            return report.fail(.failed, "COMMIT: {s}", .{c.sqlite3_errmsg(db)});
+        return;
     }
-    defer _ = c.sqlite3_close_v2(expected);
-    sqlite.exec(expected.?, schema) catch
-        return report.fail(.failed, "schema.sql: {s}", .{c.sqlite3_errmsg(expected.?)});
-    return compare_schemas(db, expected.?, path, report);
+    const pristine = try open_pristine(description.schema, report);
+    defer close_pristine(pristine);
+    try compare_schemas(db, pristine, description.name orelse description.path, report);
 }
 
+/// What `schema` makes, in memory, by the same policy as a new database.
+pub fn open_pristine(schema: []const u8, report: *Report) error{Failed}!*c.Db {
+    var pristine: ?*c.Db = null;
+    const flags = c.open_readwrite | c.open_create | c.open_memory | c.open_exrescode;
+    if (c.sqlite3_open_v2(":memory:", &pristine, flags, null) != c.ok) {
+        _ = c.sqlite3_close_v2(pristine);
+        return out_of_memory(report);
+    }
+    errdefer close_pristine(pristine.?);
+    try create_schema(pristine.?, schema, report);
+    return pristine.?;
+}
+
+pub fn close_pristine(pristine: *c.Db) void {
+    const result = c.sqlite3_close_v2(pristine);
+    assert(result == c.ok);
+}
+
+// --- migrations ---------------------------------------------------------------
+
+/// A statement of a migration, and why it runs: Migrate.roc's plan.
+pub const Step = struct { sql: []const u8, why: []const u8 };
+
+/// Steps of one migration, at most.
+pub const migration_steps_max = 4 * schema_statements_max;
+
+/// What a migration is planned from, in the order SQLite made it; SQLite's
+/// own tables (`sqlite_sequence`, `sqlite_stat1`, a key's index) and roux's
+/// (`roux_ledger`) are left out.
+pub const Listing = enum {
+    /// type, name, tbl_name, sql: `sqlite_schema`.
+    objects,
+    /// Table, column, hidden (`pragma_table_xinfo`: 2 and 3 are generated),
+    /// and 1 for the key of a table with AUTOINCREMENT, 0 for any other
+    /// (`sqlite3_table_column_metadata`: no pragma says it).
+    columns,
+    /// The steps of ledger.sql the database ran, in order: `roux_ledger`.
+    ledger,
+
+    /// The app's: names starting `sqlite_` are SQLite's, and roux keeps
+    /// the ledger in a table of its own (roux-db refuses `roux_` names).
+    pub fn own(comptime name: []const u8) []const u8 {
+        return name ++ " NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND " ++ name ++ " <> 'roux_ledger'";
+    }
+
+    pub fn sql(listing: Listing) []const u8 {
+        return switch (listing) {
+            .objects => "SELECT type, name, tbl_name, coalesce(sql, '') FROM sqlite_schema " ++
+                "WHERE " ++ comptime own("name") ++ " ORDER BY rowid",
+            .columns => "SELECT m.name, c.name, c.hidden FROM sqlite_schema AS m " ++
+                "JOIN pragma_table_xinfo(m.name) AS c " ++
+                "WHERE m.type = 'table' AND " ++ comptime own("m.name") ++
+                " ORDER BY m.rowid, c.cid",
+            .ledger => "SELECT sql FROM roux_ledger ORDER BY step",
+        };
+    }
+
+    /// Cells of each row: the SQL's columns, then the autoincrement flag.
+    pub fn width(listing: Listing) u32 {
+        return switch (listing) {
+            .objects => 4,
+            .columns => 4,
+            .ledger => 1,
+        };
+    }
+
+    fn selected(listing: Listing) u32 {
+        return switch (listing) {
+            .objects => 4,
+            .columns => 3,
+            .ledger => 1,
+        };
+    }
+};
+
+/// Rows one listing gives, at most: a table's columns are most of them.
+pub const listing_rows_max = 64 * schema_statements_max;
+
+/// Rows of `listing` over `db`, each cell text or an integer, into `sink`
+/// (`row()`, then `cell(value)` for each column).
+pub fn list(db: *c.Db, listing: Listing, sink: anytype, report: *Report) error{Failed}!void {
+    const statement = try prepare_own(db, listing.sql(), report);
+    defer _ = c.sqlite3_finalize(statement);
+    const rows_max = listing_rows_max;
+    // One more step than rows: the last says done.
+    for (0..rows_max + 1) |index| {
+        switch (c.sqlite3_step(statement)) {
+            c.done => return,
+            c.row => if (index == rows_max) break,
+            else => return report.fail(.failed, "{t}: {s}", .{ listing, c.sqlite3_errmsg(db) }),
+        }
+        sink.row() catch return report.fail(.failed, "{t}: out of memory", .{listing});
+        for (0..listing.selected()) |column| {
+            const value: Value = switch (c.sqlite3_column_type(statement, @intCast(column))) {
+                c.integer => .{ .integer = c.sqlite3_column_int64(statement, @intCast(column)) },
+                else => .{ .text = column_text(statement, @intCast(column)) },
+            };
+            sink.cell(value) catch return report.fail(.failed, "{t}: out of memory", .{listing});
+        }
+        if (listing == .columns) {
+            const value: Value = .{ .integer = try autoincrement(db, statement, report) };
+            sink.cell(value) catch return report.fail(.failed, "{t}: out of memory", .{listing});
+        }
+    }
+    return report.fail(.failed, "{t}: more than {d} rows", .{ listing, rows_max });
+}
+
+/// 1 when the column the `columns` listing is on is the key of a table with
+/// AUTOINCREMENT: SQLite then keeps the largest key handed out in
+/// `sqlite_sequence`, which a rebuild must carry over.
+fn autoincrement(db: *c.Db, columns: *c.Stmt, report: *Report) error{Failed}!i64 {
+    // SQLite's text results end in a NUL.
+    const table: [*:0]const u8 = @ptrCast(c.sqlite3_column_text(columns, 0) orelse unreachable);
+    const column: [*:0]const u8 = @ptrCast(c.sqlite3_column_text(columns, 1) orelse unreachable);
+    var flag: c_int = 0;
+    const result = c.sqlite3_table_column_metadata(
+        db,
+        "main",
+        table,
+        column,
+        null,
+        null,
+        null,
+        null,
+        &flag,
+    );
+    if (result != c.ok) {
+        return report.fail(.failed, "columns of {s}: {s}", .{ table, c.sqlite3_errmsg(db) });
+    }
+    assert(flag == 0 or flag == 1);
+    return flag;
+}
+
+/// Where ledger.sql's steps a database ran are recorded, in order: made in
+/// every database roux opens; one without it ran none.
+const ledger_table = "CREATE TABLE IF NOT EXISTS roux_ledger " ++
+    "(step INTEGER PRIMARY KEY, sql TEXT NOT NULL) STRICT";
+
+/// A database brought to `schema.sql` before `open` opens it: a connection
+/// of its own, in one transaction from `begin` until `commit`, and closed
+/// (`close` rolls back what was not committed). In it, the steps of
+/// ledger.sql the database has not run (`run_ledger`), then Migrate.roc's
+/// plan, or `schema.sql` itself for a new database (`migrate`). Foreign
+/// keys are off throughout, SQLite's way ("Making Other Kinds Of Table
+/// Schema Changes": a step's DELETE cascades nothing), and checked once,
+/// before the commit. Anything short of exactly the pristine schema rolls
+/// it all back.
+pub const Opening = struct {
+    connection: *Connection,
+    pristine: *c.Db,
+    path: [:0]const u8,
+    schema: []const u8,
+    /// What messages call the database: a rehearsal's copy is named as the
+    /// database it copied.
+    name: []const u8,
+    /// Steps of ledger.sql the database records as run.
+    recorded: u32,
+    /// Steps this opening ran, not only recorded: the database is copied
+    /// before it commits.
+    ran: u32 = 0,
+
+    /// Steps of a ledger, at most (roux-db's bound).
+    pub const steps_max = 4096;
+
+    pub fn begin(
+        gpa: Allocator,
+        path: []const u8,
+        name: []const u8,
+        schema: []const u8,
+        report: *Report,
+    ) error{Failed}!Opening {
+        sqlite.initialize() catch return report.fail(.failed, "sqlite3_initialize failed", .{});
+        const path_z = dupe_sentinel(gpa, path) catch return out_of_memory(report);
+        errdefer gpa.free(path_z);
+        const connection = try open_connection(gpa, path_z, .writer, &.{}, .full, report);
+        errdefer close_connection(gpa, connection);
+        const db = connection.db;
+        try set_foreign_keys(db, false, report);
+        sqlite.exec(db, "BEGIN IMMEDIATE") catch
+            return report.fail(.failed, "BEGIN: {s}", .{c.sqlite3_errmsg(db)});
+        errdefer sqlite.exec(db, "ROLLBACK") catch {};
+        sqlite.exec(db, ledger_table) catch
+            return report.fail(.failed, "roux_ledger: {s}", .{c.sqlite3_errmsg(db)});
+        const recorded = try pragma_integer(db, "SELECT count(*) FROM roux_ledger", report);
+        if (recorded > steps_max) {
+            return report.fail(.failed, "roux_ledger: {d} steps, over {d}", .{
+                recorded, steps_max,
+            });
+        }
+        const pristine = try open_pristine(schema, report);
+        errdefer close_pristine(pristine);
+        const schema_kept = gpa.dupe(u8, schema) catch return out_of_memory(report);
+        errdefer gpa.free(schema_kept);
+        return .{
+            .connection = connection,
+            .pristine = pristine,
+            .path = path_z,
+            .schema = schema_kept,
+            .name = gpa.dupe(u8, name) catch return out_of_memory(report),
+            .recorded = @intCast(recorded),
+        };
+    }
+
+    /// Runs `steps`, the ledger's next, each recorded as it runs; with
+    /// `execute` false, records them only (a new database, made by
+    /// schema.sql).
+    pub fn run_ledger(
+        opening: *Opening,
+        steps: []const []const u8,
+        execute: bool,
+        report: *Report,
+    ) error{Failed}!void {
+        if (opening.recorded + steps.len > steps_max) {
+            return report.fail(.misuse, "a ledger of over {d} steps", .{steps_max});
+        }
+        const db = opening.connection.db;
+        for (steps) |step| {
+            const number = opening.recorded + 1;
+            if (execute) {
+                var buffer: [32]u8 = undefined;
+                const why = std.fmt.bufPrint(&buffer, "ledger.sql's step {d}", .{number}) catch
+                    unreachable; // a u32 fits
+                try exec_step(db, step, why, .ledger, opening.name, report);
+                opening.ran += 1;
+            }
+            try record_step(db, number, step, report);
+            opening.recorded = number;
+        }
+    }
+
+    /// Brings the database to schema.sql: by `migration` (Migrate.roc's
+    /// plan), or by schema.sql itself when it holds nothing; then checks.
+    /// Legacy ALTER TABLE keeps the plan's rename of a table aside from
+    /// rewriting what refers to it, so every CREATE ends as schema.sql wrote
+    /// it (a step of the ledger renames as SQLite does now).
+    pub fn migrate(
+        opening: *Opening,
+        migration: []const Step,
+        report: *Report,
+    ) error{Failed}!void {
+        if (migration.len > migration_steps_max) {
+            return report.fail(.misuse, "a migration of {d} steps", .{migration.len});
+        }
+        const db = opening.connection.db;
+        const count = "SELECT count(*) FROM sqlite_schema WHERE " ++ comptime Listing.own("name");
+        if (try pragma_integer(db, count, report) == 0) {
+            if (migration.len > 0) {
+                return report.fail(.misuse, "a migration for a new database", .{});
+            }
+            try create_schema(db, opening.schema, report);
+        } else {
+            try set_legacy_alter_table(db, true, report);
+            for (migration) |step| {
+                try exec_step(db, step.sql, step.why, .plan, opening.name, report);
+            }
+        }
+        try check_foreign_keys(db, opening.name, report);
+        try compare_schemas(db, opening.pristine, opening.name, report);
+    }
+
+    pub fn commit(opening: *Opening, report: *Report) error{Failed}!void {
+        const db = opening.connection.db;
+        sqlite.exec(db, "COMMIT") catch
+            return report.fail(.failed, "COMMIT: {s}", .{c.sqlite3_errmsg(db)});
+    }
+
+    /// Rolls back what was not committed, and closes the connection.
+    pub fn close(opening: *Opening, gpa: Allocator) void {
+        const db = opening.connection.db;
+        if (c.sqlite3_get_autocommit(db) == 0) sqlite.exec(db, "ROLLBACK") catch {};
+        close_pristine(opening.pristine);
+        close_connection(gpa, opening.connection);
+        gpa.free(opening.path);
+        gpa.free(opening.schema);
+        gpa.free(opening.name);
+        opening.* = undefined;
+    }
+};
+
+/// A step of the ledger, or of Migrate.roc's plan.
+const StepKind = enum { ledger, plan };
+
+/// Runs one statement of a migration, by the migration's policy, saying
+/// which and why when it fails.
+fn exec_step(
+    db: *c.Db,
+    sql: []const u8,
+    why: []const u8,
+    kind: StepKind,
+    name: []const u8,
+    report: *Report,
+) error{Failed}!void {
+    var verdict: authorizer.Verdict = .{ .policy = .migration };
+    authorizer.install(db, &verdict);
+    const ran = sqlite.exec_one(db, sql);
+    authorizer.uninstall(db);
+    ran catch |err| {
+        switch (err) {
+            error.NotOneStatement => return report.fail(.misuse, "migrating {s}: {s}: " ++
+                "more than one statement", .{ name, why }),
+            error.Sqlite => {},
+        }
+        if (verdict.refused) |action| {
+            return report.fail(.misuse, "migrating {s}: {s}: a migration may not hold {s}", .{
+                name, why, authorizer.describe(action),
+            });
+        }
+        // A copied NULL is copied as NULL: the column's DEFAULT is for a
+        // row that names no value. Extended codes: the connection was
+        // opened with them.
+        const hint = switch (kind) {
+            .ledger => " (a step runs on the database as the last deploy left it, before " ++
+                "schema.sql's changes)",
+            .plan => if (c.sqlite3_errcode(db) == c.constraint_notnull)
+                " (a NOT NULL column needs a value in every row: a column new to the table " ++
+                    "takes its DEFAULT, a copied one keeps its NULLs; a step of ledger.sql " ++
+                    "fills it)"
+            else
+                "",
+        };
+        return report.fail(.failed, "migrating {s}: {s}: {s}{s}", .{
+            name, why, c.sqlite3_errmsg(db), hint,
+        });
+    };
+}
+
+/// Step `number` of the ledger, recorded as run, in the migration's
+/// transaction: with it, or not at all.
+fn record_step(db: *c.Db, number: u32, sql: []const u8, report: *Report) error{Failed}!void {
+    const record = "INSERT INTO roux_ledger (step, sql) VALUES (?1, ?2)";
+    const insert = try prepare_own(db, record, report);
+    defer _ = c.sqlite3_finalize(insert);
+    assert(c.sqlite3_bind_int64(insert, 1, number) == c.ok);
+    if (c.sqlite3_bind_text64(insert, 2, sql.ptr, sql.len, null, c.utf8) != c.ok or
+        c.sqlite3_step(insert) != c.done)
+    {
+        return report.fail(.failed, "roux_ledger: {s}", .{c.sqlite3_errmsg(db)});
+    }
+}
+
+/// Fails naming the first rows whose foreign key points nowhere, if any.
+fn check_foreign_keys(db: *c.Db, path: []const u8, report: *Report) error{Failed}!void {
+    const count = "SELECT count(*) FROM pragma_foreign_key_check";
+    const violations = try pragma_integer(db, count, report);
+    if (violations == 0) return;
+    const named = "SELECT \"table\", rowid, parent FROM pragma_foreign_key_check LIMIT 3";
+    const rows = try prepare_own(db, named, report);
+    defer _ = c.sqlite3_finalize(rows);
+    var buffer: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buffer);
+    for (0..3) |_| {
+        if (c.sqlite3_step(rows) != c.row) break;
+        // A WITHOUT ROWID table's row has no rowid to name.
+        const said = if (c.sqlite3_column_type(rows, 1) == c.null_type)
+            w.print("; a row of {s} names no {s}", .{ column_text(rows, 0), column_text(rows, 2) })
+        else
+            w.print("; {s} row {d} names no {s}", .{
+                column_text(rows, 0), c.sqlite3_column_int64(rows, 1), column_text(rows, 2),
+            });
+        said catch break;
+    }
+    return report.fail(.failed, "migrating {s}: rows that would break a foreign key: {d}{s}", .{
+        path, violations, w.buffered(),
+    });
+}
+
+/// Outside a transaction only: inside one SQLite ignores the PRAGMA, and a
+/// rebuild would then cascade the old table's DROP into other tables.
+fn set_foreign_keys(db: *c.Db, on: bool, report: *Report) error{Failed}!void {
+    assert(c.sqlite3_get_autocommit(db) != 0);
+    const sql = if (on) "PRAGMA foreign_keys = ON" else "PRAGMA foreign_keys = OFF";
+    sqlite.exec(db, sql) catch return report.fail(.failed, "{s}: {s}", .{
+        sql, c.sqlite3_errmsg(db),
+    });
+    const value = try pragma_integer(db, "PRAGMA foreign_keys", report);
+    if (value != @intFromBool(on)) return report.fail(.failed, "{s}: {d}", .{ sql, value });
+}
+
+fn set_legacy_alter_table(db: *c.Db, on: bool, report: *Report) error{Failed}!void {
+    var readback: c_int = -1;
+    const value: c_int = @intFromBool(on);
+    const result = c.sqlite3_db_config(db, c.dbconfig_legacy_alter_table, value, &readback);
+    if (result != c.ok or readback != value) {
+        return report.fail(.failed, "legacy_alter_table: {d}, not {d}", .{ readback, value });
+    }
+}
+
+/// `schema`, by its policy, in the caller's transaction (a failure leaves
+/// part of it, for the caller to roll back).
 fn create_schema(db: *c.Db, schema: []const u8, report: *Report) error{Failed}!void {
-    sqlite.exec(db, "BEGIN IMMEDIATE") catch
-        return report.fail(.failed, "BEGIN: {s}", .{c.sqlite3_errmsg(db)});
     var verdict: authorizer.Verdict = .{ .policy = .schema };
     authorizer.install(db, &verdict);
+    defer authorizer.uninstall(db);
     sqlite.exec(db, schema) catch {
-        const refused = verdict.refused;
-        authorizer.uninstall(db);
-        sqlite.exec(db, "ROLLBACK") catch {};
-        if (refused) |action| {
+        if (verdict.refused) |action| {
             return report.fail(.failed, "schema.sql may not hold {s}", .{
                 authorizer.describe(action),
             });
         }
         return report.fail(.failed, "schema.sql: {s}", .{c.sqlite3_errmsg(db)});
     };
-    authorizer.uninstall(db);
-    sqlite.exec(db, "COMMIT") catch
-        return report.fail(.failed, "COMMIT: {s}", .{c.sqlite3_errmsg(db)});
 }
 
 /// `sqlite_schema` row by row: SQLite keeps each CREATE as it was written,
 /// so two databases made by the same `schema.sql` hold the same rows.
+/// SQLite's own are left out, as the listings leave them: a key's index
+/// follows from its CREATE; `sqlite_sequence` outlives the last
+/// AUTOINCREMENT, and ANALYZE (a `sqlite3` shell's) leaves `sqlite_stat1`.
+/// So is roux's `roux_ledger`, which schema.sql never makes.
 fn compare_schemas(
     db: *c.Db,
     expected: *c.Db,
@@ -759,18 +1172,19 @@ fn compare_schemas(
     report: *Report,
 ) error{Failed}!void {
     const sql = "SELECT type, name, tbl_name, coalesce(sql, '') FROM sqlite_schema " ++
-        "ORDER BY type, name";
+        "WHERE " ++ comptime Listing.own("name") ++ " ORDER BY type, name";
     const actual_rows = try prepare_own(db, sql, report);
     defer _ = c.sqlite3_finalize(actual_rows);
     const expected_rows = try prepare_own(expected, sql, report);
     defer _ = c.sqlite3_finalize(expected_rows);
-    for (0..schema_statements_max * 4) |_| {
+    for (0..schema_statements_max * 4 + 1) |index| {
         const actual_step = c.sqlite3_step(actual_rows);
         const expected_step = c.sqlite3_step(expected_rows);
         if (actual_step == c.done and expected_step == c.done) return;
         if (actual_step != c.row or expected_step != c.row) {
             return schema_differs(expected_rows, actual_rows, path, report);
         }
+        if (index == schema_statements_max * 4) break;
         for (0..4) |column| {
             const actual = column_text(actual_rows, @intCast(column));
             const wanted = column_text(expected_rows, @intCast(column));
@@ -778,13 +1192,12 @@ fn compare_schemas(
                 return schema_differs(expected_rows, actual_rows, path, report);
             }
         }
-    } else return report.fail(.failed, "more than {d} schema objects", .{
-        schema_statements_max * 4,
-    });
+    }
+    return report.fail(.failed, "more than {d} schema objects", .{schema_statements_max * 4});
 }
 
-/// What differs, and the way out: there are no migrations yet, so a new
-/// database (its rows go).
+/// What differs. The migration was planned for this very database, so
+/// after one this is the planner's mistake, and nothing was changed.
 fn schema_differs(
     expected: *c.Stmt,
     actual: *c.Stmt,
@@ -793,14 +1206,13 @@ fn schema_differs(
 ) error{Failed} {
     const expected_name = name_of_row(expected);
     const actual_name = name_of_row(actual);
-    const way_out = " There are no migrations yet: delete {s} (its rows go) and the app " ++
-        "makes it anew from schema.sql.";
     if (std.mem.eql(u8, expected_name, actual_name)) {
-        return report.fail(.failed, "{s} is not as schema.sql makes it: `{s}` differs." ++
-            way_out, .{ path, expected_name, path });
+        return report.fail(.failed, "{s} is not as schema.sql makes it: `{s}` differs", .{
+            path, expected_name,
+        });
     }
     return report.fail(.failed, "{s} is not as schema.sql makes it: `{s}` in schema.sql, " ++
-        "`{s}` in the database." ++ way_out, .{ path, expected_name, actual_name, path });
+        "`{s}` in the database", .{ path, expected_name, actual_name });
 }
 
 /// The `name` column of the row a schema listing is on, if any.
