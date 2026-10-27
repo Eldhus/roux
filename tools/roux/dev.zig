@@ -205,7 +205,8 @@ fn stop_on_signals() void {
 }
 
 /// Why roux dev's wait for an edit ended (`Watch.wait`).
-const Woken = enum { source, exited, stopping, gone };
+/// `missing`: a source changed, but the app's `.roc` is not there.
+const Woken = enum { source, exited, stopping, gone, missing };
 
 /// What inotify said since the last pass.
 const Pass = struct {
@@ -243,11 +244,19 @@ const State = struct {
 
     /// Until a source changes, the app's directory is deleted, or roux dev
     /// is asked to stop; the app exiting on its own is said, and waits for
-    /// an edit too, unless it asked to be started again.
+    /// an edit too, unless it asked to be started again. A change while the
+    /// app's `.roc` is missing waits for the next, said once.
     fn wait(state: *State, arena: Allocator, io: Io, watch: *Watch, stderr: *Io.Writer) !Woken {
+        var missing_said = false;
         while (true) {
             switch (try watch.wait(state.child_fd)) {
                 .source, .stopping, .gone => |woken| return woken,
+                .missing => if (!missing_said) {
+                    missing_said = true;
+                    stderr.print("roux dev: {s} is missing; the next build waits for it\n", .{
+                        state.options.app.file,
+                    }) catch {};
+                },
                 .exited => if (state.exited(io, stderr)) {
                     const paths: pipeline.Paths = try .of(arena, state.options.app);
                     state.restart(arena, io, paths) catch |err| {
@@ -1016,6 +1025,12 @@ const Watch = struct {
         }
         // Deleting the app's directory deletes its files first, a source.
         if (deleted(watch.io, watch.app_dir)) return .gone;
+        // No pass without the app's `.roc`: `rm -rf` deletes it before the
+        // directory, and may still be deleting a large subtree it does not
+        // watch; a pass then would make the build directory in a directory
+        // being deleted, and rm's last rmdir would fail. Such a pass could
+        // not build anyway.
+        watch.app_dir.access(watch.io, watch.options.app.file, .{}) catch return .missing;
         return .source;
     }
 
