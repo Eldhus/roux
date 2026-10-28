@@ -24,6 +24,15 @@ roux build main.roc   # the executable, beside it
 x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 
 
+### Templates
+
+A page is HTML with Mustache's tags in `templates/Page.rocstache`. The build checks it against the
+record it reads, its contract, and writes that as a Roc type in `templates/Page.roc`; the markup
+becomes bytecode attached to the executable. Under `roux dev` an edit to markup reaches the
+browser without a restart. The tags, contracts, partials and what is refused:
+[docs/templates.md](docs/templates.md).
+
+
 ### The database
 
 An app's database is SQL in `db/`, which `roux-db` checks and compiles as the app builds:
@@ -31,7 +40,8 @@ An app's database is SQL in `db/`, which `roux-db` checks and compiles as the ap
 - `schema.sql`: what the database is, its `CREATE` statements.
 - `ledger.sql`: what was changed by hand, in order: a rename, a drop, rows moved. Most apps need
   none for a long time.
-- every other `.sql`: the queries, each a typed Roc function.
+- every other `.sql`: the queries, each a typed Roc function, typed by SQLite itself
+  ([docs/queries.md](docs/queries.md)).
 
 When the app starts, before it serves, it brings its database to `schema.sql` in one
 transaction: first the steps of `ledger.sql` the database has not run (it records each), then what
