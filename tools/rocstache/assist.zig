@@ -199,8 +199,11 @@ fn fields(
     field: Field,
 ) Allocator.Error![]const Item {
     const blanked = try arena.dupe(u8, options.source);
-    // A tag that never closes has no tag after it: blank to the end.
-    @memset(blanked[span.start .. span.end orelse blanked.len], ' ');
+    // A tag that never closes has no tag after it: blank to the end. An
+    // opener retyped would leave its closing tag closing nothing: the whole
+    // section goes, which the opener's own path, outside it, never reads.
+    const end = parse.section_end(options.source, span) orelse span.end orelse blanked.len;
+    @memset(blanked[span.start..end], ' ');
     const result = try analysis.analyze(arena, io, .{
         .path = options.path,
         .source = blanked,
@@ -323,6 +326,9 @@ test "assist: completion offers the fields in scope, typed or not, closed or not
         .{ declared ++ "{{#items}}{{ ../$}}{{/items}}", "items title user" },
         .{ declared ++ "{{ user.$}}", "age name" },
         .{ declared ++ "{{#$}}", "items title user" },
+        // An existing section's opener retyped: its closing tag stays below.
+        .{ declared ++ "{{#it$}}{{ name }}{{/items}}", "items" },
+        .{ declared ++ "{{^ti$}}none{{/title}}", "title" },
         .{ declared ++ "<p>{{ t$", "title" }, // never closed
         .{ declared ++ "{{ title | up$}}", "upper" },
         .{ declared ++ "{{ items | $}}", "len plural upper lower url" },

@@ -180,6 +180,37 @@ pub fn tag_at(source: []const u8, offset: u32) ?Span {
     return null;
 }
 
+/// Where the section the tag `opener` opens ends: after the closing tag
+/// that pairs with it by nesting, tags found as `parse` finds them. Null
+/// when the tag opens no section, or nothing closes it. For the language
+/// server, where an opener being retyped no longer names its closing tag.
+pub fn section_end(source: []const u8, opener: Span) ?u32 {
+    const opener_end = opener.end orelse return null;
+    var diagnostic: Diagnostic = .{};
+    const found = bounds(source, opener.start, &diagnostic) catch return null;
+    assert(found.end == opener_end);
+    switch (found.inner[0]) {
+        '#', '^', '?' => {},
+        else => return null,
+    }
+    var depth: u32 = 1;
+    var at: usize = opener_end;
+    while (std.mem.indexOfPos(u8, source, at, "{{")) |start| {
+        const tag = bounds(source, start, &diagnostic) catch return null;
+        switch (tag.inner[0]) {
+            '#', '^', '?' => depth += 1,
+            '/' => {
+                depth -= 1;
+                if (depth == 0) return @intCast(tag.end);
+            },
+            else => {},
+        }
+        assert(tag.end > at);
+        at = tag.end;
+    }
+    return null;
+}
+
 /// The `{{% %}}` block, if the file starts with one: recorded, and the
 /// newline after it is part of it. Returns where the template's text begins.
 fn skip_block(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!usize {
@@ -542,6 +573,17 @@ test "parse: tag_at finds the tag around an offset as parse does, closed or not"
     try parse(source[0..38], &tree, &diagnostic);
     const name = tree.slice()[1].pipes[0].name;
     try testing.expectEqual(@as(usize, 26), @intFromPtr(name.ptr) - @intFromPtr(source.ptr));
+}
+
+test "parse: section_end pairs an opener with its closing tag by nesting, not by name" {
+    const source = "{{#it}}{{^b}}{{ x }}{{/b}}{{! }}{{/items}}{{ y }}{{#z";
+    const none: ?u32 = null;
+    // `{{/items}}` ends at 42, though `it` does not name it.
+    try testing.expectEqual(@as(?u32, 42), section_end(source, tag_at(source, 3).?));
+    try testing.expectEqual(@as(?u32, 26), section_end(source, tag_at(source, 10).?));
+    try testing.expectEqual(none, section_end(source, tag_at(source, 44).?)); // a value
+    try testing.expectEqual(none, section_end(source, tag_at(source, source.len).?)); // unclosed
+    try testing.expectEqual(none, section_end("{{#a}}{{ b }}", tag_at("{{#a}}", 3).?));
 }
 
 test "parse: a tag alone on its line takes the line with it" {
