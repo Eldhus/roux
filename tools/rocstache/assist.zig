@@ -29,8 +29,7 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
     const path = node.path_slice();
     for (path, 0..) |segment, k| {
         if (!within(self.source, segment, offset)) continue;
-        const target = analysis.lookup(contract, scopes.slice(), node.up, path[0 .. k + 1]) orelse
-            return null;
+        const target = analysis.lookup(contract, &scopes, path[0 .. k + 1]) orelse return null;
         return try typed(arena, contract, segment, target);
     }
     for (node.pipe_slice()) |pipe| {
@@ -40,8 +39,8 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
     if (node.kind == .fragment) return try fragment_text(arena, result, node);
     // A Roc expression is Roc's to describe.
     if (node.expression.len > 0) return null;
-    // Elsewhere in the tag (its braces, `#`, `../`): the whole path's type.
-    const target = analysis.lookup(contract, scopes.slice(), node.up, path) orelse return null;
+    // Elsewhere in the tag (its braces, `#`, its binder): the whole path's type.
+    const target = analysis.lookup(contract, &scopes, path) orelse return null;
     return try typed(arena, contract, node.text, target);
 }
 
@@ -77,7 +76,7 @@ fn formatter_text(formatter: parse.Formatter) []const u8 {
     };
 }
 
-/// A partial is copied in here and reads this scope.
+/// A partial is copied in here and reads the names in scope here.
 fn partial_text(
     arena: Allocator,
     result: analysis.Analysis,
@@ -85,8 +84,8 @@ fn partial_text(
 ) Allocator.Error![]const u8 {
     assert(node.kind == .partial);
     _ = result;
-    return arena.print("`{s}.rocstache`, copied in here: its tags read this scope, " ++
-        "and were checked against it.", .{node.text});
+    return arena.print("`{s}.rocstache`, copied in here: its tags read the names in " ++
+        "scope here, and were checked against them.", .{node.text});
 }
 
 /// A fragment: its module and what it takes when it renders alone.
@@ -146,10 +145,10 @@ const Wanted = union(enum) {
     template: []const u8,
 };
 
-/// A path being typed: `up` scopes out, through `path`, a field whose name
-/// begins with `prefix`.
+/// A path being typed: through `path`, a field whose name begins with
+/// `prefix`; with no path, a name in scope (a binder, or a field of the
+/// page's `Ctx`).
 const Field = struct {
-    up: u8 = 0,
     path: [parse.path_max][]const u8 = undefined,
     path_len: u8 = 0,
     prefix: []const u8 = "",
@@ -169,7 +168,11 @@ fn wanted(so_far: []const u8) ?Wanted {
             if (std.mem.indexOfAny(u8, inner, " \t") != null) return null;
             return .{ .template = inner };
         },
-        '#', '^', '?' => rest = std.mem.trimStart(u8, rest[1..], " \t"),
+        '#', '^', '?' => {
+            rest = std.mem.trimStart(u8, rest[1..], " \t");
+            // A binder (`|dish|`) is a new name, written by hand.
+            if (std.mem.indexOfScalar(u8, rest, '|') != null) return null;
+        },
         else => {},
     };
     if (std.mem.lastIndexOfScalar(u8, rest, '|')) |bar| {
@@ -180,17 +183,11 @@ fn wanted(so_far: []const u8) ?Wanted {
     return field_of(rest);
 }
 
-/// `../a.b.pre`: a path whose last segment is still being typed.
+/// `a.b.pre`: a path whose last segment is still being typed.
 fn field_of(written: []const u8) ?Wanted {
     var field: Field = .{};
-    var rest = written;
-    while (std.mem.startsWith(u8, rest, "../")) {
-        if (field.up == parse.depth_max) return null;
-        field.up += 1;
-        rest = rest[3..];
-    }
-    if (std.mem.indexOfAny(u8, rest, " \t") != null) return null; // past the path
-    var parts = std.mem.splitScalar(u8, rest, '.');
+    if (std.mem.indexOfAny(u8, written, " \t") != null) return null; // past the path
+    var parts = std.mem.splitScalar(u8, written, '.');
     var part = parts.first();
     while (parts.next()) |next| {
         if (!parse.is_field_name(part) or field.path_len == parse.path_max) return null;
@@ -226,9 +223,21 @@ fn fields(
     const contract = result.contract orelse return &.{};
     const scopes = analysis.scopes_at(contract, result.templates[0].tree, blanked, span.start);
     const path = field.path[0..field.path_len];
-    const record = analysis.lookup(contract, scopes.slice(), field.up, path) orelse return &.{};
-    if (contract.get(record).kind != .record) return &.{};
     var items: std.ArrayList(Item) = .empty;
+    // A bare name: the open sections' binders, then the page's fields.
+    if (path.len == 0) {
+        for (scopes.binder_slice(), scopes.slice()) |binder, type_| {
+            if (binder.len == 0 or !std.mem.startsWith(u8, binder, field.prefix)) continue;
+            var line: Io.Writer.Allocating = .init(arena);
+            contract_.write_line(contract, type_, &line.writer) catch return error.OutOfMemory;
+            try items.append(arena, .{ .label = binder, .kind = .field, .detail = line.written() });
+        }
+    }
+    const record = if (path.len == 0)
+        scopes.types[0]
+    else
+        analysis.lookup(contract, &scopes, path) orelse return items.items;
+    if (contract.get(record).kind != .record) return items.items;
     var iterator = contract.fields_of(record);
     while (iterator.next()) |f| {
         if (!std.mem.startsWith(u8, f.name, field.prefix)) continue;
@@ -336,12 +345,16 @@ test "assist: completion offers the fields in scope, typed or not, closed or not
         // Inferred from the other tags; the one typed is not a field.
         .{ "<p>{{ ti$}}</p>{{ title }}{{ body }}", "title" },
         .{ declared ++ "{{ $}}", "items title user" },
-        .{ declared ++ "{{#items}}{{ $}}{{/items}}", "name price" },
-        .{ declared ++ "{{#items}}{{ ../$}}{{/items}}", "items title user" },
+        // In a section: its binder, then the page's fields.
+        .{ declared ++ "{{#items |item|}}{{ $}}{{/items}}", "item items title user" },
+        .{ declared ++ "{{#items |item|}}{{ i$}}{{/items}}", "item items" },
+        .{ declared ++ "{{#items |item|}}{{ item.$}}{{/items}}", "name price" },
         .{ declared ++ "{{ user.$}}", "age name" },
         .{ declared ++ "{{#$}}", "items title user" },
+        // A binder is a new name, written by hand.
+        .{ declared ++ "{{#items |i$}}", "" },
         // An existing section's opener retyped: its closing tag stays below.
-        .{ declared ++ "{{#it$}}{{ name }}{{/items}}", "items" },
+        .{ declared ++ "{{#it$ |item|}}{{ item.name }}{{/items}}", "items" },
         .{ declared ++ "{{^ti$}}none{{/title}}", "title" },
         .{ declared ++ "<p>{{ t$", "title" }, // never closed
         .{ declared ++ "{{ title | up$}}", "upper" },
@@ -367,7 +380,7 @@ test "assist: completion offers the templates beside this one after `>`" {
     };
     try testing.expectEqualStrings("Tail Top", try labels(arena, "{{> T$}}", &buffers));
     // A partial takes no context, and a fragment's name is new: nothing.
-    const page = "{{#frame}}{{> Top fr$}}{{/frame}}{{#frame}}{{> Top}}{{/frame}}";
+    const page = "{{> Top fr$}}{{> Top}}";
     try testing.expectEqualStrings("", try labels(arena, page, &buffers));
     try testing.expectEqualStrings("", try labels(arena, "{{$Ro$}}x{{/Row}}", &buffers));
 }
@@ -378,12 +391,12 @@ test "assist: hover shows the segment's type, a formatter, a partial, a fragment
     const arena = arena_state.allocator();
     const top: analysis.Buffer = .{
         .path = "/app/templates/Top.rocstache",
-        .text = "<title>{{ title }}</title>",
+        .text = "<title>{{ frame.title }}</title>",
     };
     const page = "{{% Ctx : { frame : { title : Str }, n : List(Str), " ++
         "items : List({ id : U64, name : { first : Str } }) } %}}" ++
-        "{{#frame}}{{> Top}}{{/frame}}{{#items}}{{$Row}}{{ name.first | upper }}{{/Row}}" ++
-        "{{ ../n | len }}{{/items}}";
+        "{{> Top}}{{#items |item|}}{{$Row}}{{ item.name.first | upper }}{{/Row}}" ++
+        "{{ n | len }}{{/items}}";
     const result = try analysis.analyze(arena, testing.io, .{
         .path = "/app/templates/Page.rocstache",
         .source = page,
@@ -394,15 +407,19 @@ test "assist: hover shows the segment's type, a formatter, a partial, a fragment
             .on = "#items",
             .expected = "```roc\nitems : List({ id : U64, name : { first : Str } })\n```",
         },
+        // A binder is its element.
+        .{
+            .on = "item.name",
+            .expected = "```roc\nitem : { id : U64, name : { first : Str } }\n```",
+        },
         .{ .on = "name.first", .expected = "```roc\nname : { first : Str }\n```" },
         .{ .on = "first |", .expected = "```roc\nfirst : Str\n```" },
         .{ .on = "upper", .expected = "`upper`: the Str in upper case." },
-        .{ .on = "{{ ../n", .expected = "```roc\n../n : List(Str)\n```" },
-        .{ .on = "#frame", .expected = "```roc\nframe : { title : Str }\n```" },
+        .{ .on = "{{ n |", .expected = "```roc\nn : List(Str)\n```" },
         .{
             .on = "Top}}",
-            .expected = "`Top.rocstache`, copied in here: its tags read this scope, " ++
-                "and were checked against it.",
+            .expected = "`Top.rocstache`, copied in here: its tags read the names in " ++
+                "scope here, and were checked against them.",
         },
         .{
             .on = "$Row",

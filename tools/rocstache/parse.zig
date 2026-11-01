@@ -56,8 +56,10 @@ pub const Node = struct {
     /// The tag's bytes, braces included, or the text's: what the language
     /// server underlines, and finds under the cursor.
     length: u32 = 0,
-    /// How many `../` precede the path.
-    up: u8 = 0,
+    /// `section`: the name it gives its element (`{{#dishes |dish|}}`).
+    binder: []const u8 = "",
+    /// Its head is a section's binder, or a field of the page's `Ctx`
+    /// (`bound` finds which).
     path: [path_max][]const u8 = @splat(""),
     path_len: u8 = 0,
     escape: bool = true,
@@ -116,6 +118,43 @@ pub const Diagnostic = struct {
 };
 
 pub const Error = error{Invalid};
+
+/// Where a path's head leads: the open scope whose section names it, the
+/// rest of the path read from there; else a field of the outermost scope,
+/// the page's `Ctx`, the whole path read from it.
+pub const Bound = struct {
+    scope: usize,
+    path: []const []const u8,
+    /// The head is a binder (the scope's element), not a field.
+    named: bool,
+};
+
+/// `binders`: each open scope's, outermost first ("" for the page's).
+/// Binders shadow nothing (contract.zig refuses it), so the first found
+/// is the only one.
+pub fn bound(binders: []const []const u8, path: []const []const u8) Bound {
+    assert(binders.len > 0);
+    assert(path.len > 0);
+    var k = binders.len;
+    while (k > 0) {
+        k -= 1;
+        if (binders[k].len > 0 and std.mem.eql(u8, binders[k], path[0])) {
+            return .{ .scope = k, .path = path[1..], .named = true };
+        }
+    }
+    return .{ .scope = 0, .path = path, .named = false };
+}
+
+/// The binder of the scope a template's node stands in: its innermost
+/// section's, or "" at the template's top.
+pub fn binder_at(tree: *const Tree, index: u16) []const u8 {
+    assert(index < tree.len);
+    var binder: []const u8 = "";
+    for (tree.nodes[0..index]) |node| {
+        if (node.kind == .section and node.end > index) binder = node.binder;
+    }
+    return binder;
+}
 
 pub fn parse(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!void {
     if (source.len > source_bytes_max) return fail(diagnostic, 0, "the template is too large", "");
@@ -316,16 +355,15 @@ fn add_tag(
             if (open_len.* == depth_max) {
                 return fail(diagnostic, start, "sections nest too deep", rest);
             }
-            var node = try path_node(rest, start, diagnostic);
+            const bar = std.mem.indexOfScalar(u8, rest, '|') orelse rest.len;
+            var node = try path_node(std.mem.trimEnd(u8, rest[0..bar], " \t"), start, diagnostic);
             node.kind = switch (inner[0]) {
                 '#' => .section,
                 '^' => .inverted,
                 '?' => .conditional,
                 else => unreachable,
             };
-            if (node.kind == .conditional and node.path_len == 0) {
-                return fail(diagnostic, start, "`{{?}}` takes a Bool field, not `.`", rest);
-            }
+            node.binder = try binder_of(node.kind, rest[bar..], start, diagnostic, node.text);
             open[open_len.*] = tree.len;
             open_len.* += 1;
             try push(tree, node, diagnostic);
@@ -353,8 +391,41 @@ fn add_tag(
     }
 }
 
-/// `{{> Top}}`: Top reads the scope where it stands. It takes no context:
-/// a field becomes its scope by a section around it.
+/// A section's `|dish|`, Roc's way of naming a value: every `{{#}}` names
+/// its element, so a name reads one value wherever it stands. `{{^}}` and
+/// `{{?}}` open no scope, and name nothing.
+fn binder_of(
+    kind: Kind,
+    written: []const u8,
+    offset: usize,
+    diagnostic: *Diagnostic,
+    path: []const u8,
+) Error![]const u8 {
+    assert(written.len == 0 or written[0] == '|');
+    if (kind != .section) {
+        if (written.len == 0) return "";
+        const message = "opens no scope, so it names nothing: `{{^x}}`, `{{?x}}`";
+        return fail(diagnostic, offset, message, written);
+    }
+    if (written.len == 0) {
+        const message = "a section names its element, as `{{#dishes |dish|}}` does " ++
+            "(a Bool is `{{?flag}}`)";
+        return fail(diagnostic, offset, message, path);
+    }
+    const trimmed = std.mem.trim(u8, written, " \t");
+    const name = if (trimmed.len >= 2 and trimmed[trimmed.len - 1] == '|')
+        std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t")
+    else
+        return fail(diagnostic, offset, "a section's name is written `|dish|`", written);
+    if (!is_field_name(name)) {
+        return fail(diagnostic, offset, "is not a name for a value (like `dish`)", name);
+    }
+    if (is_keyword(name)) return fail(diagnostic, offset, "is a Roc keyword", name);
+    return name;
+}
+
+/// `{{> Top}}`: Top reads the names in scope where it stands, as if its
+/// text were written there.
 fn partial_node(
     tree: *const Tree,
     rest: []const u8,
@@ -368,8 +439,8 @@ fn partial_node(
     }
     const context = std.mem.trim(u8, rest[name_end..], " \t");
     if (context.len > 0) {
-        const message = "a partial reads the scope where it stands: " ++
-            "open the field first, `{{#field}}{{> Name}}{{/field}}`";
+        const message = "a partial takes no context: it reads the names in scope " ++
+            "where it stands (`{{#frames |frame|}}{{> Top}}{{/frames}}`, Top reading `frame`)";
         return fail(diagnostic, start, message, context);
     }
     return .{ .kind = .partial, .text = name, .offset = @intCast(start), .end = tree.len + 1 };
@@ -467,15 +538,18 @@ fn chain_valid(pipes: []const Pipe) bool {
 
 fn path_node(written: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Node {
     var node: Node = .{ .kind = .value, .text = written, .offset = @intCast(offset) };
-    var rest = written;
-    while (std.mem.startsWith(u8, rest, "../")) {
-        if (node.up == depth_max) return fail(diagnostic, offset, "climbs too far", written);
-        rest = rest[3..];
-        node.up += 1;
+    if (std.mem.startsWith(u8, written, "../")) {
+        const message = "`../` is gone: the names around a section stay in scope, " ++
+            "so write the one meant (`title`, `dish.name`)";
+        return fail(diagnostic, offset, message, written);
     }
-    if (rest.len == 0) return fail(diagnostic, offset, "a tag with no name", written);
-    if (std.mem.eql(u8, rest, ".")) return node;
-    var parts = std.mem.splitScalar(u8, rest, '.');
+    if (written.len == 0) return fail(diagnostic, offset, "a tag with no name", written);
+    if (std.mem.eql(u8, written, ".")) {
+        const message = "`.` is gone: read the element by the name its section gives it " ++
+            "(`{{#tags |tag|}}{{ tag }}{{/tags}}`)";
+        return fail(diagnostic, offset, message, written);
+    }
+    var parts = std.mem.splitScalar(u8, written, '.');
     while (parts.next()) |part| {
         if (node.path_len == path_max) return fail(diagnostic, offset, "a path too long", written);
         if (!is_field_name(part)) {
@@ -567,46 +641,72 @@ test "parse: sections nest, the block is recorded and skipped" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
     const source = "{{%\nCtx : { a : List({ b : { c : Str } }) }\n%}}\n" ++
-        "<p>{{#a}}{{ b.c | upper }}{{/a}}{{^a}}none{{/a}}</p>";
+        "<p>{{#a |x|}}{{ x.b.c | upper }}{{/a}}{{^a}}none{{/a}}</p>";
     try parse(source, &tree, &diagnostic);
     const n = tree.slice();
     try testing.expectEqual(@as(usize, 6), n.len);
     try testing.expectEqualStrings("\nCtx : { a : List({ b : { c : Str } }) }\n", tree.block);
     try testing.expectEqualStrings("<p>", n[0].text);
     try testing.expectEqual(Kind.section, n[1].kind);
+    try testing.expectEqualStrings("a", n[1].text);
+    try testing.expectEqualStrings("x", n[1].binder);
     try testing.expectEqual(@as(u16, 3), n[1].end);
-    try testing.expectEqualStrings("c", n[2].path_slice()[1]);
+    try testing.expectEqualStrings("c", n[2].path_slice()[2]);
+    try testing.expectEqualStrings("", n[3].binder);
     try testing.expectEqual(Formatter.upper, n[2].pipes[0].formatter);
     try testing.expectEqual(Kind.inverted, n[3].kind);
     try testing.expectEqual(@as(u16, 5), n[3].end);
 }
 
-test "parse: partials, conditionals, raw values, parents, arguments with spaces" {
+test "parse: partials, conditionals, raw values, binders, arguments with spaces" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
     const source = "{{> Top}}{{?home}}{{{ html }}}{{/home}}" ++
-        "{{#xs}}{{ ../n | plural \"a dish\" \"dishes\" }}" ++
-        "{{.}}{{/xs}}{{! note }}";
+        "{{#xs | x |}}{{ n | plural \"a dish\" \"dishes\" }}" ++
+        "{{#x.ys |y|}}{{ y }}{{/x.ys}}{{/xs}}{{! note }}";
     try parse(source, &tree, &diagnostic);
     const n = tree.slice();
-    try testing.expectEqual(@as(usize, 6), n.len);
+    try testing.expectEqual(@as(usize, 7), n.len);
     try testing.expectEqual(Kind.partial, n[0].kind);
     try testing.expectEqualStrings("Top", n[0].text);
     try testing.expectEqual(Kind.conditional, n[1].kind);
     try testing.expect(!n[2].escape);
-    try testing.expectEqual(@as(u8, 1), n[4].up);
+    try testing.expectEqualStrings("x", n[3].binder);
     try testing.expectEqualStrings("a dish", n[4].pipes[0].args[0]);
-    try testing.expectEqual(@as(u8, 0), n[5].path_len);
+    try testing.expectEqualStrings("x.ys", n[5].text);
+    // The scope each node stands in is named by its innermost section.
+    try testing.expectEqualStrings("", binder_at(&tree, 3));
+    try testing.expectEqualStrings("x", binder_at(&tree, 4));
+    try testing.expectEqualStrings("y", binder_at(&tree, 6));
+}
+
+test "parse: a path's head is the innermost binder of that name, else the page's field" {
+    const binders = [_][]const u8{ "", "dish", "side" };
+    const dish_name = [_][]const u8{ "dish", "name" };
+    const at_dish = bound(&binders, &dish_name);
+    try testing.expectEqual(@as(usize, 1), at_dish.scope);
+    try testing.expectEqual(@as(usize, 1), at_dish.path.len);
+    try testing.expect(at_dish.named);
+    const side = [_][]const u8{"side"};
+    const at_side = bound(&binders, &side);
+    try testing.expectEqual(@as(usize, 2), at_side.scope);
+    try testing.expectEqual(@as(usize, 0), at_side.path.len);
+    const title = [_][]const u8{ "title", "text" };
+    const at_title = bound(&binders, &title);
+    try testing.expectEqual(@as(usize, 0), at_title.scope);
+    try testing.expectEqual(@as(usize, 2), at_title.path.len);
+    try testing.expect(!at_title.named);
 }
 
 test "parse: a node's length spans its tag, braces included, or its text" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
-    const source = "<p>{{{ raw }}}{{#xs}}{{ . | upper }}{{/xs}}{{! c }}{{> Top}}" ++
+    const source = "<p>{{{ raw }}}{{#xs |x|}}{{ x | upper }}{{/xs}}{{! c }}{{> Top}}" ++
         "{{$Row}}r{{/Row}}</p>";
     try parse(source, &tree, &diagnostic);
     const expected = [_][]const u8{
-        "<p>", "{{{ raw }}}", "{{#xs}}", "{{ . | upper }}", "{{> Top}}", "{{$Row}}", "r", "</p>",
+        "<p>",       "{{{ raw }}}", "{{#xs |x|}}", "{{ x | upper }}",
+        "{{> Top}}", "{{$Row}}",    "r",           "</p>",
     };
     try testing.expectEqual(expected.len, tree.len);
     for (tree.slice(), expected) |node, written| {
@@ -621,7 +721,7 @@ test "parse: a node's length spans its tag, braces included, or its text" {
 test "parse: fragments nest, pair by name, and take their line" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
-    const source = "<ul>\n{{$ List }}\n{{#xs}}{{$Row}}<li>{{ . }}</li>{{/Row}}{{/xs}}\n" ++
+    const source = "<ul>\n{{$ List }}\n{{#xs |x|}}{{$Row}}<li>{{ x }}</li>{{/Row}}{{/xs}}\n" ++
         "{{/List}}\n</ul>";
     try parse(source, &tree, &diagnostic);
     const n = tree.slice();
@@ -672,7 +772,7 @@ test "parse: a tag alone on its line takes the line with it" {
     var diagnostic: Diagnostic = .{};
     // Standalone: `{{#a}}`, `  {{/a}}` (indented), `{{> Bottom}}` at the
     // end. Not: `{{ x }}` (a value), `<p>{{#b}}` (text before it).
-    const source = "{{#a}}\n<li>{{ x }}</li>\n  {{/a}}\n<p>{{#b}}y{{/b}}</p>\n{{> Bottom}}\n";
+    const source = "{{#a |i|}}\n<li>{{ x }}</li>\n  {{/a}}\n<p>{{?b}}y{{/b}}</p>\n{{> Bottom}}\n";
     try parse(source, &tree, &diagnostic);
     const n = tree.slice();
     try testing.expectEqualStrings("<li>", n[1].text);
@@ -685,8 +785,19 @@ test "parse: a tag alone on its line takes the line with it" {
 
 test "parse: each mistake says where and what" {
     const cases = [_]struct { source: []const u8, line: u32, subject: []const u8 }{
-        .{ .source = "a\n{{#x}}b", .line = 2, .subject = "x" },
-        .{ .source = "{{#x}}{{/y}}", .line = 1, .subject = "y" },
+        .{ .source = "a\n{{#x |i|}}b", .line = 2, .subject = "x" },
+        .{ .source = "{{#x |i|}}{{/y}}", .line = 1, .subject = "y" },
+        // Every section names its element; nothing else names anything.
+        .{ .source = "\n{{#xs}}{{/xs}}", .line = 2, .subject = "xs" },
+        .{ .source = "{{#xs |x}}{{/xs}}", .line = 1, .subject = "|x" },
+        .{ .source = "{{#xs |X|}}{{/xs}}", .line = 1, .subject = "X" },
+        .{ .source = "{{#xs |if|}}{{/xs}}", .line = 1, .subject = "if" },
+        .{ .source = "{{^xs |x|}}{{/xs}}", .line = 1, .subject = "|x|" },
+        .{ .source = "{{?on |x|}}{{/on}}", .line = 1, .subject = "|x|" },
+        // `../` and `.` are gone, each message saying what replaces it.
+        .{ .source = "{{#xs |x|}}\n{{ ../n }}{{/xs}}", .line = 2, .subject = "../n" },
+        .{ .source = "{{#xs |x|}}\n{{ . }}{{/xs}}", .line = 2, .subject = "." },
+        .{ .source = "{{?.}}{{/.}}", .line = 1, .subject = "." },
         .{ .source = "\n\n{{ x | bold }}", .line = 3, .subject = "bold" },
         .{ .source = "{{ [x] }}", .line = 1, .subject = "[" },
         .{ .source = "\n\n{{ a +\n [b] }}", .line = 4, .subject = "[" },

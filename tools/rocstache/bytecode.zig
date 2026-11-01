@@ -218,7 +218,10 @@ pub fn compile(
         .context = context,
     };
     var scopes: Scopes = .{};
-    scopes = scopes.push(template.root, if (template.contract) |c| c.root else no_contract);
+    // A fragment's scope keeps the name its section gave it.
+    const binder = if (template.fragment) |node| parse.binder_at(template.tree, node) else "";
+    const root_contract = if (template.contract) |c| c.root else no_contract;
+    scopes = scopes.push(template.root, root_contract, binder);
     if (template.fragment) |node| {
         const end = template.tree.nodes[node].end;
         try compiler.range(template.tree, node + 1, end, scopes, 0);
@@ -297,22 +300,30 @@ pub fn assemble(
 }
 
 /// The template's open scopes, innermost last: their types in the layouts,
-/// and in the contract, pushed where the contract's check pushes them.
+/// and in the contract, and their binders, pushed where the contract's
+/// check pushes them.
 const Scopes = struct {
     types: [capacity]u32 = undefined,
     contracts: [capacity]u16 = undefined,
+    binders: [capacity][]const u8 = undefined,
     len: u8 = 0,
 
     const layout_partials = contract_.partial_depth_max;
     const capacity = parse.depth_max * (layout_partials + 1) + 1;
 
-    fn push(scopes: Scopes, type_: u32, contract_type: u16) Scopes {
+    fn push(scopes: Scopes, type_: u32, contract_type: u16, binder: []const u8) Scopes {
         assert(scopes.len < capacity);
         var result = scopes;
         result.types[result.len] = type_;
         result.contracts[result.len] = contract_type;
+        result.binders[result.len] = binder;
         result.len += 1;
         return result;
+    }
+
+    /// Where a node's path leads, found as the contract's check finds it.
+    fn bound(scopes: *const Scopes, node: *const parse.Node) parse.Bound {
+        return parse.bound(scopes.binders[0..scopes.len], node.path_slice());
     }
 };
 
@@ -367,15 +378,16 @@ const Compiler = struct {
     const Target = struct { up: u8, offset: u32, type_: u32 };
 
     fn target(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!Target {
-        assert(node.up < scopes.len);
-        if (node.up > up_max) return compiler.fail(node, "reads more than 15 scopes up");
+        const found = scopes.bound(node);
+        const up = scopes.len - 1 - found.scope;
+        if (up > up_max) return compiler.fail(node, "reads more than 15 scopes up");
         var result: Target = .{
-            .up = node.up,
+            .up = @intCast(up),
             .offset = 0,
-            .type_ = scopes.types[scopes.len - 1 - node.up],
+            .type_ = scopes.types[found.scope],
         };
         const empty = "reads a scope that holds nothing";
-        for (node.path_slice()) |name| {
+        for (found.path) |name| {
             if (result.type_ == nothing) return compiler.fail(node, empty);
             const field = compiler.layouts.field(result.type_, name) orelse
                 return compiler.fail(node, "is not in the contract's layout (roc glue's)");
@@ -470,8 +482,8 @@ const Compiler = struct {
         const c = compiler.contract_target(node, scopes);
         const element = if (compiler.contract) |contract| contract.get(c).element else no_contract;
         const inner = switch (op) {
-            .list => scopes.push(type_.element, element),
-            .record, .when => scopes.push(t.type_, c),
+            .list => scopes.push(type_.element, element, node.binder),
+            .record, .when => scopes.push(t.type_, c, node.binder),
             else => scopes,
         };
         try compiler.range(tree, index + 1, node.end, inner, depth);
@@ -508,10 +520,10 @@ const Compiler = struct {
 
     /// Where a node's path leads in the contract: the check found it.
     fn contract_target(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) u16 {
-        assert(node.up < scopes.len);
         const contract = compiler.contract orelse return no_contract;
-        var at = scopes.contracts[scopes.len - 1 - node.up];
-        for (node.path_slice()) |name| at = contract.field(at, name).?;
+        const found = scopes.bound(node);
+        var at = scopes.contracts[found.scope];
+        for (found.path) |name| at = contract.field(at, name).?;
         return at;
     }
 
@@ -535,8 +547,10 @@ const Compiler = struct {
         var leaves: [hole_.reads_max]contract_.Leaf = undefined;
         const params = compiler.context.params;
         const contracts = scopes.contracts[0..scopes.len];
-        const count = contract_.of_hole(params, contract, contracts, &parsed, &leaves) catch
-            return compiler.fail(node, "reads more than its parameters can hold");
+        const binders = scopes.binders[0..scopes.len];
+        const count =
+            contract_.of_hole(params, contract, contracts, binders, &parsed, &leaves) catch
+                return compiler.fail(node, "reads more than its parameters can hold");
         const source = for (compiler.context.sources) |t| {
             if (t.tree == tree) break t.name;
         } else unreachable;
@@ -570,13 +584,17 @@ const Compiler = struct {
         var from_offset: u32 = 0;
         var into = tag.type;
         var into_offset: u32 = tag.payload_offset;
-        for (leaf_.read.path_slice()) |segment| {
-            const mine = compiler.layouts.field(from, segment) orelse
-                return compiler.fail(node, "is not in the contract's layout (roc glue's)");
+        for (leaf_.read.path_slice(), 0..) |segment, k| {
+            // A binder is the scope itself: the payload names it, the
+            // scope does not.
+            if (!(leaf_.named and k == 0)) {
+                const mine = compiler.layouts.field(from, segment) orelse
+                    return compiler.fail(node, "is not in the contract's layout (roc glue's)");
+                from_offset += mine.offset;
+                from = mine.type;
+            }
             const theirs = compiler.layouts.field(into, segment) orelse
                 return compiler.fail(node, "is not in the layout of the app's holes (roc glue's)");
-            from_offset += mine.offset;
-            from = mine.type;
             into_offset += theirs.offset;
             into = theirs.type;
         }

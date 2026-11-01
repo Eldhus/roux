@@ -2,10 +2,11 @@
 //!
 //! It is the template's declared `Ctx`, when its `{{% %}}` block has one;
 //! otherwise it is inferred from the tags: dotted paths are records, a
-//! section whose body reads its element is a list, one that does not is a
-//! Bool, `{{.}}` in a section makes a list of values, `len` makes a list,
-//! a value piped into `plural` is a `U64`, and every other value a `Str`.
-//! A partial (`{{> Top}}`) reads from the scope it is included in, so its
+//! section (`{{#dishes |dish|}}`) is a list of what its body reads of its
+//! binder, `{{^x}}` and `{{?x}}` alone make a Bool, `len` makes a list, a
+//! value piped into `plural` is a `U64`, and every other value a `Str`.
+//! A name is a section's binder or a field of the page's `Ctx`. A partial
+//! (`{{> Top}}`) reads the names in scope where it is included, so its
 //! fields are its includer's.
 //!
 //! Either way the template is then checked against the contract
@@ -76,23 +77,30 @@ pub const Error = error{Invalid};
 pub const Resolved = struct { scope: u8, type: u16 };
 
 /// A read a hole's parameters keep (none other covers it): the renderer
-/// copies its value, from the open scope at `scope`.
-pub const Leaf = struct { read: hole.Read, scope: u8 };
+/// copies its value, from the open scope at `scope`. `named`: its head is
+/// that scope's binder, so the path below it is read from the scope.
+pub const Leaf = struct { read: hole.Read, scope: u8, named: bool };
 
 pub const holes_max = 256;
 
 /// A distinct hole of a page, as its walk met it: the template whose text
-/// holds it, its node there, and the open scopes' types, from which its
-/// parameters are built again (`of_hole`). `key` names its Roc function.
+/// holds it, its node there, and the open scopes' types and binders, from
+/// which its parameters are built again (`of_hole`). `key` names its Roc
+/// function.
 pub const HoleSite = struct {
     key: u64,
     template: []const u8,
     node: u16,
     scopes: [parse.depth_max]u16,
+    binders: [parse.depth_max][]const u8,
     scopes_len: u8,
 
     pub fn scope_slice(site: *const HoleSite) []const u16 {
         return site.scopes[0..site.scopes_len];
+    }
+
+    pub fn binder_slice(site: *const HoleSite) []const []const u8 {
+        return site.binders[0..site.scopes_len];
     }
 };
 
@@ -103,15 +111,17 @@ var hole_buffer: Contract = undefined;
 /// the paths the expression reads below it, each read's value whole. A read
 /// another covers (a shorter path to it, or the same one earlier) is that
 /// one's. The reads kept are the leaves, which the renderer copies: their
-/// count is returned. `scopes` are the open scopes' types in `page`, where
-/// the check found each name in one of them.
+/// count is returned. `scopes` are the open scopes' types in `page`, and
+/// `binders` their names, where the check found each name.
 pub fn of_hole(
     into: *Contract,
     page: *const Contract,
     scopes: []const u16,
+    binders: []const []const u8,
     parsed: *const hole.Hole,
     leaves: *[hole.reads_max]Leaf,
 ) Error!u8 {
+    assert(scopes.len == binders.len);
     into.types_len = 0;
     into.fields_len = 0;
     into.declared = true;
@@ -126,13 +136,14 @@ pub fn of_hole(
     var count: u8 = 0;
     for (parsed.read_slice(), 0..) |*read, index| {
         if (covered(parsed, index)) continue;
-        const scope = nearest(page, scopes, read.path[0]).?;
-        leaves[count] = .{ .read = read.*, .scope = @intCast(scope) };
+        const found = parse.bound(binders, read.path_slice());
+        leaves[count] = .{ .read = read.*, .scope = @intCast(found.scope), .named = found.named };
         count += 1;
-        var from = scopes[scope];
+        var from = scopes[found.scope];
         var at = into.root;
         for (read.path_slice(), 1..) |segment, length| {
-            from = page.field(from, segment).?;
+            // A binder is the scope itself; a field is read below it.
+            if (!(found.named and length == 1)) from = page.field(from, segment).?;
             const last = length == read.path_len;
             if (into.field(at, segment)) |existing| {
                 // A shorter read would have covered this one.
@@ -164,17 +175,6 @@ fn covered(parsed: *const hole.Hole, index: usize) bool {
         if (starts) return true;
     }
     return false;
-}
-
-/// The innermost open scope whose record has the field `name`.
-fn nearest(page: *const Contract, scopes: []const u16, name: []const u8) ?usize {
-    var k = scopes.len;
-    while (k > 0) {
-        k -= 1;
-        const scope = page.get(scopes[k]);
-        if (scope.kind == .record and page.field(scopes[k], name) != null) return k;
-    }
-    return null;
 }
 
 /// A hole's name: its template, its expression as written and its
@@ -487,8 +487,7 @@ pub fn new_field(contract: *Contract, record: u16, name: []const u8, child: u16)
     return contract.add_field(record, name, child);
 }
 
-const above = "climbs above the template's context";
-const outside = "climbs out of its fragment, which renders alone with its own scope only";
+const outside = "reads outside its fragment, which renders alone with its own scope only";
 
 /// Names a fragment may not have: nested in its page's module, it would
 /// hide the page's `Ctx` or a type Roc's builtins expose (Builtin.roc of
@@ -509,6 +508,10 @@ const Walker = struct {
     floor: usize = 0,
     /// The fragments being checked, a bit each, whose reads are noted.
     active: u32 = 0,
+    /// Each open scope's binder, by its place on the stack: the walk sets
+    /// a section's as it opens it, so the first `scopes.len` are the open
+    /// scopes'. The page's own scope is unnamed: its fields are the names.
+    binders: [parse.depth_max + 1][]const u8 = @splat(""),
 
     fn fail(walker: *Walker, offset: u32, message: []const u8, subject: []const u8) Error {
         walker.diagnostic.* = .{
@@ -652,9 +655,18 @@ const Walker = struct {
     ) Error!void {
         const node = &template.tree.nodes[index];
         const target = try walker.reach(node, scopes);
+        if (node.kind == .inverted) {
+            // `{{^x}}` opens no scope: x is a Bool, unless a section makes
+            // it a list.
+            try walker.infer(template, index + 1, node.end, scopes, depth);
+            walker.template = template.name;
+            const type_ = &walker.contract.types[target];
+            if (type_.kind == .unknown) type_.kind = .bool;
+            return;
+        }
         if (scopes.len == parse.depth_max) return walker.fail_at(node, "sections nest too deep");
         const known = walker.contract.types[target];
-        // The element's scope: what the body reads decides list or Bool.
+        // The element's type: what the body reads of its binder.
         const element = if (known.kind == .list)
             known.element
         else
@@ -662,24 +674,27 @@ const Walker = struct {
         var inner: [parse.depth_max + 1]u16 = undefined;
         @memcpy(inner[0..scopes.len], scopes);
         inner[scopes.len] = element;
-        const body_scopes = if (node.kind == .section) inner[0 .. scopes.len + 1] else scopes;
-        try walker.infer(template, index + 1, node.end, body_scopes, depth);
+        walker.binders[scopes.len] = node.binder;
+        try walker.infer(template, index + 1, node.end, inner[0 .. scopes.len + 1], depth);
         walker.template = template.name;
-        const type_ = &walker.contract.types[target];
-        if (walker.contract.types[element].kind != .unknown) {
-            try walker.settle(target, .list, node);
-            type_.element = element;
-        } else if (type_.kind == .unknown) {
-            type_.kind = .bool;
-        }
+        try walker.settle(target, .list, node);
+        walker.contract.types[target].element = element;
+    }
+
+    /// Where a node's path leads: the open scope its head names, by its
+    /// place on the stack, and the path below it.
+    fn bound(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!parse.Bound {
+        assert(node.path_len > 0);
+        const found = parse.bound(walker.binders[0..scopes.len], node.path_slice());
+        if (found.scope < walker.floor) return walker.fail_at(node, outside);
+        return found;
     }
 
     /// The type a node's path names, creating fields as it goes.
     fn reach(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!u16 {
-        if (node.up >= scopes.len) return walker.fail_at(node, above);
-        if (scopes.len - 1 - node.up < walker.floor) return walker.fail_at(node, outside);
-        var at = scopes[scopes.len - 1 - node.up];
-        for (node.path_slice()) |name| {
+        const found = try walker.bound(node, scopes);
+        var at = scopes[found.scope];
+        for (found.path) |name| {
             try walker.settle(at, .record, node);
             at = walker.contract.field(at, name) orelse blk: {
                 const child = try walker.new(.unknown, node.offset);
@@ -699,8 +714,7 @@ const Walker = struct {
             return;
         }
         if (type_.kind == kind) return;
-        // A Bool section's scope is the element scope of nothing: a later
-        // read inside makes it a list (infer_section decides).
+        // `{{^x}}` took x for a Bool; a section over it makes it a list.
         if (type_.kind == .bool and kind == .list) {
             type_.kind = .list;
             return;
@@ -787,36 +801,52 @@ const Walker = struct {
         const node = &template.tree.nodes[index];
         const target = try walker.lookup(node, scopes);
         const type_ = walker.contract.get(target);
-        var inner: [parse.depth_max + 1]u16 = undefined;
-        @memcpy(inner[0..scopes.len], scopes);
-        const body_scopes = switch (type_.kind) {
-            // `{{#flag}}` opens a scope as a list does (the Bool itself, with
-            // no fields), so `../` counts the same whatever `flag` turns out
-            // to be; `{{?flag}}` is the one that keeps the scope.
-            .bool => blk: {
-                if (node.kind == .inverted) break :blk scopes;
-                inner[scopes.len] = target;
-                break :blk inner[0 .. scopes.len + 1];
-            },
-            .list => blk: {
-                if (node.kind == .inverted) break :blk scopes;
-                inner[scopes.len] = type_.element;
-                break :blk inner[0 .. scopes.len + 1];
-            },
-            .record => blk: {
-                if (node.kind == .inverted) {
-                    return walker.fail_at(node, "`{{^}}` takes a list or a Bool, not a record");
-                }
-                inner[scopes.len] = target;
-                break :blk inner[0 .. scopes.len + 1];
-            },
+        if (node.kind == .inverted) {
+            switch (type_.kind) {
+                .bool, .list => {},
+                else => return walker.fail_at(
+                    node,
+                    try walker.is_a(target, "`{{^}}` takes a list or a Bool"),
+                ),
+            }
+            try walker.check(template, index + 1, node.end, scopes, depth);
+            walker.template = template.name;
+            return;
+        }
+        assert(node.kind == .section);
+        const scope = switch (type_.kind) {
+            .list => type_.element,
+            .record => target,
+            .bool => return walker.fail_at(node, "is a Bool: `{{?x}}` takes it, and names nothing"),
             .unknown, .str, .int, .other => return walker.fail_at(
                 node,
-                try walker.is_a(target, "a section takes a list, a record or a Bool"),
+                try walker.is_a(target, "a section takes a list or a record"),
             ),
         };
-        try walker.check(template, index + 1, node.end, body_scopes, depth);
+        try walker.named(node, scopes);
+        var inner: [parse.depth_max + 1]u16 = undefined;
+        @memcpy(inner[0..scopes.len], scopes);
+        inner[scopes.len] = scope;
+        walker.binders[scopes.len] = node.binder;
+        try walker.check(template, index + 1, node.end, inner[0 .. scopes.len + 1], depth);
         walker.template = template.name;
+    }
+
+    /// A section's binder names one value: no other name in scope is the
+    /// same, an open section's or a field of the page's `Ctx`.
+    fn named(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
+        assert(node.binder.len > 0);
+        if (scopes.len == parse.depth_max) return walker.fail_at(node, "sections nest too deep");
+        for (walker.binders[1..scopes.len]) |binder| {
+            if (std.mem.eql(u8, binder, node.binder)) {
+                const message = "names its element as an open section does: one name, one value";
+                return walker.fail(node.offset, message, node.binder);
+            }
+        }
+        if (walker.contract.field(scopes[0], node.binder) != null) {
+            const message = "is a field of the page's `Ctx`: a section's name hides nothing";
+            return walker.fail(node.offset, message, node.binder);
+        }
     }
 
     /// A fragment: checked in place, and its scope noted, its contract
@@ -890,9 +920,9 @@ const Walker = struct {
     }
 
     /// An include in an inferred contract. A partial that declares its
-    /// `Ctx` gives the scope those types, where the includer's tags have
-    /// not said otherwise; one that does not adds its reads, as the
-    /// includer's own tags would.
+    /// `Ctx` gives the page's fields those types (its bare names are the
+    /// page's), where the includer's tags have not said otherwise; one that
+    /// does not adds its reads, as the includer's own tags would.
     fn infer_include(
         walker: *Walker,
         template: Template,
@@ -901,15 +931,14 @@ const Walker = struct {
         scopes: []const u16,
         depth: u8,
     ) Error!void {
-        const scope = scopes[scopes.len - 1];
         if (declares(included)) {
             const theirs = try declared_of(included, walker.diagnostic);
-            try walker.merge(theirs, theirs.root, scope, 0);
+            try walker.merge(theirs, theirs.root, scopes[0], 0);
             return;
         }
         walker.infer(included, 0, included.tree.len, scopes, depth + 1) catch {
             if (depth > 0) return error.Invalid;
-            return walker.misfit(template, node, scope);
+            return walker.misfit(template, node, scopes[scopes.len - 1]);
         };
         walker.template = template.name;
     }
@@ -1025,7 +1054,8 @@ const Walker = struct {
         const parsed = expression_of(node);
         for (parsed.read_slice()) |*read| _ = try walker.resolve(node, scopes, read);
         var leaves: [hole.reads_max]Leaf = undefined;
-        _ = try of_hole(&hole_buffer, walker.contract, scopes, &parsed, &leaves);
+        const binders = walker.binders[0..scopes.len];
+        _ = try of_hole(&hole_buffer, walker.contract, scopes, binders, &parsed, &leaves);
         const key = hole_key(walker.template, node.expression, &hole_buffer) catch
             return walker.fail(node.offset, "reads types too long to name", node.text);
         const contract = walker.contract;
@@ -1038,69 +1068,51 @@ const Walker = struct {
             .template = walker.template,
             .node = index,
             .scopes = undefined,
+            .binders = undefined,
             .scopes_len = @intCast(scopes.len),
         };
         @memcpy(site.scopes[0..scopes.len], scopes);
+        @memcpy(site.binders[0..scopes.len], binders);
         contract.holes[contract.holes_len] = site;
         contract.holes_len += 1;
     }
 
-    /// A free name and its path: the nearest open scope whose record has the
-    /// name (the only one: a name two open scopes have is refused), then
-    /// its fields. Noted as read, as a path's are, for the fragment around.
+    /// A free name and its path: the open section that names it, else the
+    /// page's `Ctx` (`parse.bound`), then its fields. Noted as read, as a
+    /// path's are, for the fragment around.
     pub fn resolve(
         walker: *Walker,
         node: *const parse.Node,
         scopes: []const u16,
         read: *const hole.Read,
     ) Error!Resolved {
-        const name = read.path[0];
-        var found: ?usize = null;
-        for (0..scopes.len) |k| {
-            const scope = walker.contract.get(scopes[k]);
-            if (scope.kind != .record or walker.contract.field(scopes[k], name) == null) continue;
-            if (found != null) {
-                return walker.fail(node.offset, "is a field of two open scopes: a hole's Roc " ++
-                    "reads the scope's fields by name, so one name a scope", name);
-            }
-            found = k;
-        }
-        const depth = found orelse
-            return walker.fail(node.offset, try walker.has(scopes[scopes.len - 1], absent), name);
-        if (depth < walker.floor) return walker.fail(node.offset, outside, name);
-        walker.note_read(depth, scopes[depth], read.path_slice());
-        var at = scopes[depth];
-        for (read.path_slice()) |segment| {
-            if (walker.contract.get(at).kind != .record) {
-                return walker.fail(node.offset, try walker.is_a(at, "has no fields"), segment);
-            }
-            at = walker.contract.field(at, segment) orelse return walker.fail(
-                node.offset,
-                try walker.has(at, "the contract has no such field here"),
-                segment,
-            );
-        }
-        return .{ .scope = @intCast(depth), .type = at };
+        const found = parse.bound(walker.binders[0..scopes.len], read.path_slice());
+        if (found.scope < walker.floor) return walker.fail(node.offset, outside, read.path[0]);
+        const at = try walker.walk(node.offset, scopes, found);
+        return .{ .scope = @intCast(found.scope), .type = at };
     }
 
-    const absent = "is not a field of any open scope";
-
     fn lookup(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!u16 {
-        if (node.up >= scopes.len) return walker.fail_at(node, above);
-        if (scopes.len - 1 - node.up < walker.floor) return walker.fail_at(node, outside);
-        var at = scopes[scopes.len - 1 - node.up];
+        return walker.walk(node.offset, scopes, try walker.bound(node, scopes));
+    }
+
+    /// The type a bound path names in the finished contract, its read
+    /// noted for the fragments around.
+    fn walk(walker: *Walker, offset: u32, scopes: []const u16, found: parse.Bound) Error!u16 {
+        var at = scopes[found.scope];
         if (walker.contract.get(at).kind == .record) {
-            walker.note_read(scopes.len - 1 - node.up, at, node.path_slice());
+            walker.note_read(found.scope, at, found.path);
         }
-        for (node.path_slice()) |name| {
+        for (found.path, 0..) |name, k| {
             if (walker.contract.get(at).kind != .record) {
-                return walker.fail(node.offset, try walker.is_a(at, "has no fields"), name);
+                return walker.fail(offset, try walker.is_a(at, "has no fields"), name);
             }
-            at = walker.contract.field(at, name) orelse return walker.fail(
-                node.offset,
-                try walker.has(at, "the contract has no such field here"),
-                name,
-            );
+            const message = if (k == 0 and !found.named)
+                "is neither a field of the page's `Ctx` nor a section's name"
+            else
+                "the contract has no such field here";
+            at = walker.contract.field(at, name) orelse
+                return walker.fail(offset, try walker.has(at, message), name);
         }
         return at;
     }
@@ -1161,16 +1173,23 @@ test "contract: inferred, every shape" {
     var buffer: [512]u8 = undefined;
     const cases = [_][2][]const u8{
         .{
-            "<table>{{#dishes}}<tr><td>{{ name }}</td><td>{{ price }}</td></tr>{{/dishes}}</table>",
+            "<table>{{#dishes |dish|}}<tr><td>{{ dish.name }}</td><td>{{ dish.price }}</td>" ++
+                "</tr>{{/dishes}}</table>",
             "{ dishes : List({ name : Str, price : Str }) }",
         },
         .{
             "<title>{{ title }}</title>{{ items | len | plural \"dish\" \"dishes\" }}" ++
-                "{{#items}}{{ name }}{{/items}}{{^items}}none{{/items}}" ++
-                "{{#admin}}<a>{{ ../user.name }}</a>{{/admin}}{{#tags}}{{.}}{{/tags}}" ++
-                "{{?home}}h{{/home}}{{ n | plural \"a\" \"b\" }}",
+                "{{#items |item|}}{{ item.name }}{{/items}}{{^items}}none{{/items}}" ++
+                "{{?admin}}<a>{{ user.name }}</a>{{/admin}}{{#tags |tag|}}{{ tag }}{{/tags}}" ++
+                "{{?home}}h{{/home}}{{ n | plural \"a\" \"b\" }}{{^off}}on{{/off}}",
             "{ admin : Bool, home : Bool, items : List({ name : Str }), n : U64, " ++
-                "tags : List(Str), title : Str, user : { name : Str } }",
+                "off : Bool, tags : List(Str), title : Str, user : { name : Str } }",
+        },
+        // Nested, the outer binder read inside; a binder never read.
+        .{
+            "{{#rows |row|}}{{#row.cells |cell|}}{{ row.id }}{{ cell }}{{/row.cells}}{{/rows}}" ++
+                "{{#xs |x|}}-{{/xs}}",
+            "{ rows : List({ cells : List(Str), id : Str }), xs : List(Str) }",
         },
         .{ "static", "{}" },
     };
@@ -1220,21 +1239,21 @@ const declared_line = "{ items : List({ id : U64, name : Str, price : U32 }), " 
 test "contract: an include fits where its partial's tags fit, as the copy will run" {
     var buffer: [1024]u8 = undefined;
     const fit = [_][2][]const u8{
-        .{ "{{#items}}{{> P}}{{/items}}", "{{ price }}" },
+        .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.price }}" },
         .{ "{{> P}}", "{{ title | upper }}" },
-        .{ "{{#meta}}{{> P}}{{/meta}}", "{{ n | plural \"a\" \"b\" }}" },
+        .{ "{{#meta |m|}}{{> P}}{{/meta}}", "{{ m.n | plural \"a\" \"b\" }}" },
         .{ "{{> P}}", "{{ tags | len }}" },
         .{ "{{> P}}", "{{ items | len }}" },
-        .{ "{{> P}}", "{{#on}}y{{/on}}" },
+        .{ "{{> P}}", "{{?on}}y{{/on}}" },
         .{ "{{> P}}", "{{ meta.label }}" },
         .{ "{{> P}}", "{{^items}}none{{/items}}" },
-        .{ "{{> P}}", "{{#meta}}{{ label }}{{/meta}}" },
-        .{ "{{> P}}", "{{#meta}}x{{/meta}}" },
-        .{ "{{#on}}{{> P}}{{/on}}", "<footer>hi</footer>" },
-        // One partial, two scopes: each copy for its own.
-        .{ "{{#items}}{{> P}}{{/items}}{{#meta}}{{> P}}{{/meta}}", "{{ ../title }}" },
-        // `n` a U32 at the root, a U64 in `meta`.
-        .{ "{{> P}}{{#meta}}{{> P}}{{/meta}}", "{{ n }}" },
+        .{ "{{> P}}", "{{#meta |m|}}{{ m.label }}{{/meta}}" },
+        .{ "{{> P}}", "{{#meta |m|}}x{{/meta}}" },
+        .{ "{{?on}}{{> P}}{{/on}}", "<footer>hi</footer>" },
+        // One partial, two scopes: the page's names stay in scope in both.
+        .{ "{{#items |item|}}{{> P}}{{/items}}{{#meta |m|}}{{> P}}{{/meta}}", "{{ title }}" },
+        // One name for two sections side by side: neither hides the other.
+        .{ "{{#items |x|}}{{> P}}{{/items}}{{#meta |x|}}{{> P}}{{/meta}}", "{{?on}}{{/on}}" },
     };
     for (fit) |case| {
         errdefer std.debug.print("case {s} / {s}\n", .{ case[0], case[1] });
@@ -1245,12 +1264,16 @@ test "contract: an include fits where its partial's tags fit, as the copy will r
     }
     const misfit = [_][3][]const u8{
         .{ "{{> P}}", "{{ n | upper }}", "`n` `upper`, `lower` and `url` take a Str" },
-        .{ "{{> P}}", "{{ missing }}", "`missing` the contract has no such field here" },
-        .{ "{{#items}}{{> P}}{{/items}}", "{{ nope }}", "`nope` the contract has no such" },
+        .{ "{{> P}}", "{{ missing }}", "`missing` is neither a field of the page's `Ctx`" },
+        .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.nope }}", "`nope` the contract has" },
         .{ "{{> P}}", "{{?items}}x{{/items}}", "`items` `{{?}}` takes a Bool" },
         .{ "{{> P}}", "{{ meta }}", "`meta` is a record" },
-        .{ "{{> P}}", "{{ ../x }}", "`../x` climbs above the template's context" },
-        .{ "{{#items}}{{> P}}{{/items}}{{> P}}", "{{ id }}", "`id` the contract has no such" },
+        // Where its includer does not bind the name it reads.
+        .{ "{{#items |item|}}{{> P}}{{/items}}{{> P}}", "{{ item.id }}", "`item` is neither" },
+        // The same name bound to another record.
+        .{ "{{#items |x|}}{{> P}}{{/items}}{{#meta |x|}}{{> P}}{{/meta}}", "{{ x.id }}", "`id`" },
+        // A partial's section may not hide its includer's names.
+        .{ "{{#items |item|}}{{> P}}{{/items}}", "{{#tags |item|}}{{/tags}}", "`item` names" },
     };
     for (misfit) |case| {
         errdefer std.debug.print("case {s} / {s}\n", .{ case[0], case[1] });
@@ -1268,10 +1291,10 @@ test "contract: an include fits where its partial's tags fit, as the copy will r
 test "contract: a misfit is said at the include, with the scope and the partial's line" {
     var buffer: [1024]u8 = undefined;
     // Through a partial: the include in the page, the line in the last one.
-    const page = declared_page ++ "{{#meta}}{{> P}}{{/meta}}";
+    const page = declared_page ++ "{{#meta |m|}}{{> P}}{{/meta}}";
     const result = try outcome(page, &.{
         .{ "P", "<b>\n{{> Q}}</b>" },
-        .{ "Q", "x {{ price }}" },
+        .{ "Q", "x {{ m.price }}" },
     }, &buffer);
     try testing.expectEqualStrings("Page `P` does not fit here: `price` the contract has no " ++
         "such field here (it has: label, n)\n" ++
@@ -1291,13 +1314,12 @@ test "contract: an inferred includer takes a declared partial's types" {
         "D",
         "{{% Ctx : { price : U32, tags : List(Str) } %}}{{ price }}{{ tags | len }}",
     };
+    // Its bare names are the page's fields, wherever it stands.
     const cases = [_][2][]const u8{
-        .{ "{{#items}}{{> D}}{{/items}}", "{ items : List({ price : U32, tags : List(Str) }) }" },
+        .{ "{{#items |item|}}{{> D}}{{/items}}", "{ items : List(Str), price : U32, " ++
+            "tags : List(Str) }" },
         // The page's own read came first: the copy prints a Str as well.
-        .{
-            "{{#items}}{{ price }}{{> D}}{{/items}}",
-            "{ items : List({ price : Str, tags : List(Str) }) }",
-        },
+        .{ "{{ price }}{{> D}}", "{ price : Str, tags : List(Str) }" },
     };
     for (cases) |case| {
         try testing.expectEqualStrings(case[1], try outcome(case[0], &.{d}, &buffer));
@@ -1306,41 +1328,43 @@ test "contract: an inferred includer takes a declared partial's types" {
 
 test "contract: a fragment's contract is the fields of its scope it reads" {
     var buffer: [1024]u8 = undefined;
-    const price = .{ "Price", "{{ price }}" };
+    const price = .{ "Price", "{{ item.price }}" };
     const cases = [_][2][]const u8{
         .{ "{{$Hello}}x{{/Hello}}", " | Hello: {}" },
         .{ "{{$Total}}{{ n }}{{/Total}}", " | Total: { n : U32 }" },
-        .{ "{{#items}}{{$Row}}{{ name }}{{/Row}}{{/items}}", " | Row: { name : Str }" },
+        .{ "{{#items |item|}}{{$Row}}{{ item.name }}{{/Row}}{{/items}}", " | Row: { name : Str }" },
         .{
-            "{{#items}}{{$Row}}{{ id }}{{ name }}{{ price }}{{/Row}}{{/items}}",
+            "{{#items |item|}}{{$Row}}{{ item.id }}{{ item.name }}{{ item.price }}{{/Row}}" ++
+                "{{/items}}",
             " | Row: { id : U64, name : Str, price : U32 }",
         },
-        .{ "{{#meta}}{{$M}}{{ label }}{{/M}}{{/meta}}", " | M: { label : Str }" },
+        .{ "{{#meta |m|}}{{$M}}{{ m.label }}{{/M}}{{/meta}}", " | M: { label : Str }" },
         // A field read comes whole.
         .{
-            "{{$Top}}{{#meta}}{{ n }}{{/meta}}{{/Top}}",
+            "{{$Top}}{{#meta |m|}}{{ m.n }}{{/meta}}{{/Top}}",
             " | Top: { meta : { label : Str, n : U64 } }",
         },
-        // `../` that stays inside the fragment.
+        // A page's name read in a section inside the fragment.
         .{
-            "{{$All}}{{#items}}{{ ../title }}{{/items}}{{/All}}",
+            "{{$All}}{{#items |item|}}{{ title }}{{/items}}{{/All}}",
             " | All: { items : List({ id : U64, name : Str, price : U32 }), title : Str }",
         },
         .{
-            "{{$Outer}}{{ title }}{{#items}}{{$Inner}}{{ id }}{{/Inner}}{{/items}}{{/Outer}}",
+            "{{$Outer}}{{ title }}{{#items |item|}}{{$Inner}}{{ item.id }}{{/Inner}}{{/items}}" ++
+                "{{/Outer}}",
             " | Outer: { items : List({ id : U64, name : Str, price : U32 }), title : Str }" ++
                 " | Inner: { id : U64 }",
         },
         // Through a partial.
         .{
-            "{{#items}}{{$Row}}{{ id }}{{> Price}}{{/Row}}{{/items}}",
+            "{{#items |item|}}{{$Row}}{{ item.id }}{{> Price}}{{/Row}}{{/items}}",
             " | Row: { id : U64, price : U32 }",
         },
         .{ "{{?on}}{{$X}}{{ title }}{{/X}}{{/on}}", " | X: { title : Str }" },
         .{ "{{^tags}}{{$X}}{{ title }}{{/X}}{{/tags}}", " | X: { title : Str }" },
         // Two in one scope, each its own.
         .{
-            "{{#items}}{{$A}}{{ id }}{{/A}}{{$B}}{{ name }}{{/B}}{{/items}}",
+            "{{#items |item|}}{{$A}}{{ item.id }}{{/A}}{{$B}}{{ item.name }}{{/B}}{{/items}}",
             " | A: { id : U64 } | B: { name : Str }",
         },
     };
@@ -1356,16 +1380,23 @@ test "contract: a fragment's contract is the fields of its scope it reads" {
 
 test "contract: a hole's Roc reads the fields of the open scopes, by name" {
     var buffer: [1024]u8 = undefined;
-    const price = .{ "Price", "{{ Fmt.kr(price) }}" };
+    const price = .{ "Price", "{{ Fmt.kr(item.price) }}" };
     const cases = [_][2][]const u8{
         .{ "{{ title.len().to_str() }}", "" },
-        .{ "{{#items}}{{ title.len().to_str() }}{{/items}}", "" },
-        .{ "{{#items}}{{$Row}}{{ Fmt.kr(price) }}{{/Row}}{{/items}}", " | Row: { price : U32 }" },
+        .{ "{{#items |item|}}{{ title.len().to_str() }}{{/items}}", "" },
         .{
-            "{{#items}}{{$Row}}{{ \"${name} (${id.to_str()})\" }}{{/Row}}{{/items}}",
+            "{{#items |item|}}{{$Row}}{{ Fmt.kr(item.price) }}{{/Row}}{{/items}}",
+            " | Row: { price : U32 }",
+        },
+        .{
+            "{{#items |item|}}{{$Row}}{{ \"${item.name} (${item.id.to_str()})\" }}{{/Row}}" ++
+                "{{/items}}",
             " | Row: { id : U64, name : Str }",
         },
-        .{ "{{#items}}{{$Row}}{{> Price}}{{/Row}}{{/items}}", " | Row: { price : U32 }" },
+        .{ "{{#items |item|}}{{$Row}}{{> Price}}{{/Row}}{{/items}}", " | Row: { price : U32 }" },
+        // The element whole.
+        .{ "{{#items |item|}}{{$Row}}{{ Fmt.show(item) }}{{/Row}}{{/items}}", " | Row: " ++
+            "{ id : U64, name : Str, price : U32 }" },
         .{ "{{$M}}{{ meta.label }}{{ Str.concat(meta.label, \"!\") }}{{/M}}", " | M: { meta : " ++
             "{ label : Str, n : U64 } }" },
     };
@@ -1378,13 +1409,22 @@ test "contract: a hole's Roc reads the fields of the open scopes, by name" {
         try testing.expectEqualStrings(expected, try outcome(page, &.{price}, &buffer));
     }
     const refusals = [_][2][]const u8{
-        .{ "{{#meta}}{{ n.to_str() }}{{/meta}}", "Page `n` is a field of two open scopes" },
-        .{ "{{ nope.to_str() }}", "Page `nope` is not a field of any open scope" },
+        // A name names one value: a binder hides no other name.
+        .{ "{{#items |title|}}{{/items}}", "Page `title` is a field of the page's `Ctx`" },
+        .{
+            "{{#items |x|}}{{#tags |x|}}{{/tags}}{{/items}}",
+            "Page `x` names its element as an open section does",
+        },
+        .{
+            "{{ nope.to_str() }}",
+            "Page `nope` is neither a field of the page's `Ctx` nor a section's name",
+        },
+        .{ "{{#items |item|}}{{/items}}{{ item.id.to_str() }}", "Page `item` is neither" },
         .{ "{{ title.x.to_str() }}", "Page `x` has no fields" },
         .{ "{{ meta.zip.to_str() }}", "Page `zip` the contract has no such field here" },
         .{
-            "{{#items}}{{$Row}}{{ title.len().to_str() }}{{/Row}}{{/items}}",
-            "Page `title` climbs out of its fragment",
+            "{{#items |item|}}{{$Row}}{{ title.len().to_str() }}{{/Row}}{{/items}}",
+            "Page `title` reads outside its fragment",
         },
     };
     for (refusals) |case| {
@@ -1420,7 +1460,8 @@ fn holes_text(page: []const u8, partial: []const u8, buffer: []u8) ![]const u8 {
         const tree = if (std.mem.eql(u8, site.template, "P")) &trees[1] else &trees[0];
         const parsed = expression_of(&tree.nodes[site.node]);
         var leaves: [hole.reads_max]Leaf = undefined;
-        _ = try of_hole(params, contract, site.scope_slice(), &parsed, &leaves);
+        const scopes = site.scope_slice();
+        _ = try of_hole(params, contract, scopes, site.binder_slice(), &parsed, &leaves);
         const expression = tree.nodes[site.node].expression;
         try testing.expectEqual(site.key, try hole_key(site.template, expression, params));
         try writer.print("{s}{s}: ", .{ if (k == 0) "" else ", ", site.template });
@@ -1435,9 +1476,9 @@ test "contract: each distinct hole is kept once, its parameters narrowed to what
         "m : { label : Str, n : U64 } } %}}";
     const cases = [_][3][]const u8{
         .{
-            "{{#a}}{{> P}}{{/a}}{{#b}}{{> P}}{{/b}}{{#a}}{{> P}}{{/a}}",
-            "{{ x.to_str() }}",
-            "P: { x : U32 }, P: { x : U64 }",
+            "{{#a |e|}}{{> P}}{{/a}}{{#b |e|}}{{> P}}{{/b}}{{#a |e|}}{{> P}}{{/a}}",
+            "{{ e.x.to_str() }}",
+            "P: { e : { x : U32 } }, P: { e : { x : U64 } }",
         },
         .{
             "{{ m.label.len().to_str() }}{{ m.label.len().to_str() }}",
@@ -1451,10 +1492,12 @@ test "contract: each distinct hole is kept once, its parameters narrowed to what
         },
         .{ "{{ Fmt.both(m.label, m) }}", "", "Page: { m : { label : Str, n : U64 } }" },
         .{
-            "{{#a}}{{ \"${x.to_str()}/${m.n.to_str()}\" }}{{/a}}",
+            "{{#a |e|}}{{ \"${e.x.to_str()}/${m.n.to_str()}\" }}{{/a}}",
             "",
-            "Page: { m : { n : U64 }, x : U32 }",
+            "Page: { e : { x : U32 }, m : { n : U64 } }",
         },
+        // A binder read whole covers its fields' reads.
+        .{ "{{#a |e|}}{{ Fmt.both(e.x, e) }}{{/a}}", "", "Page: { e : { x : U32 } }" },
         .{ "{{ \"static\" }}", "", "Page: {}" },
     };
     for (cases) |case| {
@@ -1470,9 +1513,9 @@ test "contract: an inferred template whose Roc reads the scope renders only incl
         .{ .source = "{{ Fmt.kr(price) }}", .alone = false },
         .{ .source = "{{% import Fmt %}}<b>{{ Fmt.kr(dish.price) }}</b>", .alone = false },
         .{ .source = "{{ \"static\" }}{{ title }}", .alone = true },
-        .{ .source = "{{#items}}{{> Price}}{{/items}}", .alone = false },
+        .{ .source = "{{#items |item|}}{{> Price}}{{/items}}", .alone = false },
     };
-    const price = "{{ Fmt.kr(price) }}";
+    const price = "{{ Fmt.kr(item.price) }}";
     for (cases) |case| {
         var trees: [2]parse.Tree = undefined;
         var d: parse.Diagnostic = .{};
@@ -1492,24 +1535,28 @@ test "contract: an inferred template whose Roc reads the scope renders only incl
 
 test "contract: a fragment's refusals" {
     var buffer: [1024]u8 = undefined;
-    const climbs = .{ "P", "{{ ../title }}" };
+    const reads_title = .{ "P", "{{ title }}" };
     const cases = [_][3][]const u8{
-        .{ "{{$Row}}a{{/Row}}{{#meta}}{{$Row}}b{{/Row}}{{/meta}}", "Row", "names a second" },
+        .{ "{{$Row}}a{{/Row}}{{#meta |m|}}{{$Row}}b{{/Row}}{{/meta}}", "Row", "names a second" },
         .{ "{{$Ctx}}x{{/Ctx}}", "Ctx", "is a name Roc's own types" },
         .{ "{{$Str}}x{{/Str}}", "Str", "is a name Roc's own types" },
         .{ "{{$Iter}}x{{/Iter}}", "Iter", "is a name Roc's own types" },
         .{ "{{$Page}}x{{/Page}}", "Page", "is its page's name" },
-        .{ "{{#tags}}{{$Row}}{{ . }}{{/Row}}{{/tags}}", "Row", "a fragment's scope is a record" },
-        .{ "{{#on}}{{$Row}}x{{/Row}}{{/on}}", "Row", "a fragment's scope is a record" },
-        .{ "{{#items}}{{$Row}}{{ ../title }}{{/Row}}{{/items}}", "../title", "climbs out" },
-        .{ "{{#items}}{{$Row}}{{> P}}{{/Row}}{{/items}}", "P", "does not fit here: " ++
-            "`../title` climbs out of its fragment" },
+        .{
+            "{{#tags |tag|}}{{$Row}}{{ tag }}{{/Row}}{{/tags}}",
+            "Row",
+            "a fragment's scope is a record",
+        },
+        .{ "{{#on |o|}}{{$Row}}x{{/Row}}{{/on}}", "on", "is a Bool: `{{?x}}` takes it" },
+        .{ "{{#items |item|}}{{$Row}}{{ title }}{{/Row}}{{/items}}", "title", "reads outside" },
+        .{ "{{#items |item|}}{{$Row}}{{> P}}{{/Row}}{{/items}}", "P", "does not fit here: " ++
+            "`title` reads outside its fragment" },
     };
     for (cases) |case| {
         errdefer std.debug.print("case {s}\n", .{case[0]});
         const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
         defer testing.allocator.free(page);
-        const result = try outcome(page, &.{climbs}, &buffer);
+        const result = try outcome(page, &.{reads_title}, &buffer);
         const expected = try std.fmt.allocPrint(testing.allocator, "Page `{s}` {s}", .{
             case[1], case[2],
         });
@@ -1517,7 +1564,8 @@ test "contract: a fragment's refusals" {
         try testing.expect(std.mem.startsWith(u8, result, expected));
     }
     // In an inferred page: refused, its types would be guesses.
-    const inferred = try outcome("{{#items}}{{$Row}}{{ id }}{{/Row}}{{/items}}", &.{}, &buffer);
+    const inferred_page = "{{#items |item|}}{{$Row}}{{ item.id }}{{/Row}}{{/items}}";
+    const inferred = try outcome(inferred_page, &.{}, &buffer);
     try testing.expect(std.mem.startsWith(u8, inferred, "Page `Row` is in a page with an " ++
         "inferred contract"));
     // More than a contract holds.
@@ -1536,7 +1584,7 @@ test "contract: a partial's fields are its includer's" {
     const line = try contract_line(
         "{{> Top}}<p>{{ body }}</p>{{> Bottom}}",
         &.{
-            .{ "Top", "<title>{{ title }}</title>{{#nav}}{{ label }}{{/nav}}" },
+            .{ "Top", "<title>{{ title }}</title>{{#nav |link|}}{{ link.label }}{{/nav}}" },
             .{ "Bottom", "</html>" },
         },
         &buffer,
@@ -1548,10 +1596,12 @@ test "contract: a partial's fields are its includer's" {
 test "contract: conflicts and mistakes name the tag" {
     const cases = [_]struct { source: []const u8, subject: []const u8 }{
         .{ .source = "{{ a }}{{ a.b }}", .subject = "a.b" },
-        .{ .source = "{{#xs}}{{ x }}{{/xs}}{{ xs }}", .subject = "xs" },
+        .{ .source = "{{#xs |x|}}{{ x.y }}{{/xs}}{{ xs }}", .subject = "xs" },
         .{ .source = "{{ n | upper }}{{ n | plural \"a\" \"b\" }}", .subject = "n" },
-        .{ .source = "{{?flag}}x{{/flag}}{{#flag}}{{ y }}{{/flag}}", .subject = "flag" },
-        .{ .source = "{{#a}}{{ ../../b }}{{/a}}", .subject = "../../b" },
+        .{ .source = "{{?flag}}x{{/flag}}{{#flag |f|}}{{ f.y }}{{/flag}}", .subject = "flag" },
+        // A binder hides nothing: not an open section's, nor a page's field.
+        .{ .source = "{{#xs |x|}}{{#x.ys |x|}}{{/x.ys}}{{/xs}}", .subject = "x" },
+        .{ .source = "{{ title }}{{#xs |title|}}{{/xs}}", .subject = "title" },
         .{ .source = "{{> Missing}}", .subject = "Missing" },
     };
     for (cases) |case| {

@@ -250,7 +250,7 @@ test "declared: the block's Ctx is the contract, with its docs" {
     var diagnostic: contract_.Diagnostic = .{};
     const source = "{{%\n# a note\n## The race's menu.\n## Prices are numbers.\nCtx : {\n" ++
         "\tdishes : List({ name : Str, price : U32 }),\n\tspare : F64,\n}\n%}}\n" ++
-        "<p>{{#dishes}}{{ price }}{{/dishes}}</p>";
+        "<p>{{#dishes |dish|}}{{ dish.price }}{{/dishes}}</p>";
     try testing.expectEqualStrings(
         "## The race's menu.\n## Prices are numbers.|" ++
             "{ dishes : List({ name : Str, price : U32 }), spare : F64 }",
@@ -289,7 +289,7 @@ test "declared: what the template reads is checked against it" {
     const cases = [_]struct { source: []const u8, subject: []const u8, line: u32 }{
         .{ .source = "{{% Ctx : { a : Str } %}}\n\n{{ b }}", .subject = "b", .line = 3 },
         .{ .source = "{{% Ctx : { a : F64 } %}}{{ a }}", .subject = "a", .line = 1 },
-        .{ .source = "{{% Ctx : { a : Str } %}}{{#a}}x{{/a}}", .subject = "a", .line = 1 },
+        .{ .source = "{{% Ctx : { a : Str } %}}{{#a |x|}}x{{/a}}", .subject = "a", .line = 1 },
         .{ .source = "{{%\nCtx : { a : View.Row }\n%}}", .subject = "View.Row", .line = 2 },
         .{ .source = "{{%\nimport fmt\n%}}", .subject = "fmt", .line = 2 },
         .{ .source = "{{%\nimport Fmt\nimport Fmt\n%}}", .subject = "Fmt", .line = 3 },

@@ -70,14 +70,19 @@ pub fn analyze(arena: Allocator, io: Io, options: Options) Allocator.Error!Analy
 
 /// The scopes in effect at a point of a checked template, outermost first:
 /// the contract's root, then each enclosing section's, by the check's rule
-/// (a list's element, a record or a Bool itself; `{{^}}` and `{{?}}` open
-/// none). What `../` climbs, and what a path starts from.
+/// (a list's element or a record itself, named by its binder; `{{^}}` and
+/// `{{?}}` open none). What a path's head names.
 pub const Scopes = struct {
     types: [parse.depth_max + 1]u16 = undefined,
+    binders: [parse.depth_max + 1][]const u8 = undefined,
     len: u8 = 0,
 
     pub fn slice(scopes: *const Scopes) []const u16 {
         return scopes.types[0..scopes.len];
+    }
+
+    pub fn binder_slice(scopes: *const Scopes) []const []const u8 {
+        return scopes.binders[0..scopes.len];
     }
 };
 
@@ -92,6 +97,7 @@ pub fn scopes_at(
     assert(offset <= source.len);
     var scopes: Scopes = .{};
     scopes.types[0] = contract.root;
+    scopes.binders[0] = "";
     scopes.len = 1;
     const nodes = tree.slice();
     var index: u16 = 0;
@@ -108,15 +114,15 @@ pub fn scopes_at(
         }
         // The point is in this section's body.
         if (node.kind == .section) {
-            const target = lookup(contract, scopes.slice(), node.up, node.path_slice()) orelse
-                break;
+            const target = lookup(contract, &scopes, node.path_slice()) orelse break;
             const type_ = contract.get(target);
             assert(scopes.len <= parse.depth_max);
             scopes.types[scopes.len] = switch (type_.kind) {
                 .list => type_.element,
-                .record, .bool => target,
-                .unknown, .str, .int, .other => break, // the check refuses it
+                .record => target,
+                .unknown, .str, .int, .bool, .other => break, // the check refuses it
             };
+            scopes.binders[scopes.len] = node.binder;
             scopes.len += 1;
         }
         index += 1;
@@ -125,18 +131,19 @@ pub fn scopes_at(
     return scopes;
 }
 
-/// The type a path names, `up` scopes out, in a finished contract; null
-/// where there is no such field, or a field of what is not a record.
+/// The type a path names in a finished contract, its head a binder or a
+/// field of the root (`parse.bound`); null where there is no such field,
+/// or a field of what is not a record.
 pub fn lookup(
     contract: *const contract_.Contract,
-    scopes: []const u16,
-    up: u8,
+    scopes: *const Scopes,
     path: []const []const u8,
 ) ?u16 {
     assert(scopes.len > 0);
-    if (up >= scopes.len) return null;
-    var at = scopes[scopes.len - 1 - up];
-    for (path) |name| {
+    if (path.len == 0) return null;
+    const found = parse.bound(scopes.binder_slice(), path);
+    var at = scopes.types[found.scope];
+    for (found.path) |name| {
         if (contract.get(at).kind != .record) return null;
         at = contract.field(at, name) orelse return null;
     }
@@ -402,7 +409,7 @@ test "analysis: a sound template has its contract, its partials from buffers" {
         .path = "/app/templates/Top.rocstache",
         .text = "<title>{{ title }}</title>",
     };
-    const page = "{{#frame}}{{> Top}}{{/frame}}{{#items}}{{ name }}{{/items}}";
+    const page = "{{> Top}}{{#items |item|}}{{ item.name }}{{/items}}";
     try testing.expectEqual(@as(?Problem, null), try problem_with(arena, page, &.{top}));
 }
 
@@ -419,7 +426,7 @@ test "analysis: a mistake is underlined where it is, or on the tag reaching it" 
     try testing.expectEqual(@as(u32, 3), open.offset);
     try testing.expectEqualStrings("a tag that never closes", open.message);
     // A partial that does not parse: the include's tag, the partial's line.
-    const unclosed: Buffer = .{ .path = "/app/templates/Top.rocstache", .text = "\n{{#a}}" };
+    const unclosed: Buffer = .{ .path = "/app/templates/Top.rocstache", .text = "\n{{#a |x|}}" };
     const includer = "x\n{{> Top}}";
     const broken = (try problem_with(arena, includer, &.{unclosed})).?;
     try testing.expectEqualStrings("{{> Top}}", includer[broken.offset..][0..broken.length]);
@@ -429,13 +436,13 @@ test "analysis: a mistake is underlined where it is, or on the tag reaching it" 
     const cases = [_]struct { page: []const u8, top: []const u8, message: []const u8 }{
         .{
             .page = "{{ a }}{{> Top}}",
-            .top = "{{#a}}{{ b }}{{/a}}",
+            .top = "{{#a |x|}}{{ x.b }}{{/a}}",
             .message = "does not fit here: `a` is a Str elsewhere, and a list here",
         },
         .{
-            .page = "{{> Top}}",
-            .top = "{{ ../x }}",
-            .message = "does not fit here: `../x` climbs above the template's context",
+            .page = "{{% Ctx : { a : Str } %}}{{> Top}}",
+            .top = "{{ x }}",
+            .message = "does not fit here: `x` is neither a field of the page's `Ctx`",
         },
     };
     for (cases) |case| {
@@ -482,31 +489,38 @@ test "analysis: the scopes at a point follow the sections around it" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const page = "{{ t }}{{#xs}}A{{#on}}B{{/on}}{{^ys}}C{{/ys}}{{?f}}D{{/f}}{{/xs}}E";
+    const page = "{{ t }}{{#xs |x|}}A{{#x.on |o|}}B{{ o }}{{/x.on}}{{^x.ys}}C{{/x.ys}}" ++
+        "{{?x.f}}D{{/x.f}}{{/xs}}E";
     const path = "/app/templates/Page.rocstache";
     const options: Options = .{ .path = path, .source = page, .buffers = &.{} };
     const analysis = try analyze(arena, testing.io, options);
     const contract = analysis.contract.?;
     const tree = analysis.templates[0].tree;
-    const element = "{ f : Bool, on : Bool, ys : Bool }";
-    const cases = [_]struct { at: u8, innermost: []const u8, depth: u8 }{
-        .{ .at = 'A', .innermost = element, .depth = 2 },
-        .{ .at = 'B', .innermost = "Bool", .depth = 3 },
-        .{ .at = 'C', .innermost = element, .depth = 2 },
-        .{ .at = 'D', .innermost = element, .depth = 2 },
-        .{ .at = 'E', .innermost = "{ t : Str, xs : List(" ++ element ++ ") }", .depth = 1 },
+    const element = "{ f : Bool, on : List(Str), ys : Bool }";
+    const cases = [_]struct { at: u8, innermost: []const u8, depth: u8, binder: []const u8 }{
+        .{ .at = 'A', .innermost = element, .depth = 2, .binder = "x" },
+        .{ .at = 'B', .innermost = "Str", .depth = 3, .binder = "o" },
+        .{ .at = 'C', .innermost = element, .depth = 2, .binder = "x" },
+        .{ .at = 'D', .innermost = element, .depth = 2, .binder = "x" },
+        .{
+            .at = 'E',
+            .innermost = "{ t : Str, xs : List(" ++ element ++ ") }",
+            .depth = 1,
+            .binder = "",
+        },
     };
     for (cases) |case| {
         const offset: u32 = @intCast(std.mem.indexOfScalar(u8, page, case.at).?);
         const scopes = scopes_at(contract, tree, page, offset);
         try testing.expectEqual(case.depth, scopes.len);
+        try testing.expectEqualStrings(case.binder, scopes.binder_slice()[scopes.len - 1]);
         var buffer: [128]u8 = undefined;
         var writer: Io.Writer = .fixed(&buffer);
         try contract_.write_line(contract, scopes.slice()[scopes.len - 1], &writer);
         try testing.expectEqualStrings(case.innermost, writer.buffered());
     }
     // A section's own tag is read in the scopes outside it.
-    const tag: u32 = @intCast(std.mem.indexOf(u8, page, "{{#on}}").? + 3);
+    const tag: u32 = @intCast(std.mem.indexOf(u8, page, "{{#x.on").? + 3);
     try testing.expectEqual(@as(u8, 2), scopes_at(contract, tree, page, tag).len);
 }
 

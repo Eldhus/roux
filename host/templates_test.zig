@@ -174,7 +174,6 @@ const Scope = union(enum) {
     item: *const Item,
     tag: *const Tag,
     meta: *const Meta,
-    flag,
 };
 
 const Value = union(enum) {
@@ -209,7 +208,6 @@ fn lookup(scope: Scope, name: []const u8) ?Value {
             if (eql(u8, name, "label")) return .{ .str = m.label.asSlice() };
             if (eql(u8, name, "n")) return .{ .number = m.n };
         },
-        .flag => {},
     }
     return null;
 }
@@ -218,10 +216,14 @@ const Oracle = struct {
     out: std.ArrayList(u8) = .empty,
     arena: std.mem.Allocator,
     sources: []const Source,
+    /// Each open scope's binder: the section's `|x1|`, the page's "".
+    binders: [16][]const u8 = @splat(""),
 
-    fn resolve(scopes: []const Scope, node: *const parse.Node) Value {
-        var scope = scopes[scopes.len - 1 - node.up];
-        const path = node.path_slice();
+    fn resolve(o: *const Oracle, scopes: []const Scope, node: *const parse.Node) Value {
+        const bound = parse.bound(o.binders[0..scopes.len], node.path_slice());
+        var scope = scopes[bound.scope];
+        const path = bound.path;
+        assert(path.len > 0); // the generator reads no element whole
         for (path, 0..) |name, k| {
             const found = lookup(scope, name).?;
             if (k == path.len - 1) return found;
@@ -244,10 +246,10 @@ const Oracle = struct {
             const node = &tree.nodes[i];
             switch (node.kind) {
                 .text => try o.out.appendSlice(o.arena, node.text),
-                .value => try o.value(node, resolve(scopes, node)),
+                .value => try o.value(node, o.resolve(scopes, node)),
                 .section => try o.section(tree, i, scopes),
                 .inverted, .conditional => {
-                    const enter = switch (resolve(scopes, node)) {
+                    const enter = switch (o.resolve(scopes, node)) {
                         .flag => |f| if (node.kind == .conditional) f else !f,
                         .items => |l| l.len == 0,
                         .tags => |l| l.len == 0,
@@ -265,7 +267,9 @@ const Oracle = struct {
         const node = &tree.nodes[i];
         const inner = try o.arena.alloc(Scope, scopes.len + 1);
         @memcpy(inner[0..scopes.len], scopes);
-        switch (resolve(scopes, node)) {
+        const value_ = o.resolve(scopes, node);
+        o.binders[scopes.len] = node.binder;
+        switch (value_) {
             .items => |list| for (list) |*item| {
                 inner[scopes.len] = .{ .item = item };
                 try o.walk(tree, i + 1, node.end, inner);
@@ -278,10 +282,6 @@ const Oracle = struct {
                 inner[scopes.len] = .{ .meta = m };
                 try o.walk(tree, i + 1, node.end, inner);
             },
-            .flag => |f| if (f) {
-                inner[scopes.len] = .flag;
-                try o.walk(tree, i + 1, node.end, inner);
-            },
             else => unreachable,
         }
     }
@@ -290,10 +290,7 @@ const Oracle = struct {
         const source = for (o.sources) |s| {
             if (std.mem.eql(u8, s.name, node.text)) break s;
         } else unreachable;
-        if (!node.called()) return o.walk(source.tree, 0, source.tree.len, scopes);
-        // Called: its own scopes, the field's record its only one.
-        const own = [_]Scope{.{ .meta = resolve(scopes, node).meta }};
-        try o.walk(source.tree, 0, source.tree.len, &own);
+        try o.walk(source.tree, 0, source.tree.len, scopes);
     }
 
     fn value(o: *Oracle, node: *const parse.Node, v: Value) !void {
@@ -361,7 +358,9 @@ const Oracle = struct {
 const Source = struct { name: []const u8, root: u32, tree: *const parse.Tree };
 
 /// What a scope of the generator holds, to pick reads that type-check.
-const Kind = enum { ctx, item, tag, meta, flag };
+/// The scope at depth `k` is named `x<k>` by its section; the page's
+/// fields are bare.
+const Kind = enum { ctx, item, tag, meta };
 
 const Generator = struct {
     random: *Prng,
@@ -393,31 +392,23 @@ const Generator = struct {
         try g.out.appendSlice(g.arena, texts[g.random.int_less_than(usize, texts.len)]);
     }
 
-    /// `../` enough to reach a scope of a kind that has fields.
-    fn up_to(g: *Generator, kinds: []const Kind, len: usize) ?usize {
-        var tries: u32 = 0;
-        while (tries < 8) : (tries += 1) {
-            const up = g.random.int_less_than(usize, len);
-            if (kinds[len - 1 - up] != .flag) return up;
-        }
-        return null;
-    }
-
-    fn prefix(g: *Generator, up: usize) !void {
-        for (0..up) |_| try g.out.appendSlice(g.arena, "../");
+    /// How a read of the scope at depth `k` starts: its binder, or nothing
+    /// for the page's fields.
+    fn prefix(g: *Generator, k: usize) !void {
+        if (k > 0) try g.out.print(g.arena, "x{d}.", .{k});
     }
 
     fn read(g: *Generator, kinds: *[8]Kind, len: usize) !void {
-        const up = g.up_to(kinds, len) orelse return;
+        const k = g.random.int_less_than(usize, len);
         const open = if (g.random.boolean()) "{{ " else "{{{ ";
         const close = if (open.len == 3) " }}" else " }}}";
         try g.out.appendSlice(g.arena, open);
-        try g.prefix(up);
+        try g.prefix(k);
         const strs = [_][]const u8{ "", " | upper", " | lower", " | url" };
         const pipe = strs[g.random.int_less_than(usize, strs.len)];
         const plural = " | plural \"dish\" \"<dishes>\"";
         const choice = g.random.int_less_than(u32, 3);
-        try g.out.appendSlice(g.arena, switch (kinds[len - 1 - up]) {
+        try g.out.appendSlice(g.arena, switch (kinds[k]) {
             .ctx => switch (choice) {
                 0 => try std.fmt.allocPrint(g.arena, "title{s}", .{pipe}),
                 1 => if (g.random.boolean()) "delta" else "count" ++ plural,
@@ -430,20 +421,17 @@ const Generator = struct {
             },
             .tag => "label",
             .meta => if (choice == 0) "n" else "label",
-            .flag => unreachable,
         });
         try g.out.appendSlice(g.arena, close);
     }
 
     fn section(g: *Generator, kinds: *[8]Kind, len: usize) !void {
-        const up = g.up_to(kinds, len) orelse return;
-        const at = kinds[len - 1 - up];
+        const k = g.random.int_less_than(usize, len);
         const Choice = struct { tag: []const u8, name: []const u8, opens: ?Kind };
-        const choices: []const Choice = switch (at) {
+        const choices: []const Choice = switch (kinds[k]) {
             .ctx => &.{
                 .{ .tag = "#", .name = "items", .opens = .item },
                 .{ .tag = "^", .name = "items", .opens = null },
-                .{ .tag = "#", .name = "open", .opens = .flag },
                 .{ .tag = "^", .name = "open", .opens = null },
                 .{ .tag = "?", .name = "open", .opens = null },
                 .{ .tag = "#", .name = "meta", .opens = .meta },
@@ -453,32 +441,27 @@ const Generator = struct {
                 .{ .tag = "?", .name = "hot", .opens = null },
                 .{ .tag = "^", .name = "tags", .opens = null },
             },
-            // Badge inlined where its fields are this scope's.
-            .meta => return if (up == 0 and g.random.boolean())
-                g.out.appendSlice(g.arena, "{{> Badge}}")
-            else
-                g.read(kinds, len),
-            .tag => return g.read(kinds, len),
-            .flag => unreachable,
+            .meta, .tag => return g.read(kinds, len),
         };
-        var ups: std.ArrayList(u8) = .empty;
-        for (0..up) |_| try ups.appendSlice(g.arena, "../");
-        if (at == .ctx and g.random.int_less_than(u32, 4) == 0) {
-            // Badge over `meta`: its scope opened first by a section.
-            const badge = "{{{{#{0s}meta}}}}{{{{> Badge}}}}{{{{/{0s}meta}}}}";
-            return g.out.print(g.arena, badge, .{ups.items});
+        if (kinds[k] == .ctx and g.random.int_less_than(u32, 4) == 0) {
+            // Badge reads `badge`: the name its includer gives `meta`.
+            return g.out.appendSlice(g.arena, "{{#meta |badge|}}{{> Badge}}{{/meta}}");
         }
         const c = choices[g.random.int_less_than(usize, choices.len)];
-        const path = try std.fmt.allocPrint(g.arena, "{s}{s}", .{ ups.items, c.name });
-        try g.out.print(g.arena, "{{{{{s}{s}}}}}", .{ c.tag, path });
+        var path: std.ArrayList(u8) = .empty;
+        if (k > 0) try path.print(g.arena, "x{d}.", .{k});
+        try path.appendSlice(g.arena, c.name);
+        try g.out.print(g.arena, "{{{{{s}{s}", .{ c.tag, path.items });
+        if (c.opens != null) try g.out.print(g.arena, " |x{d}|", .{len});
+        try g.out.appendSlice(g.arena, "}}");
         var inner = kinds.*;
         var inner_len = len;
-        if (c.opens) |k| {
-            inner[len] = k;
+        if (c.opens) |opened| {
+            inner[len] = opened;
             inner_len += 1;
         }
         try g.body(&inner, inner_len);
-        try g.out.print(g.arena, "{{{{/{s}}}}}", .{path});
+        try g.out.print(g.arena, "{{{{/{s}}}}}", .{path.items});
     }
 };
 
@@ -532,10 +515,20 @@ export fn roc_hole_for_host(boxed: abi.RocBox) callconv(.c) abi.RocStr {
 }
 
 /// The compile's context for templates over layouts made by hand: each
-/// template's source, by name, for its includes; no holes of Roc.
-fn context_of(arena: std.mem.Allocator, compiled: []const bytecode.Template) !bytecode.Context {
-    const sources = try arena.alloc(rocstache.contract.Template, compiled.len);
-    for (compiled, sources) |c, *s| s.* = .{ .name = c.name, .source = "", .tree = c.tree };
+/// template's source, by name, for its includes (`partials`, which read
+/// their includer's names, are never compiled alone); no holes of Roc.
+fn context_of(
+    arena: std.mem.Allocator,
+    compiled: []const bytecode.Template,
+    partials: []const Source,
+) !bytecode.Context {
+    const sources = try arena.alloc(rocstache.contract.Template, compiled.len + partials.len);
+    for (compiled, sources[0..compiled.len]) |c, *s| {
+        s.* = .{ .name = c.name, .source = "", .tree = c.tree };
+    }
+    for (partials, sources[compiled.len..]) |p, *s| {
+        s.* = .{ .name = p.name, .source = "", .tree = p.tree };
+    }
     return .{
         .sources = sources,
         .holes = null,
@@ -548,18 +541,16 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
     const random = &prng;
     var generator: Generator = .{ .random = random, .arena = arena };
     const page = try generator.template();
+    const partials = [_]Source{
+        .{ .name = "Badge", .root = T.meta, .tree = try parsed(arena, badge_source) },
+    };
     const sources = [_]Source{
-        .{
-            .name = "Badge",
-            .root = T.meta,
-            .tree = try parsed(arena, "<b>{{ label }}={{ n }}</b>"),
-        },
         .{ .name = "Page", .root = T.ctx, .tree = try parsed(arena, page) },
     };
     try accepted(arena, seed, page);
     var compiled: [sources.len]bytecode.Template = undefined;
     for (sources, &compiled) |s, *c| c.* = .{ .name = s.name, .tree = s.tree, .root = s.root };
-    const context = try context_of(arena, &compiled);
+    const context = try context_of(arena, &compiled, &partials);
     var chunks: [sources.len]bytecode.Chunk = undefined;
     for (&chunks, 0..) |*chunk, index| {
         var diagnostic: bytecode.Diagnostic = .{};
@@ -571,12 +562,9 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
             return err;
         };
     }
-    // Rendered as an app's value is: a union whose tag says template 1, its
+    // Rendered as an app's value is: a union whose tag says template 0, its
     // payload the record at the union's start, the discriminant after it.
-    const tags = [_]bytecode.Tag{
-        .{ .discriminant = 0, .payload_offset = 0 },
-        .{ .discriminant = 1, .payload_offset = 0 },
-    };
+    const tags = [_]bytecode.Tag{.{ .discriminant = 0, .payload_offset = 0 }};
     const program = try bytecode.assemble(arena, &chunks, .{
         .discriminant_offset = @offsetOf(Template, "tag"),
         .discriminant_size = 1,
@@ -593,11 +581,11 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
     for (0..4) |_| {
         const ctx = try random_ctx(random, arena);
         const value = try arena.create(Template);
-        value.* = .{ .ctx = ctx.*, .tag = 1 };
+        value.* = .{ .ctx = ctx.*, .tag = 0 };
         const got = templates.render_union(data, layouts_id, @ptrCast(value), host);
-        var oracle: Oracle = .{ .arena = arena, .sources = &sources };
+        var oracle: Oracle = .{ .arena = arena, .sources = &partials };
         const scopes = [_]Scope{.{ .ctx = ctx }};
-        try oracle.walk(sources[1].tree, 0, sources[1].tree.len, &scopes);
+        try oracle.walk(sources[0].tree, 0, sources[0].tree.len, &scopes);
         testing.expectEqualStrings(oracle.out.items, got.items()) catch |err| {
             std.debug.print("seed {d}, the template:\n{s}\n", .{ seed, page });
             return err;
@@ -607,6 +595,10 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
     return runs;
 }
 
+/// The partial the generated pages include, over `meta`, which its
+/// includer names `badge`.
+const badge_source = "<b>{{ badge.label }}={{ badge.n }}</b>";
+
 /// The checker accepts what the VM runs: the page, its `Ctx` declared as
 /// the layouts lay it, and Badge included where it stands.
 fn accepted(arena: std.mem.Allocator, seed: u64, page: []const u8) !void {
@@ -615,10 +607,9 @@ fn accepted(arena: std.mem.Allocator, seed: u64, page: []const u8) !void {
         "tags : List({ label : Str }), price : U32, hot : Bool }), " ++
         "meta : { label : Str, n : U32 }, delta : I64, count : U32, open : Bool } %}}";
     const declared = try std.mem.concat(arena, u8, &.{ block, page });
-    const badge = "<b>{{ label }}={{ n }}</b>";
     const sources = [_]contract.Template{
         .{ .name = "Page", .source = declared, .tree = try parsed(arena, declared) },
-        .{ .name = "Badge", .source = badge, .tree = try parsed(arena, badge) },
+        .{ .name = "Badge", .source = badge_source, .tree = try parsed(arena, badge_source) },
     };
     const checked = try arena.create(contract.Contract);
     var diagnostic: contract.Diagnostic = .{};
@@ -657,9 +648,10 @@ test "fragments: alone, the bytes they render in place" {
 fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void {
     var prng: Prng = .init(seed);
     const page = "<h1>{{ title }}</h1>{{$Head}}<p>{{ note | upper }} " ++
-        "{{ count | plural \"a\" \"b\" }}{{#meta}}{{$M}}[{{ label }}={{ n }}]{{/M}}{{/meta}}" ++
-        "</p>{{/Head}}<ul>\n{{#items}}\n  {{$Row}}<li>{{ name }} {{ price }}" ++
-        "{{#tags}}<i>{{ label }}</i>{{/tags}}{{> Hot}}</li>{{/Row}}\n{{/items}}\n</ul>";
+        "{{ count | plural \"a\" \"b\" }}{{#meta |m|}}{{$M}}[{{ m.label }}={{ m.n }}]{{/M}}" ++
+        "{{/meta}}</p>{{/Head}}<ul>\n{{#items |item|}}\n  {{$Row}}<li>{{ item.name }} " ++
+        "{{ item.price }}{{#item.tags |tag|}}<i>{{ tag.label }}</i>{{/item.tags}}{{> Hot}}" ++
+        "</li>{{/Row}}\n{{/items}}\n</ul>";
     const tree = try parsed(arena, page);
     var fragments: [3]u16 = undefined;
     var found: usize = 0;
@@ -669,13 +661,14 @@ fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void
     };
     try testing.expectEqual(@as(usize, 3), found);
     const compiled = [_]bytecode.Template{
-        .{ .name = "Hot", .tree = try parsed(arena, "{{?hot}}!{{/hot}}"), .root = T.item },
         .{ .name = "Page", .tree = tree, .root = T.ctx },
         .{ .name = "PageHead", .tree = tree, .root = T.ctx, .fragment = fragments[0] },
         .{ .name = "PageM", .tree = tree, .root = T.meta, .fragment = fragments[1] },
         .{ .name = "PageRow", .tree = tree, .root = T.item, .fragment = fragments[2] },
     };
-    const context = try context_of(arena, &compiled);
+    const hot = try parsed(arena, "{{?item.hot}}!{{/item.hot}}");
+    const partials = [_]Source{.{ .name = "Hot", .root = T.item, .tree = hot }};
+    const context = try context_of(arena, &compiled, &partials);
     var chunks: [compiled.len]bytecode.Chunk = undefined;
     for (&chunks, 0..) |*chunk, index| {
         var diagnostic: bytecode.Diagnostic = .{};
@@ -696,14 +689,14 @@ fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void
         .layouts = layouts_id,
     };
     const ctx = try random_ctx(&prng, arena);
-    const whole = render_as(data, host, std.mem.asBytes(ctx), 1);
+    const whole = render_as(data, host, std.mem.asBytes(ctx), 0);
     var at: usize = 0;
-    const head = render_as(data, host, std.mem.asBytes(ctx), 2);
+    const head = render_as(data, host, std.mem.asBytes(ctx), 1);
     at = (std.mem.indexOfPos(u8, whole, at, head) orelse return error.HeadNotInPage) + head.len;
-    const m = render_as(data, host, std.mem.asBytes(&ctx.meta), 3);
+    const m = render_as(data, host, std.mem.asBytes(&ctx.meta), 2);
     try testing.expect(std.mem.indexOf(u8, head, m) != null);
     for (items_of(ctx.items)) |*item| {
-        const row = render_as(data, host, std.mem.asBytes(item), 4);
+        const row = render_as(data, host, std.mem.asBytes(item), 3);
         at = (std.mem.indexOfPos(u8, whole, at, row) orelse return error.RowNotInPage) + row.len;
     }
 }

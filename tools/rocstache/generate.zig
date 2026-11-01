@@ -624,7 +624,9 @@ fn holes_of(
             const node = &template.tree.nodes[site.node];
             const parsed = contract_.expression_of(node);
             var leaves: [hole_.reads_max]contract_.Leaf = undefined;
-            _ = try contract_.of_hole(params, u.contract, site.scope_slice(), &parsed, &leaves);
+            const scopes = site.scope_slice();
+            const binders = site.binder_slice();
+            _ = try contract_.of_hole(params, u.contract, scopes, binders, &parsed, &leaves);
             var line: Io.Writer.Allocating = .init(gpa);
             try contract_.write_line(params, params.root, &line.writer);
             var names: std.ArrayList([]const u8) = .empty;

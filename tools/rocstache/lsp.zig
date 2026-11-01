@@ -504,7 +504,7 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
             "\"text\":\"{{ a }}\\n{{> Top}}\"}}}",
         \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":
         ++ "{\"uri\":\"" ++ top ++ "\",\"languageId\":\"rocstache\",\"version\":1," ++
-            "\"text\":\"{{#a}}{{ b }}{{/a}}\"}}}",
+            "\"text\":\"{{#a |x|}}{{ x.b }}{{/a}}\"}}}",
         \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":
         ++ "{\"uri\":\"" ++ top ++ "\",\"version\":2},\"contentChanges\":" ++
             "[{\"text\":\"{{ a }}\"}]}}",
