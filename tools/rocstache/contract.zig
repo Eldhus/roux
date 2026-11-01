@@ -889,11 +889,13 @@ const Walker = struct {
         scope: u16,
     ) Error!void {
         const contract = walker.contract;
-        // Rendered alone, a fragment's fields are typed by a handler: an
-        // inferred page would give it `Str` where an integer was meant.
-        if (!contract.declared) {
-            return walker.fail_at(node, "is in a page with an inferred contract: " ++
-                "a fragment renders alone, so its page declares `{{% Ctx : ... %}}`");
+        // A fragment renders alone, as its page does: inferred or declared,
+        // its `Ctx` is in the page's module, so a handler that passes
+        // another type is Roc's error. A page that renders only included
+        // (its Roc reads fields typed by its includer) has no types to give.
+        if (!contract.alone) {
+            return walker.fail_at(node, "is in a page that renders only included " ++
+                "(its Roc reads fields it does not declare): declare `{{% Ctx : ... %}}`");
         }
         if (contract.get(scope).kind != .record) {
             const message = "a fragment's scope is a record (open a list's elements or a record)";
@@ -1563,11 +1565,18 @@ test "contract: a fragment's refusals" {
         defer testing.allocator.free(expected);
         try testing.expect(std.mem.startsWith(u8, result, expected));
     }
-    // In an inferred page: refused, its types would be guesses.
-    const inferred_page = "{{#items |item|}}{{$Row}}{{ item.id }}{{/Row}}{{/items}}";
+    // In an inferred page, a fragment's `Ctx` is what its tags infer.
+    const inferred_page = "{{#items |item|}}{{$Row}}{{ item.id }}{{ title }}{{/Row}}{{/items}}";
     const inferred = try outcome(inferred_page, &.{}, &buffer);
-    try testing.expect(std.mem.startsWith(u8, inferred, "Page `Row` is in a page with an " ++
-        "inferred contract"));
+    try testing.expectEqualStrings("Page `title` reads outside its fragment", inferred[0..39]);
+    const inferred_row = try outcome("{{#items |item|}}{{$Row}}{{ item.id }}{{?item.on}}" ++
+        "x{{/item.on}}{{/Row}}{{/items}}", &.{}, &buffer);
+    try testing.expectEqualStrings("{ items : List({ id : Str, on : Bool }) } | Row: " ++
+        "{ id : Str, on : Bool }", inferred_row);
+    // In a page that renders only included: refused, its reads are untyped.
+    const included_only = try outcome("{{$Row}}{{ Fmt.kr(price) }}{{/Row}}", &.{}, &buffer);
+    try testing.expect(std.mem.startsWith(u8, included_only, "Page `Row` is in a page that " ++
+        "renders only included"));
     // More than a contract holds.
     var source: std.Io.Writer.Allocating = .init(testing.allocator);
     defer source.deinit();
