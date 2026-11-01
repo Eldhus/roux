@@ -38,6 +38,8 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
     }
     if (node.kind == .partial) return try partial_text(arena, result, node);
     if (node.kind == .fragment) return try fragment_text(arena, result, node);
+    // A Roc expression is Roc's to describe.
+    if (node.expression.len > 0) return null;
     // Elsewhere in the tag (its braces, `#`, `../`): the whole path's type.
     const target = analysis.lookup(contract, scopes.slice(), node.up, path) orelse return null;
     return try typed(arena, contract, node.text, target);

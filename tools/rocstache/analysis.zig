@@ -453,11 +453,11 @@ test "analysis: a partial through another is reported on the first tag" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const middle: Buffer = .{ .path = "/app/templates/Middle.rocstache", .text = "{{> Bottom}}" };
-    const bottom: Buffer = .{ .path = "/app/templates/Bottom.rocstache", .text = "{{ X }}" };
+    const bottom: Buffer = .{ .path = "/app/templates/Bottom.rocstache", .text = "{{ [x] }}" };
     const page = "<p>{{> Middle}}</p>";
     const problem = (try problem_with(arena, page, &.{ middle, bottom })).?;
     try testing.expectEqualStrings("{{> Middle}}", page[problem.offset..][0..problem.length]);
-    try testing.expect(std.mem.startsWith(u8, problem.message, "in Bottom.rocstache:1:1:"));
+    try testing.expect(std.mem.startsWith(u8, problem.message, "in Bottom.rocstache:1:4:"));
 }
 
 test "analysis: a partial is read from its file, a missing one named at its tag" {

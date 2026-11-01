@@ -15,6 +15,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const parse = @import("parse.zig");
+const hole = @import("hole.zig");
 
 pub const types_max = 1024;
 pub const fields_max = 2048;
@@ -70,6 +71,18 @@ pub const Diagnostic = struct {
 
 pub const Error = error{Invalid};
 
+/// Where a hole's free name and its path lead: the open scope it is a field
+/// of, by its place on the stack, and the path's type.
+pub const Resolved = struct { scope: u8, type: u16 };
+
+/// A value node's Roc expression, parsed again: parse.zig checked it.
+pub fn expression_of(node: *const parse.Node) hole.Hole {
+    assert(node.kind == .value);
+    assert(node.expression.len > 0);
+    var refused: parse.Diagnostic = .{};
+    return hole.of(node.expression, &refused) catch unreachable;
+}
+
 /// Types and fields in fixed arrays: a contract is small, and bounded.
 pub const Contract = struct {
     types: [types_max]Type = undefined,
@@ -78,6 +91,10 @@ pub const Contract = struct {
     fields_len: u16 = 0,
     root: u16 = none,
     declared: bool = false,
+    /// Whether it renders alone. Not when inferred and a Roc expression in
+    /// it (or in a partial it includes) reads the scope: those reads are
+    /// typed only where it is included, by the includer's contract.
+    alone: bool = true,
     /// The `##` lines above a declared `Ctx`.
     docs: []const u8 = "",
     fragments: [fragments_max]Fragment = undefined,
@@ -161,6 +178,7 @@ pub fn of(
     contract.fields_len = 0;
     contract.root = none;
     contract.declared = false;
+    contract.alone = true;
     contract.docs = "";
     contract.fragments_len = 0;
     contract.imports_len = 0;
@@ -191,6 +209,7 @@ pub fn of_fragment(contract: *Contract, page: *const Contract, k: u5) Error!void
     contract.types_len = 0;
     contract.fields_len = 0;
     contract.declared = page.declared;
+    contract.alone = true;
     contract.docs = "";
     contract.fragments_len = 0;
     contract.imports_len = 0;
@@ -223,6 +242,7 @@ fn declared_of(included: Template, diagnostic: *Diagnostic) Error!*const Contrac
     contract.types_len = 0;
     contract.fields_len = 0;
     contract.declared = false;
+    contract.alone = true;
     contract.docs = "";
     contract.fragments_len = 0;
     contract.imports_len = 0;
@@ -474,6 +494,12 @@ const Walker = struct {
     }
 
     fn infer_value(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
+        if (node.expression.len > 0) {
+            // Its reads' types are not the tags': the template renders only
+            // where it is included, its reads typed there.
+            if (expression_of(node).reads_len > 0) walker.contract.alone = false;
+            return;
+        }
         const target = try walker.reach(node, scopes);
         const pipes = node.pipe_slice();
         const kind: Kind = if (pipes.len == 0) .str else switch (pipes[0].formatter) {
@@ -585,7 +611,11 @@ const Walker = struct {
             const node = &template.tree.nodes[i];
             switch (node.kind) {
                 .text => {},
-                .value => try walker.check_value(node, try walker.lookup(node, scopes)),
+                .value => if (node.expression.len == 0) {
+                    try walker.check_value(node, try walker.lookup(node, scopes));
+                } else if (walker.contract.alone) {
+                    try walker.check_expression(node, scopes);
+                },
                 .conditional => {
                     const target = try walker.lookup(node, scopes);
                     if (walker.contract.get(target).kind != .bool) {
@@ -855,6 +885,53 @@ const Walker = struct {
     }
 
     /// The type a node's path names in the finished contract.
+    /// Each free name of a Roc expression, found where `resolve` finds it.
+    fn check_expression(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
+        assert(walker.contract.alone);
+        const parsed = expression_of(node);
+        for (parsed.read_slice()) |*read| _ = try walker.resolve(node, scopes, read);
+    }
+
+    /// A free name and its path: the nearest open scope whose record has the
+    /// name (the only one: a name two open scopes have is refused), then
+    /// its fields. Noted as read, as a path's are, for the fragment around.
+    pub fn resolve(
+        walker: *Walker,
+        node: *const parse.Node,
+        scopes: []const u16,
+        read: *const hole.Read,
+    ) Error!Resolved {
+        const name = read.path[0];
+        var found: ?usize = null;
+        for (0..scopes.len) |k| {
+            const scope = walker.contract.get(scopes[k]);
+            if (scope.kind != .record or walker.contract.field(scopes[k], name) == null) continue;
+            if (found != null) {
+                return walker.fail(node.offset, "is a field of two open scopes: a hole's Roc " ++
+                    "reads the scope's fields by name, so one name a scope", name);
+            }
+            found = k;
+        }
+        const depth = found orelse
+            return walker.fail(node.offset, try walker.has(scopes[scopes.len - 1], absent), name);
+        if (depth < walker.floor) return walker.fail(node.offset, outside, name);
+        walker.note_read(depth, scopes[depth], read.path_slice());
+        var at = scopes[depth];
+        for (read.path_slice()) |segment| {
+            if (walker.contract.get(at).kind != .record) {
+                return walker.fail(node.offset, try walker.is_a(at, "has no fields"), segment);
+            }
+            at = walker.contract.field(at, segment) orelse return walker.fail(
+                node.offset,
+                try walker.has(at, "the contract has no such field here"),
+                segment,
+            );
+        }
+        return .{ .scope = @intCast(depth), .type = at };
+    }
+
+    const absent = "is not a field of any open scope";
+
     fn lookup(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!u16 {
         if (node.up >= scopes.len) return walker.fail_at(node, above);
         if (scopes.len - 1 - node.up < walker.floor) return walker.fail_at(node, outside);
@@ -1121,6 +1198,76 @@ test "contract: a fragment's contract is the fields of its scope it reads" {
         const expected = try std.mem.concat(testing.allocator, u8, &.{ declared_line, case[1] });
         defer testing.allocator.free(expected);
         try testing.expectEqualStrings(expected, try outcome(page, &.{price}, &buffer));
+    }
+}
+
+test "contract: a hole's Roc reads the fields of the open scopes, by name" {
+    var buffer: [1024]u8 = undefined;
+    const price = .{ "Price", "{{ Fmt.kr(price) }}" };
+    const cases = [_][2][]const u8{
+        .{ "{{ title.len().to_str() }}", "" },
+        .{ "{{#items}}{{ title.len().to_str() }}{{/items}}", "" },
+        .{ "{{#items}}{{$Row}}{{ Fmt.kr(price) }}{{/Row}}{{/items}}", " | Row: { price : U32 }" },
+        .{
+            "{{#items}}{{$Row}}{{ \"${name} (${id.to_str()})\" }}{{/Row}}{{/items}}",
+            " | Row: { id : U64, name : Str }",
+        },
+        .{ "{{#items}}{{$Row}}{{> Price}}{{/Row}}{{/items}}", " | Row: { price : U32 }" },
+        .{ "{{$M}}{{ meta.label }}{{ Str.concat(meta.label, \"!\") }}{{/M}}", " | M: { meta : " ++
+            "{ label : Str, n : U64 } }" },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case {s}\n", .{case[0]});
+        const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
+        defer testing.allocator.free(page);
+        const expected = try std.mem.concat(testing.allocator, u8, &.{ declared_line, case[1] });
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, try outcome(page, &.{price}, &buffer));
+    }
+    const refusals = [_][2][]const u8{
+        .{ "{{#meta}}{{ n.to_str() }}{{/meta}}", "Page `n` is a field of two open scopes" },
+        .{ "{{ nope.to_str() }}", "Page `nope` is not a field of any open scope" },
+        .{ "{{ title.x.to_str() }}", "Page `x` has no fields" },
+        .{ "{{ meta.zip.to_str() }}", "Page `zip` the contract has no such field here" },
+        .{
+            "{{#items}}{{$Row}}{{ title.len().to_str() }}{{/Row}}{{/items}}",
+            "Page `title` climbs out of its fragment",
+        },
+    };
+    for (refusals) |case| {
+        errdefer std.debug.print("case {s}\n", .{case[0]});
+        const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
+        defer testing.allocator.free(page);
+        const said = try outcome(page, &.{price}, &buffer);
+        if (!std.mem.startsWith(u8, said, case[1])) {
+            std.debug.print("said: {s}\n", .{said});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "contract: an inferred template whose Roc reads the scope renders only included" {
+    const cases = [_]struct { source: []const u8, alone: bool }{
+        .{ .source = "{{ Fmt.kr(price) }}", .alone = false },
+        .{ .source = "{{% import Fmt %}}<b>{{ Fmt.kr(dish.price) }}</b>", .alone = false },
+        .{ .source = "{{ \"static\" }}{{ title }}", .alone = true },
+        .{ .source = "{{#items}}{{> Price}}{{/items}}", .alone = false },
+    };
+    const price = "{{ Fmt.kr(price) }}";
+    for (cases) |case| {
+        var trees: [2]parse.Tree = undefined;
+        var d: parse.Diagnostic = .{};
+        try parse.parse(case.source, &trees[0], &d);
+        try parse.parse(price, &trees[1], &d);
+        const templates = [_]Template{
+            .{ .name = "T", .source = case.source, .tree = &trees[0] },
+            .{ .name = "Price", .source = price, .tree = &trees[1] },
+        };
+        const contract = try testing.allocator.create(Contract);
+        defer testing.allocator.destroy(contract);
+        var diagnostic: Diagnostic = .{};
+        try of(contract, &templates, &diagnostic);
+        try testing.expectEqual(case.alone, contract.alone);
     }
 }
 

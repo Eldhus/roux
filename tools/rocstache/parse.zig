@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const hole = @import("hole.zig");
 
 pub const nodes_max = 1024;
 pub const path_max = 4;
@@ -60,6 +61,9 @@ pub const Node = struct {
     path: [path_max][]const u8 = @splat(""),
     path_len: u8 = 0,
     escape: bool = true,
+    /// A value that is a Roc expression (`dish.id.to_str()`), as written:
+    /// compiled by Roc. Empty for a path, which the renderer reads.
+    expression: []const u8 = "",
     pipes: [pipes_max]Pipe = undefined,
     pipes_len: u8 = 0,
     /// Index one past this node's subtree (`index + 1` for a leaf).
@@ -230,6 +234,8 @@ fn skip_block(source: []const u8, tree: *Tree, diagnostic: *Diagnostic) Error!us
 const Bounds = struct {
     /// What is between the braces, trimmed.
     inner: []const u8,
+    /// Where `inner` starts in the source.
+    inner_offset: usize,
     /// The offset after the tag.
     end: usize,
     triple: bool,
@@ -242,9 +248,16 @@ fn bounds(source: []const u8, start: usize, diagnostic: *Diagnostic) Error!Bound
     const inner_start = start + close.len;
     const inner_end = std.mem.indexOfPos(u8, source, inner_start, close) orelse
         return fail(diagnostic, start, "a tag that never closes", "");
-    const inner = std.mem.trim(u8, source[inner_start..inner_end], " \t");
+    const between = source[inner_start..inner_end];
+    const inner = std.mem.trim(u8, between, " \t");
     if (inner.len == 0) return fail(diagnostic, start, "an empty tag", "");
-    return .{ .inner = inner, .end = inner_end + close.len, .triple = triple };
+    const leading = std.mem.indexOfNone(u8, between, " \t").?;
+    return .{
+        .inner = inner,
+        .inner_offset = inner_start + leading,
+        .end = inner_end + close.len,
+        .triple = triple,
+    };
 }
 
 const Line = struct {
@@ -292,7 +305,7 @@ fn add_tag(
     const inner = found.inner;
     const triple = found.triple;
     const rest = std.mem.trim(u8, inner[1..], " \t");
-    if (triple and inner[0] != '!' and !is_path_start(inner[0])) {
+    if (triple and std.mem.indexOfScalar(u8, "#^?/>$%", inner[0]) != null) {
         return fail(diagnostic, start, "`{{{ }}}` takes a value", inner);
     }
     switch (inner[0]) {
@@ -332,7 +345,7 @@ fn add_tag(
         },
         '>' => try push(tree, try partial_node(tree, rest, start, diagnostic), diagnostic),
         else => {
-            var node = try value_node(inner, start, diagnostic);
+            var node = try value_node(found, start, diagnostic);
             node.escape = !triple;
             node.end = tree.len + 1;
             try push(tree, node, diagnostic);
@@ -398,8 +411,36 @@ fn push_text(tree: *Tree, text: []const u8, offset: usize, diagnostic: *Diagnost
     }, diagnostic);
 }
 
+/// `path | formatter "arg" | formatter`, or a Roc expression of type Str
+/// (hole.zig), kept as written.
+fn value_node(found: Bounds, offset: usize, diagnostic: *Diagnostic) Error!Node {
+    const inner = found.inner;
+    const head_end = std.mem.indexOfScalar(u8, inner, '|') orelse inner.len;
+    if (path_like(std.mem.trim(u8, inner[0..head_end], " \t"))) {
+        return piped_node(inner, offset, diagnostic);
+    }
+    var refused: Diagnostic = .{};
+    _ = hole.of(inner, &refused) catch {
+        diagnostic.* = refused;
+        diagnostic.offset += @intCast(found.inner_offset);
+        return error.Invalid;
+    };
+    return .{ .kind = .value, .text = inner, .expression = inner, .offset = @intCast(offset) };
+}
+
+/// Only a path's bytes, `../a.b` or `.`: read as a path, its mistakes a
+/// path's (a keyword, too long), never an expression's.
+fn path_like(text: []const u8) bool {
+    if (text.len == 0) return true;
+    if (!is_path_start(text[0])) return false;
+    for (text) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '/')) return false;
+    }
+    return true;
+}
+
 /// `path | formatter "arg" | formatter`.
-fn value_node(inner: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Node {
+fn piped_node(inner: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Node {
     var pieces = std.mem.splitScalar(u8, inner, '|');
     const head = std.mem.trim(u8, pieces.first(), " \t");
     var node = try path_node(head, offset, diagnostic);
@@ -647,7 +688,9 @@ test "parse: each mistake says where and what" {
         .{ .source = "a\n{{#x}}b", .line = 2, .subject = "x" },
         .{ .source = "{{#x}}{{/y}}", .line = 1, .subject = "y" },
         .{ .source = "\n\n{{ x | bold }}", .line = 3, .subject = "bold" },
-        .{ .source = "{{ X }}", .line = 1, .subject = "X" },
+        .{ .source = "{{ [x] }}", .line = 1, .subject = "[" },
+        .{ .source = "\n\n{{ a +\n [b] }}", .line = 4, .subject = "[" },
+        .{ .source = "{{ a.b.to_str() | upper }}", .line = 1, .subject = "|" },
         .{ .source = "{{> top}}", .line = 1, .subject = "top" },
         .{ .source = "{{ n | plural \"one\" }}", .line = 1, .subject = "plural" },
         .{ .source = "{{ n | plural \"a\" \"b\" | upper }}", .line = 1, .subject = "n" },

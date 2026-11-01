@@ -351,6 +351,9 @@ const Compiler = struct {
     }
 
     fn value(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!void {
+        if (node.expression.len > 0) {
+            return compiler.fail(node, "is a Roc expression, which the renderer cannot run yet");
+        }
         const b = compiler.builder;
         const t = try compiler.target(node, scopes);
         const pipes = node.pipe_slice();

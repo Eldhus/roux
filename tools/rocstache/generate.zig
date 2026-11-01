@@ -113,6 +113,8 @@ fn units_of(gpa: Allocator, kept: []const *Kept, errors: *Io.Writer) Error![]con
     var units: std.ArrayList(Unit) = .empty;
     for (kept, 0..) |k, index| {
         const page = k.contract.?;
+        // A partial whose Roc reads the scope renders only included.
+        if (!page.alone) continue;
         try units.append(gpa, .{ .name = k.name, .kept = index, .contract = page });
         for (page.fragment_slice(), 0..) |f, i| {
             const contract = try gpa.create(contract_.Contract);
