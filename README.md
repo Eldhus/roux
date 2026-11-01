@@ -26,11 +26,13 @@ x86-64 Linux 6.7 or later, on an x86-64-v3 CPU (AVX2).
 
 ### Templates
 
-A page is HTML with Mustache's tags in `templates/Page.rocstache`. The build checks it against the
-record it reads, its contract, and writes that as a Roc type in `templates/Page.roc`; the markup
-becomes bytecode attached to the executable. Under `roux dev` an edit to markup reaches the
-browser without a restart. The tags, contracts, partials and what is refused:
-[docs/templates.md](docs/templates.md).
+A page is HTML with Mustache's tags in `templates/Page.rocstache`, its holes paths into the data
+or small Roc expressions, its sections naming their elements as Roc names a lambda's argument
+(`{{#dishes |dish|}}`). The build checks it against the record it takes, its contract (declared,
+or inferred, Roc typing the holes' reads), and writes that as a Roc type in `templates/Page.roc`;
+the markup becomes bytecode attached to the executable. Under `roux dev` an edit to markup
+reaches the browser without a restart. The tags, names, contracts, partials, fragments and what
+is refused: [docs/templates.md](docs/templates.md).
 
 
 ### The database
