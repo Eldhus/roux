@@ -1,6 +1,8 @@
-//! A template's declared contract: its `{{% %}}` block holds `Ctx : <type>`
-//! and nothing else but `#` comments (the `##` lines right above `Ctx` are
-//! its documentation, copied into the generated module).
+//! A template's `{{% %}}` block: `import` lines (`import Fmt`, `import
+//! pf.Url`), the modules its holes' Roc may name, then its declared
+//! contract, `Ctx : <type>`, and nothing else but `#` comments (the `##`
+//! lines right above `Ctx` are its documentation, copied into the
+//! generated module). A block of imports alone leaves the contract inferred.
 //!
 //! The types a contract may spell: `Str`, `Bool`, the integers `U8` to
 //! `I64`, `List(T)`, records `{ name : T, ... }`, and any other type name
@@ -135,6 +137,25 @@ const Reader = struct {
         return reader.fail(offset - reader.base, "the contract has too many fields", "");
     }
 
+    /// `import Fmt` or `import pf.Url`, after the `import`.
+    fn import(reader: *Reader, contract: *Contract) Error!void {
+        const name = reader.next();
+        const module = if (std.mem.startsWith(u8, name.text, "pf.")) name.text[3..] else name.text;
+        if (name.kind != .name or !parse.is_type_name(module)) {
+            return reader.fail_token(name, "expected a module's name, like `Fmt` or `pf.Url`");
+        }
+        for (contract.import_slice()) |earlier| {
+            if (std.mem.eql(u8, earlier, name.text)) {
+                return reader.fail_token(name, "is imported twice");
+            }
+        }
+        if (contract.imports_len == contract_.imports_max) {
+            return reader.fail_token(name, "the block imports too many modules");
+        }
+        contract.imports[contract.imports_len] = name.text;
+        contract.imports_len += 1;
+    }
+
     fn new(reader: *Reader, contract: *Contract, kind: contract_.Kind, offset: u32) Error!u16 {
         return contract_.new_type(contract, kind, offset) catch
             reader.fail(offset - reader.base, "the contract has too many types", "");
@@ -157,9 +178,17 @@ pub fn read(
         .diagnostic = diagnostic,
         .template = template.name,
     };
-    const first = reader.next();
+    var first = reader.next();
+    // At most one more than fits: `import` refuses that one.
+    for (0..contract_.imports_max + 1) |_| {
+        if (!std.mem.eql(u8, first.text, "import")) break;
+        try reader.import(contract);
+        first = reader.next();
+    } else unreachable;
+    // Imports alone: the contract is inferred from the tags.
+    if (first.kind == .end) return;
     if (!std.mem.eql(u8, first.text, "Ctx")) {
-        return reader.fail_token(first, "the `{{%` block holds only the contract, `Ctx : { … }`");
+        return reader.fail_token(first, block_holds);
     }
     _ = try reader.expect(":");
     contract.root = try reader.type_(contract, 0);
@@ -167,8 +196,25 @@ pub fn read(
         return reader.fail(first.offset, "the contract is a record, `Ctx : { … }`", "Ctx");
     }
     const end = reader.next();
-    if (end.kind != .end) return reader.fail_token(end, "the `{{%` block holds only the contract");
+    if (end.kind != .end) return reader.fail_token(end, block_holds);
     contract.docs = docs_above(tree.block, first.offset);
+    contract.declared = true;
+}
+
+const block_holds = "the `{{%` block holds `import` lines, then the contract, `Ctx : { … }`";
+
+/// Whether the block declares `Ctx` after its imports. Lenient: a block
+/// that is neither is read, and refused, when its own template is.
+pub fn has_ctx(block: []const u8) bool {
+    var diagnostic: contract_.Diagnostic = .{};
+    var reader: Reader = .{ .block = block, .base = 0, .diagnostic = &diagnostic, .template = "" };
+    var token = reader.next();
+    for (0..contract_.imports_max + 1) |_| {
+        if (!std.mem.eql(u8, token.text, "import")) break;
+        _ = reader.next();
+        token = reader.next();
+    }
+    return token.kind != .end;
 }
 
 /// The `##` lines right above `Ctx`.
@@ -212,13 +258,47 @@ test "declared: the block's Ctx is the contract, with its docs" {
     );
 }
 
+test "declared: imports, before the contract or alone" {
+    const gpa = testing.allocator;
+    const contract = try gpa.create(Contract);
+    defer gpa.destroy(contract);
+    var diagnostic: contract_.Diagnostic = .{};
+    const cases = [_]struct { source: []const u8, declared: bool }{
+        .{
+            .source = "{{%\nimport Fmt\nimport pf.Url\n## Docs.\nCtx : { a : Str }\n%}}",
+            .declared = true,
+        },
+        .{ .source = "{{% import Fmt\n# a note\nimport pf.Url %}}{{ a }}", .declared = false },
+    };
+    for (cases) |case| {
+        var tree: parse.Tree = .{};
+        var d: parse.Diagnostic = .{};
+        try parse.parse(case.source, &tree, &d);
+        const template: contract_.Template = .{ .name = "T", .source = case.source, .tree = &tree };
+        const templates = [_]contract_.Template{template};
+        try contract_.of(contract, &templates, &diagnostic);
+        try testing.expectEqual(case.declared, contract.declared);
+        try testing.expectEqual(case.declared, has_ctx(tree.block));
+        try testing.expectEqual(@as(usize, 2), contract.imports_len);
+        try testing.expectEqualStrings("Fmt", contract.imports[0]);
+        try testing.expectEqualStrings("pf.Url", contract.imports[1]);
+    }
+}
+
 test "declared: what the template reads is checked against it" {
     const cases = [_]struct { source: []const u8, subject: []const u8, line: u32 }{
         .{ .source = "{{% Ctx : { a : Str } %}}\n\n{{ b }}", .subject = "b", .line = 3 },
         .{ .source = "{{% Ctx : { a : F64 } %}}{{ a }}", .subject = "a", .line = 1 },
         .{ .source = "{{% Ctx : { a : Str } %}}{{#a}}x{{/a}}", .subject = "a", .line = 1 },
         .{ .source = "{{%\nCtx : { a : View.Row }\n%}}", .subject = "View.Row", .line = 2 },
-        .{ .source = "{{%\nimport pf.X\n%}}", .subject = "import", .line = 2 },
+        .{ .source = "{{%\nimport fmt\n%}}", .subject = "fmt", .line = 2 },
+        .{ .source = "{{%\nimport Fmt\nimport Fmt\n%}}", .subject = "Fmt", .line = 3 },
+        .{
+            .source = "{{%\nimport Fmt\nCtx : { a : Str }\nimport X\n%}}",
+            .subject = "import",
+            .line = 4,
+        },
+        .{ .source = "{{%\nimport\n%}}", .subject = "", .line = 3 },
         .{ .source = "{{% Ctx : { a : Str, a : Str } %}}", .subject = "a", .line = 1 },
         .{ .source = "{{%\nCtx : { where : Str }\n%}}", .subject = "where", .line = 2 },
     };

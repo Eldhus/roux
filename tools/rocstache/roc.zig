@@ -55,6 +55,13 @@ pub fn write_module(module: Module, writer: *Writer) Error!void {
         } else true;
         if (first) try writer.print("import {s}\n", .{type_.alias});
     }
+    // The block's own, for its holes' Roc.
+    for (contract.import_slice()) |name| {
+        const aliased = for (contract.types[0..contract.types_len]) |type_| {
+            if (std.mem.eql(u8, type_.alias, name)) break true;
+        } else false;
+        if (!aliased) try writer.print("import {s}\n", .{name});
+    }
     try writer.print("\n{s} :: [].{{\n\n", .{module.name});
     // A fragment's contract is spelled out, never naming a sibling's, so
     // the order is the source's.

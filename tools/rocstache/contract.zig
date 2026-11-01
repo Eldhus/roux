@@ -44,6 +44,7 @@ pub const Type = struct {
 /// contract when it renders alone.
 pub const Fragment = struct { name: []const u8, node: u16, scope: u16, frame: u16 };
 pub const fragments_max = 32;
+pub const imports_max = 16;
 
 /// `used`: a bit per fragment (its index) that reads the field from the
 /// fragment's own scope, itself or through a partial.
@@ -81,9 +82,17 @@ pub const Contract = struct {
     docs: []const u8 = "",
     fragments: [fragments_max]Fragment = undefined,
     fragments_len: u8 = 0,
+    /// The block's `import` lines (`Fmt`, `pf.Url`): the modules its holes'
+    /// Roc may name, imported by its generated module.
+    imports: [imports_max][]const u8 = undefined,
+    imports_len: u8 = 0,
 
     pub fn fragment_slice(contract: *const Contract) []const Fragment {
         return contract.fragments[0..contract.fragments_len];
+    }
+
+    pub fn import_slice(contract: *const Contract) []const []const u8 {
+        return contract.imports[0..contract.imports_len];
     }
 
     pub fn get(contract: *const Contract, index: u16) *const Type {
@@ -154,16 +163,18 @@ pub fn of(
     contract.declared = false;
     contract.docs = "";
     contract.fragments_len = 0;
+    contract.imports_len = 0;
     const self = templates[0];
     var walker: Walker = .{
         .contract = contract,
         .templates = templates,
         .diagnostic = diagnostic,
     };
+    // The block's imports, then its `Ctx` if it has one.
     if (std.mem.trim(u8, self.tree.block, " \t\n").len > 0) {
         try @import("declared.zig").read(contract, self, diagnostic);
-        contract.declared = true;
-    } else {
+    }
+    if (!contract.declared) {
         contract.root = try walker.new(.record, 0);
         try walker.infer(self, 0, self.tree.len, &.{contract.root}, 0);
     }
@@ -182,6 +193,7 @@ pub fn of_fragment(contract: *Contract, page: *const Contract, k: u5) Error!void
     contract.declared = page.declared;
     contract.docs = "";
     contract.fragments_len = 0;
+    contract.imports_len = 0;
     var diagnostic: Diagnostic = .{};
     var walker: Walker = .{ .contract = contract, .templates = &.{}, .diagnostic = &diagnostic };
     contract.root = try walker.new(.record, 0);
@@ -196,7 +208,7 @@ pub fn of_fragment(contract: *Contract, page: *const Contract, k: u5) Error!void
 }
 
 fn declares(template: Template) bool {
-    return std.mem.trim(u8, template.tree.block, " \t\n").len > 0;
+    return @import("declared.zig").has_ctx(template.tree.block);
 }
 
 /// A partial's declared `Ctx`, read for an includer whose contract is
@@ -210,10 +222,12 @@ fn declared_of(included: Template, diagnostic: *Diagnostic) Error!*const Contrac
     const contract = &declared_buffer;
     contract.types_len = 0;
     contract.fields_len = 0;
-    contract.declared = true;
+    contract.declared = false;
     contract.docs = "";
     contract.fragments_len = 0;
+    contract.imports_len = 0;
     try @import("declared.zig").read(contract, included, diagnostic);
+    assert(contract.declared);
     return contract;
 }
 
