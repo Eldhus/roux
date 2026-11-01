@@ -16,6 +16,7 @@
 //! |---|---|---|---|
 //! | TEXT | 1 | | a static run, in the bits above the op |
 //! | STR | 2 | | a Str |
+//! | INT | 2 | its type | an integer, as Roc's `to_str` prints it |
 //! | LIST | 2, body | body words | each element, the body in its scope; the element's size next |
 //! | RECORD | 1, body | body words | the body in the record's scope |
 //! | COND | 1, body | body words | the body when the Bool is true, in the same scope |
@@ -50,6 +51,7 @@ const Layouts = layout.Layouts;
 pub const Op = enum(u4) {
     text,
     str,
+    int,
     list,
     record,
     cond,
@@ -64,6 +66,8 @@ pub const hole_bytes_max = 512;
 /// A scope's contract type when the template has no contract.
 const no_contract = std.math.maxInt(u16);
 pub const Mode = enum(u8) { escaped, raw };
+/// An integer's type, in an INT's rest.
+pub const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64 };
 
 pub const run_bytes_max = 65535;
 pub const mode_shift = 56;
@@ -349,10 +353,10 @@ const Compiler = struct {
             const node = &tree.nodes[i];
             switch (node.kind) {
                 .text => try compiler.builder.pending.appendSlice(compiler.builder.gpa, node.text),
-                .value => if (node.expression.len > 0) {
-                    try compiler.hole(tree, node, scopes);
-                } else {
+                .value => if (node.expression.len == 0) {
                     try compiler.value(node, scopes);
+                } else if (!try compiler.integer(node, scopes)) {
+                    try compiler.hole(tree, node, scopes);
                 },
                 .section, .inverted, .conditional => try compiler.section(tree, i, scopes, depth),
                 .partial => try compiler.partial(tree, i, scopes, depth),
@@ -368,7 +372,17 @@ const Compiler = struct {
     const Target = struct { up: u8, offset: u32, type_: u32 };
 
     fn target(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!Target {
-        const found = scopes.bound(node);
+        return compiler.target_of(node, node.path_slice(), scopes);
+    }
+
+    /// Where `path`, read by `node`, leads.
+    fn target_of(
+        compiler: *Compiler,
+        node: *const parse.Node,
+        path: []const []const u8,
+        scopes: Scopes,
+    ) Error!Target {
+        const found = parse.bound(scopes.binders[0..scopes.len], path);
         const up = scopes.len - 1 - found.scope;
         if (up > up_max) return compiler.fail(node, "reads more than 15 scopes up");
         var result: Target = .{
@@ -402,6 +416,24 @@ const Compiler = struct {
         const mode: Mode = if (node.escape) .escaped else .raw;
         try b.emit(word(.str, t.up, t.offset, 0));
         try b.emit_run(text + (@as(u64, @backingInt(mode)) << mode_shift), 0);
+    }
+
+    /// A hole that is only an integer path's `.to_str()`, printed by the
+    /// renderer as Roc's `to_str` prints it, with no call into Roc
+    /// (examples/numbers checks the two agree). Roc still types it, as any
+    /// hole. False, and nothing emitted, for any other hole.
+    fn integer(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!bool {
+        assert(node.expression.len > 0);
+        const parsed = contract_.expression_of(node);
+        if (!parsed.to_str) return false;
+        assert(parsed.reads_len == 1);
+        const t = try compiler.target_of(node, parsed.reads[0].path_slice(), scopes);
+        const int = int_of(compiler.kind(t)) orelse return false;
+        const b = compiler.builder;
+        const text = try b.take();
+        try b.emit(word(.int, t.up, t.offset, @backingInt(int)));
+        try b.emit_run(text, 0);
+        return true;
     }
 
     fn section(
@@ -566,6 +598,20 @@ const Compiler = struct {
             @as(u64, into_offset) << 44;
     }
 };
+
+fn int_of(kind: layout.Kind) ?Int {
+    return switch (kind) {
+        .u8 => .u8,
+        .u16 => .u16,
+        .u32 => .u32,
+        .u64 => .u64,
+        .i8 => .i8,
+        .i16 => .i16,
+        .i32 => .i32,
+        .i64 => .i64,
+        .other, .record, .list, .str, .bool, .tag_union => null,
+    };
+}
 
 test "bytecode: assembled chunks, their runs moved past the text before them" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

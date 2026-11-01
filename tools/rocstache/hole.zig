@@ -51,6 +51,9 @@ pub const Read = struct {
 pub const Hole = struct {
     /// The expression is one path and nothing more (`dish.name`).
     bare: bool = false,
+    /// The expression is one path and its `.to_str()`, nothing more
+    /// (`dish.price.to_str()`): an integer's, the renderer prints itself.
+    to_str: bool = false,
     reads: [reads_max]Read = undefined,
     reads_len: u8 = 0,
 
@@ -94,8 +97,24 @@ pub fn of(text: []const u8, diagnostic: *parse.Diagnostic) parse.Error!Hole {
     }, "");
     if (p.state == .operand) return p.fail(text.len, "ends where a value should follow", "");
     p.hole.bare = p.tokens == 1 and p.hole.reads_len == 1;
+    p.hole.to_str = p.hole.reads_len == 1 and printed(text, &p.hole.reads[0]);
+    assert(!(p.hole.bare and p.hole.to_str));
     assert(p.hole.reads_len <= reads_max);
     return p.hole;
+}
+
+/// Whether the parsed `text` is the read's path and then `.to_str()`. A
+/// read's path stops where its first method starts (`free_name`), so after
+/// a parse that accepted the whole expression, these bytes following the
+/// path can only be that one call.
+fn printed(text: []const u8, read: *const Read) bool {
+    assert(read.path_len > 0);
+    const space = " \t\r\n";
+    if (std.mem.trimStart(u8, text[0..read.offset], space).len > 0) return false;
+    const last = read.path[read.path_len - 1];
+    const end = @intFromPtr(last.ptr) + last.len - @intFromPtr(text.ptr);
+    assert(end <= text.len);
+    return std.mem.eql(u8, std.mem.trimEnd(u8, text[end..], space), ".to_str()");
 }
 
 const Parser = struct {
@@ -454,6 +473,33 @@ test "hole: free names and their paths, up to a method" {
     try expect_reads("Bool.True", false, &.{});
     try expect_reads("Ok(x).with_default(y)", false, &.{ "x", "y" });
     try expect_reads("\"plain\"", false, &.{});
+}
+
+test "hole: a path's `.to_str()` alone is marked, nothing else" {
+    const marked = [_][]const u8{ "price.to_str()", " dish.price.to_str() ", "a.b.c.d.to_str()" };
+    const unmarked = [_][]const u8{
+        "price",
+        "(price).to_str()",
+        "price.to_str().trim()",
+        "price.to_str() == x",
+        "price.to_str(x)",
+        "\"${price.to_str()}\"",
+        "-price.to_str()",
+        "price.len().to_str()",
+        "Num.to_str(price)",
+        "(a + b).to_str()",
+        "price.to_utf8()",
+        "f(price).to_str()",
+    };
+    for (marked ++ unmarked, 0..) |text, k| {
+        var diagnostic: parse.Diagnostic = .{};
+        const hole = of(text, &diagnostic) catch |err| {
+            std.debug.print("`{s}` refused: {s}\n", .{ text, diagnostic.message });
+            return err;
+        };
+        errdefer std.debug.print("case `{s}`\n", .{text});
+        try testing.expectEqual(k < marked.len, hole.to_str);
+    }
 }
 
 test "hole: operators, prefixes, numbers" {

@@ -184,8 +184,11 @@ expect
 ```
 
 A path is read in place; a hole of Roc is one call into the app's `hole`, given just the values it
-reads. A value can only come from its template's `template` function: a bare tag, `Menu(ctx)`, is
-a type error wherever a response wants a template.
+reads. A hole that is only an integer path's `.to_str()`, `{{ dish.price.to_str() }}`, is read in
+place too: the renderer prints the number itself, as Roc's `to_str` would, without the call
+(`examples/numbers` checks the two agree, each width's edges and a seeded random set). A value can
+only come from its template's `template` function: a bare tag, `Menu(ctx)`, is a type error
+wherever a response wants a template.
 
 
 ## Under roux dev

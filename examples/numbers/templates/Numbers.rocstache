@@ -1,0 +1,18 @@
+{{%
+## Each row's numbers, each printed twice on its line: first by the
+## renderer (a hole that is only a path's `.to_str()`), then by Roc (a hole
+## the renderer leaves to Roc). Declared: `.to_str()` works on any number.
+Ctx : {
+	rows : List({ u8 : U8, u16 : U16, u32 : U32, u64 : U64, i8 : I8, i16 : I16, i32 : I32, i64 : I64 }),
+}
+%}}
+{{#rows |r|}}
+{{ r.u8.to_str() }} {{ "${r.u8.to_str()}" }}
+{{ r.u16.to_str() }} {{ "${r.u16.to_str()}" }}
+{{ r.u32.to_str() }} {{ "${r.u32.to_str()}" }}
+{{ r.u64.to_str() }} {{ "${r.u64.to_str()}" }}
+{{ r.i8.to_str() }} {{ "${r.i8.to_str()}" }}
+{{ r.i16.to_str() }} {{ "${r.i16.to_str()}" }}
+{{ r.i32.to_str() }} {{ "${r.i32.to_str()}" }}
+{{ r.i64.to_str() }} {{ "${r.i64.to_str()}" }}
+{{/rows}}
