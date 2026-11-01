@@ -246,6 +246,7 @@ fn begin_with(
         t.* = .{ .name = k.*.name, .source = k.*.source, .tree = k.*.tree.? };
     }
     try compute_contracts(gpa, cache, kept, templates, errors);
+    try @import("probe.zig").answer(gpa, io, options, cache, kept, templates, errors);
     const units = try units_of(gpa, kept, errors);
     var modules_changed = false;
     const contracts = try gpa.alloc(layout.Contract, units.len);
@@ -800,7 +801,7 @@ fn compile_one(
 
 /// `Page.rocstache:12:5: `title` message`, as compilers print it, so
 /// editors and agents can jump to it.
-fn report(
+pub fn report(
     errors: *Io.Writer,
     source: []const u8,
     problem: contract_.Diagnostic,

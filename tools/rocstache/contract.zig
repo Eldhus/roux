@@ -107,6 +107,19 @@ pub const HoleSite = struct {
 /// Where `of_hole` builds a hole's parameters while a walk checks it.
 var hole_buffer: Contract = undefined;
 
+/// A hole of Roc in an inferred page whose reads no tag types: Roc is asked
+/// the type of the record it takes (generate.zig's probe). In the order the
+/// page's walk meets them, which the answers keep.
+pub const Pending = struct { template: []const u8, node: u16 };
+
+/// Roc's answers, one per hole of Roc the walk meets that reads a field, in
+/// its order: the record the hole takes (`root`, in `types`), or null where
+/// Roc's type is generic (`Num(a)`: the page must declare it).
+pub const Answers = struct {
+    types: *const Contract,
+    roots: []const ?u16,
+};
+
 /// A hole's parameters, as a record: each free name a field, narrowed to
 /// the paths the expression reads below it, each read's value whole. A read
 /// another covers (a shorter path to it, or the same one earlier) is that
@@ -130,6 +143,7 @@ pub fn of_hole(
     into.fragments_len = 0;
     into.imports_len = 0;
     into.holes_len = 0;
+    into.pending_len = 0;
     var diagnostic: Diagnostic = .{};
     var walker: Walker = .{ .contract = into, .templates = &.{}, .diagnostic = &diagnostic };
     into.root = try walker.new(.record, 0);
@@ -224,6 +238,13 @@ pub const Contract = struct {
     /// included here among them.
     holes: [holes_max]HoleSite = undefined,
     holes_len: u16 = 0,
+    /// Inferred, its holes of Roc whose reads Roc must type: met, unanswered.
+    pending: [holes_max]Pending = undefined,
+    pending_len: u16 = 0,
+
+    pub fn pending_slice(contract: *const Contract) []const Pending {
+        return contract.pending[0..contract.pending_len];
+    }
 
     pub fn fragment_slice(contract: *const Contract) []const Fragment {
         return contract.fragments[0..contract.fragments_len];
@@ -296,6 +317,17 @@ pub fn of(
     templates: []const Template,
     diagnostic: *Diagnostic,
 ) Error!void {
+    return of_answered(contract, templates, null, diagnostic);
+}
+
+/// `of`, an inferred page's holes of Roc typed by Roc's `answers`, in the
+/// order the walk meets them; without, they are left `pending`.
+pub fn of_answered(
+    contract: *Contract,
+    templates: []const Template,
+    answers: ?*const Answers,
+    diagnostic: *Diagnostic,
+) Error!void {
     assert(templates.len > 0);
     // The header only: the arrays are filled as they grow (a whole `.{}`
     // would write all of them, ~200 KB, in a safe build).
@@ -308,11 +340,13 @@ pub fn of(
     contract.fragments_len = 0;
     contract.imports_len = 0;
     contract.holes_len = 0;
+    contract.pending_len = 0;
     const self = templates[0];
     var walker: Walker = .{
         .contract = contract,
         .templates = templates,
         .diagnostic = diagnostic,
+        .answers = answers,
     };
     // The block's imports, then its `Ctx` if it has one.
     if (std.mem.trim(u8, self.tree.block, " \t\n").len > 0) {
@@ -340,6 +374,7 @@ pub fn of_fragment(contract: *Contract, page: *const Contract, k: u5) Error!void
     contract.fragments_len = 0;
     contract.imports_len = 0;
     contract.holes_len = 0;
+    contract.pending_len = 0;
     var diagnostic: Diagnostic = .{};
     var walker: Walker = .{ .contract = contract, .templates = &.{}, .diagnostic = &diagnostic };
     contract.root = try walker.new(.record, 0);
@@ -374,6 +409,7 @@ fn declared_of(included: Template, diagnostic: *Diagnostic) Error!*const Contrac
     contract.fragments_len = 0;
     contract.imports_len = 0;
     contract.holes_len = 0;
+    contract.pending_len = 0;
     try @import("declared.zig").read(contract, included, diagnostic);
     assert(contract.declared);
     return contract;
@@ -512,6 +548,10 @@ const Walker = struct {
     /// a section's as it opens it, so the first `scopes.len` are the open
     /// scopes'. The page's own scope is unnamed: its fields are the names.
     binders: [parse.depth_max + 1][]const u8 = @splat(""),
+    /// Roc's types for the inferred page's holes of Roc, and how many of
+    /// those holes the walk has met.
+    answers: ?*const Answers = null,
+    asked: u16 = 0,
 
     fn fail(walker: *Walker, offset: u32, message: []const u8, subject: []const u8) Error {
         walker.diagnostic.* = .{
@@ -599,7 +639,11 @@ const Walker = struct {
             const node = &template.tree.nodes[i];
             switch (node.kind) {
                 .text => {},
-                .value => try walker.infer_value(node, scopes),
+                .value => if (node.expression.len > 0) {
+                    try walker.infer_expression(template, i, scopes);
+                } else {
+                    try walker.infer_value(node, scopes);
+                },
                 .conditional => {
                     const target = try walker.reach(node, scopes);
                     try walker.settle(target, .bool, node);
@@ -624,13 +668,71 @@ const Walker = struct {
         }
     }
 
-    fn infer_value(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
-        if (node.expression.len > 0) {
-            // Its reads' types are not the tags': the template renders only
-            // where it is included, its reads typed there.
-            if (expression_of(node).reads_len > 0) walker.contract.alone = false;
-            return;
+    /// A hole of Roc: its reads' types are not the tags'. Roc's answer types
+    /// them, when there is one; else the hole is pending, and the template
+    /// renders only where it is included, its reads typed there.
+    fn infer_expression(
+        walker: *Walker,
+        template: Template,
+        index: u16,
+        scopes: []const u16,
+    ) Error!void {
+        const node = &template.tree.nodes[index];
+        const parsed = expression_of(node);
+        if (parsed.reads_len == 0) return;
+        const asked = walker.asked;
+        walker.asked += 1;
+        if (walker.answers) |answers| {
+            if (asked < answers.roots.len) {
+                if (answers.roots[asked]) |root| {
+                    for (parsed.read_slice()) |*read| {
+                        try walker.infer_answered(node, scopes, read, answers.types, root);
+                    }
+                    return;
+                }
+            }
         }
+        walker.contract.alone = false;
+        const contract = walker.contract;
+        if (contract.pending_len == holes_max) {
+            return walker.fail_at(node, "the page has too many holes of Roc");
+        }
+        contract.pending[contract.pending_len] = .{ .template = template.name, .node = index };
+        contract.pending_len += 1;
+    }
+
+    /// One read of an answered hole: the page's type at its path (made as a
+    /// tag's path makes it) takes Roc's type for it, where it has none yet.
+    fn infer_answered(
+        walker: *Walker,
+        node: *const parse.Node,
+        scopes: []const u16,
+        read: *const hole.Read,
+        theirs: *const Contract,
+        root: u16,
+    ) Error!void {
+        const found = parse.bound(walker.binders[0..scopes.len], read.path_slice());
+        if (found.scope < walker.floor) return walker.fail(node.offset, outside, read.path[0]);
+        var answer = root;
+        for (read.path_slice()) |segment| {
+            answer = theirs.field(answer, segment) orelse
+                return walker.fail(node.offset, "Roc's answer has no such field", segment);
+        }
+        var at = scopes[found.scope];
+        for (found.path) |name| {
+            try walker.settle(at, .record, node);
+            at = walker.contract.field(at, name) orelse blk: {
+                const child = try walker.new(.unknown, node.offset);
+                walker.contract.add_field(at, name, child) catch
+                    return walker.fail(node.offset, "the contract has too many fields", name);
+                break :blk child;
+            };
+        }
+        try walker.merge(theirs, answer, at, 0);
+    }
+
+    fn infer_value(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
+        assert(node.expression.len == 0);
         const target = try walker.reach(node, scopes);
         const pipes = node.pipe_slice();
         const kind: Kind = if (pipes.len == 0) .str else switch (pipes[0].formatter) {
@@ -1533,6 +1635,62 @@ test "contract: an inferred template whose Roc reads the scope renders only incl
         try of(contract, &templates, &diagnostic);
         try testing.expectEqual(case.alone, contract.alone);
     }
+}
+
+test "contract: an inferred page's holes of Roc, pending, then typed by Roc's answers" {
+    const page = "{{ title }}{{#items |item|}}{{ item.name }}{{> Price}}" ++
+        "{{ \"${item.name}!\" }}{{/items}}";
+    const price = "{{ Fmt.kr(item.price) }}";
+    var trees: [2]parse.Tree = undefined;
+    var d: parse.Diagnostic = .{};
+    try parse.parse(page, &trees[0], &d);
+    try parse.parse(price, &trees[1], &d);
+    const templates = [_]Template{
+        .{ .name = "Page", .source = page, .tree = &trees[0] },
+        .{ .name = "Price", .source = price, .tree = &trees[1] },
+    };
+    const contract = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(contract);
+    var diagnostic: Diagnostic = .{};
+    try of(contract, &templates, &diagnostic);
+    // Met in order: the partial's hole, then the page's.
+    try testing.expect(!contract.alone);
+    try testing.expectEqual(@as(u16, 2), contract.pending_len);
+    try testing.expectEqualStrings("Price", contract.pending[0].template);
+    try testing.expectEqualStrings("Page", contract.pending[1].template);
+    // Roc's answers: the record each takes.
+    const types = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(types);
+    types.* = .{};
+    // `{ item : { price : U32 } }` and `{ item : { name : Str } }`.
+    const priced = try new_type(types, .record, 0);
+    const priced_item = try new_type(types, .record, 0);
+    const u32_ = try new_type(types, .int, 0);
+    types.types[u32_].name = "U32";
+    try new_field(types, priced_item, "price", u32_);
+    try new_field(types, priced, "item", priced_item);
+    const named = try new_type(types, .record, 0);
+    const named_item = try new_type(types, .record, 0);
+    try new_field(types, named_item, "name", try new_type(types, .str, 0));
+    try new_field(types, named, "item", named_item);
+    const roots = [_]?u16{ priced, named };
+    const answers: Answers = .{ .types = types, .roots = &roots };
+    try of_answered(contract, &templates, &answers, &diagnostic);
+    try testing.expect(contract.alone);
+    try testing.expectEqual(@as(u16, 0), contract.pending_len);
+    var buffer: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try write_line(contract, contract.root, &writer);
+    try testing.expectEqualStrings(
+        "{ items : List({ name : Str, price : U32 }), title : Str }",
+        writer.buffered(),
+    );
+    // A generic answer leaves its hole pending.
+    const unknown = [_]?u16{ roots[0], null };
+    const partly: Answers = .{ .types = types, .roots = &unknown };
+    try of_answered(contract, &templates, &partly, &diagnostic);
+    try testing.expect(!contract.alone);
+    try testing.expectEqual(@as(u16, 1), contract.pending_len);
 }
 
 test "contract: a fragment's refusals" {

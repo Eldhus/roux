@@ -20,11 +20,23 @@ make_glue = |types_list| {
 			"        .{ .name = \"${f.name}\", .type = ${type_id.to_str()} },\n"
 		},
 	)
+	# The probe of holes (probe.zig) provides each hole as a pure function:
+	# its argument's type, as a contract's.
+	probes = input.provides_entries.keep_if(|e| !e.name.ends_with("!")).map(
+		|e| {
+			type_id = match e.exported {
+				ProvidedProcedure(signature) => List.first(signature.args) ?? 0
+				ProvidedData(id) => id
+			}
+			"        .{ .name = \"${e.name}\", .type = ${type_id.to_str()} },\n"
+		},
+	)
 	types = input.types.map(type_line)
 	content = Str.join_with(
 		[
 			".{\n    .contracts = .{\n",
 			Str.join_with(contracts, ""),
+			Str.join_with(probes, ""),
 			"    },\n    .types = .{\n",
 			Str.join_with(types, ""),
 			"    },\n}\n",

@@ -40,12 +40,22 @@ pub const Cache = struct {
     /// The templates' names from the last listing of the app's directory,
     /// for a generation told which files changed (`changed`).
     names: std.ArrayList([]const u8) = .empty,
+    /// The last probe of holes of Roc (probe.zig), by its text's hash, and
+    /// Roc's answer to it, so an edit that keeps the holes asks nothing.
+    probe_key: u64 = 0,
+    probe_answer: []const u8 = "",
+    /// The names Roc's answers give fields and types, which kept contracts
+    /// hold: never freed while the cache lives (a page's contract made from
+    /// one answer outlasts the next).
+    probe_names: std.heap.ArenaAllocator,
 
     pub fn init(gpa: Allocator) Cache {
-        return .{ .gpa = gpa, .arena = .init(gpa) };
+        return .{ .gpa = gpa, .arena = .init(gpa), .probe_names = .init(gpa) };
     }
 
     pub fn deinit(cache: *Cache) void {
+        cache.gpa.free(cache.probe_answer);
+        cache.probe_names.deinit();
         cache.forget();
         cache.names.deinit(cache.gpa);
         cache.templates.deinit(cache.gpa);
