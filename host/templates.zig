@@ -213,6 +213,11 @@ const mode_shift = 56;
 const scratch_bytes = 256 * 1024;
 threadlocal var scratch: ?[]u8 = null;
 
+/// The box a hole's tag is built in, one per thread: Roc returns before the
+/// next hole (its `hole` never renders). Not on the stack, where a safe
+/// build would fill all of it at every hole.
+threadlocal var hole_box: [16 + hole_bytes_max]u8 align(16) = undefined;
+
 /// Scopes open at once in one template: sections nested in the template
 /// and in the partials it includes (the compiler's bound).
 const scopes_max = 16 * 9 + 1;
@@ -551,10 +556,12 @@ const Vm = struct {
         const size: usize = @intCast((meta >> 40) & 0xffff);
         assert(size <= hole_bytes_max);
         assert(discriminant_offset + discriminant_size <= size or discriminant_size == 0);
-        var boxed: [16 + hole_bytes_max]u8 align(16) = undefined;
+        const boxed = &hole_box;
         std.mem.writeInt(u64, boxed[8..16], 0, .little);
+        // Not cleared: each field of the tag's payload is a leaf, and the
+        // discriminant is written, so every byte Roc reads as a value is
+        // this hole's; padding is never read as one.
         const payload = boxed[16..][0..size];
-        @memset(payload, 0);
         for (code[pc + 3 ..][0..leaves]) |leaf| {
             const up: usize = @intCast(leaf & 15);
             assert(up < len);
@@ -562,7 +569,7 @@ const Vm = struct {
             const bytes: usize = @intCast((leaf >> 28) & 0xffff);
             const into: usize = @intCast((leaf >> 44) & 0xffff);
             assert(into + bytes <= size);
-            @memcpy(payload[into..][0..bytes], @as([*]const u8, @ptrFromInt(from))[0..bytes]);
+            copy_value(payload[into..][0..bytes], @ptrFromInt(from));
         }
         const tag = payload[discriminant_offset..];
         switch (discriminant_size) {
@@ -584,6 +591,18 @@ const Vm = struct {
             string.decref(vm.roc_host);
         }
         return pc + 3 + leaves;
+    }
+
+    /// A value's bytes: a scalar's, a Str's or a List's sizes as fixed
+    /// moves, anything else (a record read whole) by `memcpy`.
+    inline fn copy_value(into: []u8, from: [*]const u8) void {
+        inline for (.{ 1, 2, 4, 8, 16, 24 }) |size| {
+            if (into.len == size) {
+                into[0..size].* = from[0..size].*;
+                return;
+            }
+        }
+        @memcpy(into, from[0..into.len]);
     }
 
     /// A section opening a scope: each of a list's elements, a record, a
