@@ -11,7 +11,7 @@ Ctx : { title : Str, items : List({ name : Str, price : U32 }) }
 <h1>{{ title }}</h1>
 <p>{{ Fmt.plural(items.len(), "dish", "dishes") }} on the menu.</p>
 <ul>
-{{#items |item|}}  <li>{{ item.name }}: {{ item.price }} kr</li>
+{{#items |item|}}  <li>{{ item.name }}: {{ item.price.to_str() }} kr</li>
 {{/items}}</ul>
 {{^items}}<p>The kitchen is closed.</p>{{/items}}
 </html>

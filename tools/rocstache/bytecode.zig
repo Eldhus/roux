@@ -16,7 +16,6 @@
 //! |---|---|---|---|
 //! | TEXT | 1 | | a static run, in the bits above the op |
 //! | STR | 2 | | a Str |
-//! | INT | 2 | its type | an integer |
 //! | LIST | 2, body | body words | each element, the body in its scope; the element's size next |
 //! | RECORD | 1, body | body words | the body in the record's scope |
 //! | COND | 1, body | body words | the body when the Bool is true, in the same scope |
@@ -51,7 +50,6 @@ const Layouts = layout.Layouts;
 pub const Op = enum(u4) {
     text,
     str,
-    int,
     list,
     record,
     cond,
@@ -66,8 +64,6 @@ pub const hole_bytes_max = 512;
 /// A scope's contract type when the template has no contract.
 const no_contract = std.math.maxInt(u16);
 pub const Mode = enum(u8) { escaped, raw };
-/// An integer's type, in an INT's rest.
-pub const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64 };
 
 pub const run_bytes_max = 65535;
 pub const mode_shift = 56;
@@ -401,13 +397,8 @@ const Compiler = struct {
         assert(node.expression.len == 0);
         const b = compiler.builder;
         const t = try compiler.target(node, scopes);
+        if (compiler.kind(t) != .str) return compiler.fail(node, "is not a Str");
         const text = try b.take();
-        if (int_of(compiler.kind(t))) |int| {
-            try b.emit(word(.int, t.up, t.offset, @backingInt(int)));
-            try b.emit_run(text, 0);
-            return;
-        }
-        if (compiler.kind(t) != .str) return compiler.fail(node, "is neither a Str nor an integer");
         const mode: Mode = if (node.escape) .escaped else .raw;
         try b.emit(word(.str, t.up, t.offset, 0));
         try b.emit_run(text + (@as(u64, @backingInt(mode)) << mode_shift), 0);
@@ -575,20 +566,6 @@ const Compiler = struct {
             @as(u64, into_offset) << 44;
     }
 };
-
-fn int_of(kind: layout.Kind) ?Int {
-    return switch (kind) {
-        .u8 => .u8,
-        .u16 => .u16,
-        .u32 => .u32,
-        .u64 => .u64,
-        .i8 => .i8,
-        .i16 => .i16,
-        .i32 => .i32,
-        .i64 => .i64,
-        .other, .record, .list, .str, .bool, .tag_union => null,
-    };
-}
 
 test "bytecode: assembled chunks, their runs moved past the text before them" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

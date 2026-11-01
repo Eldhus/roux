@@ -24,11 +24,10 @@ pub const Bytes = abi.RocListWith(u8, false);
 /// and count are read).
 const List = abi.RocListWith(u8, false);
 
-/// The bytecode's ops and integer types (tools/rocstache/bytecode.zig).
+/// The bytecode's ops (tools/rocstache/bytecode.zig).
 const Op = enum(u4) {
     text,
     str,
-    int,
     list,
     record,
     cond,
@@ -38,7 +37,6 @@ const Op = enum(u4) {
     hole,
     _,
 };
-const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, _ };
 /// The most a hole's union holds (bytecode.zig's `hole_bytes_max`).
 const hole_bytes_max = 512;
 
@@ -501,11 +499,6 @@ const Vm = struct {
                     sink.string(string.asSlice(), @fromBackingInt(@intCast(ref >> mode_shift)));
                     pc += 2;
                 },
-                .int => {
-                    sink.run(code[pc + 1]);
-                    sink.number(read_int(at, @fromBackingInt(@intCast(rest))));
-                    pc += 2;
-                },
                 // A body in the same scope: run inline, or skipped.
                 .cond, .unless, .empty => {
                     const enter = switch (op) {
@@ -631,31 +624,6 @@ fn read_bool(at: usize) bool {
     return @as(*const u8, @ptrFromInt(at)).* != 0;
 }
 
-const Number = struct { negative: bool, magnitude: u64 };
-
-/// The integer at `at`.
-inline fn read_int(at: usize, int: Int) Number {
-    return switch (int) {
-        .u8 => unsigned(@as(*const u8, @ptrFromInt(at)).*),
-        .u16 => unsigned(@as(*const u16, @ptrFromInt(at)).*),
-        .u32 => unsigned(@as(*const u32, @ptrFromInt(at)).*),
-        .u64 => unsigned(@as(*const u64, @ptrFromInt(at)).*),
-        .i8 => signed(@as(*const i8, @ptrFromInt(at)).*),
-        .i16 => signed(@as(*const i16, @ptrFromInt(at)).*),
-        .i32 => signed(@as(*const i32, @ptrFromInt(at)).*),
-        .i64 => signed(@as(*const i64, @ptrFromInt(at)).*),
-        _ => unreachable,
-    };
-}
-
-fn unsigned(value: u64) Number {
-    return .{ .negative = false, .magnitude = value };
-}
-
-fn signed(value: i64) Number {
-    return .{ .negative = value < 0, .magnitude = @abs(value) };
-}
-
 const Sink = struct {
     buffer: []u8,
     len: usize = 0,
@@ -692,15 +660,6 @@ const Sink = struct {
             .raw => sink.raw(bytes),
             _ => unreachable,
         }
-    }
-
-    inline fn number(sink: *Sink, n: Number) void {
-        sink.reserve(21);
-        if (n.negative) {
-            sink.buffer[sink.len] = '-';
-            sink.len += 1;
-        }
-        sink.digits(n.magnitude);
     }
 
     /// A static run: copied as 32-byte blocks (the text has slack after it).
@@ -807,25 +766,6 @@ const Sink = struct {
         @memcpy(sink.buffer[sink.len..][0..bytes_.len], bytes_);
         sink.len += bytes_.len;
     }
-
-    /// Two digits at a time from a table, straight into place.
-    fn digits(sink: *Sink, value: u64) void {
-        var count: usize = 1;
-        var v = value;
-        while (v >= 10) : (v /= 10) count += 1;
-        var end = sink.len + count;
-        sink.len = end;
-        v = value;
-        while (v >= 100) : (v /= 100) {
-            end -= 2;
-            sink.buffer[end..][0..2].* = pairs[(v % 100) * 2 ..][0..2].*;
-        }
-        if (v >= 10) {
-            sink.buffer[end - 2 ..][0..2].* = pairs[v * 2 ..][0..2].*;
-        } else {
-            sink.buffer[end - 1] = '0' + @as(u8, @intCast(v));
-        }
-    }
 };
 
 const V = @Vector(16, u8);
@@ -866,15 +806,6 @@ const entity_len = blk: {
     break :blk table;
 };
 
-const pairs = blk: {
-    var table: [200]u8 = undefined;
-    for (0..100) |i| {
-        table[i * 2] = '0' + i / 10;
-        table[i * 2 + 1] = '0' + i % 10;
-    }
-    break :blk table;
-};
-
 test "templates: escaping, short and long, every byte at every position" {
     const text: [64]u8 = @splat('x');
     var page: [64 * 6 + slack]u8 = undefined;
@@ -891,16 +822,5 @@ test "templates: escaping, short and long, every byte at every position" {
                 if (e.len > 0) try std.testing.expectEqualStrings(e, page[at..][0..e.len]);
             }
         }
-    }
-}
-
-test "templates: digits" {
-    var page: [64]u8 = undefined;
-    for ([_]u64{ 0, 7, 10, 99, 100, 120, 18446744073709551615 }) |n| {
-        var sink: Sink = .{ .buffer = &page, .text = "" };
-        sink.digits(n);
-        var expected: [24]u8 = undefined;
-        const printed = try std.fmt.bufPrint(&expected, "{d}", .{n});
-        try std.testing.expectEqualStrings(printed, page[0..sink.len]);
     }
 }

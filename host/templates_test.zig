@@ -178,7 +178,6 @@ const Scope = union(enum) {
 
 const Value = union(enum) {
     str: []const u8,
-    number: i128,
     flag: bool,
     items: []const Item,
     tags: []const Tag,
@@ -193,21 +192,15 @@ fn lookup(scope: Scope, name: []const u8) ?Value {
             if (eql(u8, name, "note")) return .{ .str = c.note.asSlice() };
             if (eql(u8, name, "items")) return .{ .items = items_of(c.items) };
             if (eql(u8, name, "meta")) return .{ .meta = &c.meta };
-            if (eql(u8, name, "delta")) return .{ .number = c.delta };
-            if (eql(u8, name, "count")) return .{ .number = c.count };
             if (eql(u8, name, "open")) return .{ .flag = c.open };
         },
         .item => |i| {
             if (eql(u8, name, "name")) return .{ .str = i.name.asSlice() };
             if (eql(u8, name, "tags")) return .{ .tags = tags_of(i.tags) };
-            if (eql(u8, name, "price")) return .{ .number = i.price };
             if (eql(u8, name, "hot")) return .{ .flag = i.hot };
         },
         .tag => |t| if (eql(u8, name, "label")) return .{ .str = t.label.asSlice() },
-        .meta => |m| {
-            if (eql(u8, name, "label")) return .{ .str = m.label.asSlice() };
-            if (eql(u8, name, "n")) return .{ .number = m.n };
-        },
+        .meta => |m| if (eql(u8, name, "label")) return .{ .str = m.label.asSlice() },
     }
     return null;
 }
@@ -295,7 +288,6 @@ const Oracle = struct {
 
     fn value(o: *Oracle, node: *const parse.Node, v: Value) !void {
         switch (v) {
-            .number => |n| try o.out.print(o.arena, "{d}", .{n}),
             .str => |s| try o.text(s, node.escape),
             else => unreachable,
         }
@@ -367,19 +359,16 @@ const Generator = struct {
         const close = if (open.len == 3) " }}" else " }}}";
         try g.out.appendSlice(g.arena, open);
         try g.prefix(k);
+        // Only the Strs: a number is printed by a hole of Roc, which needs roc.
         const choice = g.random.int_less_than(u32, 3);
         try g.out.appendSlice(g.arena, switch (kinds[k]) {
             .ctx => switch (choice) {
-                0 => if (g.random.boolean()) "title" else "note",
-                1 => if (g.random.boolean()) "delta" else "count",
+                0 => "title",
+                1 => "note",
                 else => "meta.label",
             },
-            .item => switch (choice) {
-                0 => "name",
-                else => "price",
-            },
-            .tag => "label",
-            .meta => if (choice == 0) "n" else "label",
+            .item => "name",
+            .tag, .meta => "label",
         });
         try g.out.appendSlice(g.arena, close);
     }
@@ -556,7 +545,7 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
 
 /// The partial the generated pages include, over `meta`, which its
 /// includer names `badge`.
-const badge_source = "<b>{{ badge.label }}={{ badge.n }}</b>";
+const badge_source = "<b>{{ badge.label }}</b>";
 
 /// The checker accepts what the VM runs: the page, its `Ctx` declared as
 /// the layouts lay it, and Badge included where it stands.
@@ -607,9 +596,9 @@ test "fragments: alone, the bytes they render in place" {
 fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void {
     var prng: Prng = .init(seed);
     const page = "<h1>{{ title }}</h1>{{$Head}}<p>{{{ note }}} " ++
-        "{{ count }}{{#meta |m|}}{{$M}}[{{ m.label }}={{ m.n }}]{{/M}}" ++
+        "{{#meta |m|}}{{$M}}[{{ m.label }}]{{/M}}" ++
         "{{/meta}}</p>{{/Head}}<ul>\n{{#items |item|}}\n  {{$Row}}<li>{{ item.name }} " ++
-        "{{ item.price }}{{#item.tags |tag|}}<i>{{ tag.label }}</i>{{/item.tags}}{{> Hot}}" ++
+        "{{#item.tags |tag|}}<i>{{ tag.label }}</i>{{/item.tags}}{{> Hot}}" ++
         "</li>{{/Row}}\n{{/items}}\n</ul>";
     const tree = try parsed(arena, page);
     var fragments: [3]u16 = undefined;

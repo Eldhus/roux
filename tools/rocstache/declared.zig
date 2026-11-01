@@ -250,7 +250,7 @@ test "declared: the block's Ctx is the contract, with its docs" {
     var diagnostic: contract_.Diagnostic = .{};
     const source = "{{%\n# a note\n## The race's menu.\n## Prices are numbers.\nCtx : {\n" ++
         "\tdishes : List({ name : Str, price : U32 }),\n\tspare : F64,\n}\n%}}\n" ++
-        "<p>{{#dishes |dish|}}{{ dish.price }}{{/dishes}}</p>";
+        "<p>{{#dishes |dish|}}{{ dish.price.to_str() }}{{/dishes}}</p>";
     try testing.expectEqualStrings(
         "## The race's menu.\n## Prices are numbers.|" ++
             "{ dishes : List({ name : Str, price : U32 }), spare : F64 }",

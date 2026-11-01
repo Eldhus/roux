@@ -83,9 +83,9 @@ there; the page's fields are visible everywhere. A binder may not hide another n
 section's binder, and not a field of the page's `Ctx`.
 
 **Paths and expressions.** A tag that is only names and dots is a path: the renderer reads it
-straight from the record. A path prints a `Str`, or an integer up to 64 bits. Anything else is a
-Roc expression, and must be a `Str`, as Roc's own interpolation requires: a number needs
-`.to_str()`. An expression holds literals, interpolation, names, `Module.name`, fields, calls,
+straight from the record. Anything else is a Roc expression. Either way a tag prints a `Str`, as
+Roc's own interpolation requires: a number needs `.to_str()`, `{{ dish.id.to_str() }}`. A path is
+Roc too, the same field read the same way; it is only read without a call. An expression holds literals, interpolation, names, `Module.name`, fields, calls,
 method calls, Roc's operators and parentheses; anything bigger (`if`, `match`, a lambda, a record
 or list) goes in a function of yours, which the hole calls.
 
@@ -147,7 +147,7 @@ moving it to a file of its own:
 
 ```html
 {{#dishes |dish|}}
-  {{$Row}}<li id="dish-{{ dish.id }}">{{ dish.name }}: {{> Price}}</li>{{/Row}}
+  {{$Row}}<li id="dish-{{ dish.id.to_str() }}">{{ dish.name }}: {{> Price}}</li>{{/Row}}
 {{/dishes}}
 ```
 
@@ -218,7 +218,8 @@ roux dev: build 2 failed; build 1 still serving
 | `if` or a lambda in a hole | a hole holds a small expression; put the rest in a function |
 | a generic hole, no `Ctx` | reads a value whose type Roc cannot tell from the hole …: declare `{{% Ctx : ... %}}` |
 | a section left open | `dishes` is never closed |
-| an `F64` printed by a path | `price` a template prints a Str or an integer; format it in Roc … (it is F64) |
+| a `U32` printed by a path | `price` a template prints a Str: write Roc, `{{ price.to_str() }}` (it is U32) |
+| an `F64` printed by a path | `price` a template prints a Str: format it in Roc, `{{ Fmt.money(price) }}` (it is F64) |
 | `{{?}}` over a list | `dishes` `{{?}}` takes a Bool (it is List({ name : Str, price : U32 })) |
 | a partial that does not exist | `Header` is not a template here (no such .rocstache) |
 | a partial reading a name not in scope | `dish` is neither …, then: (included from templates/Page.rocstache) |

@@ -1104,17 +1104,23 @@ const Walker = struct {
         }
     }
 
+    /// A printed path is a `Str`, as a hole of Roc must be: a number is
+    /// printed by Roc (`.to_str()`), as Roc's interpolation prints it.
     fn check_value(walker: *Walker, node: *const parse.Node, target: u16) Error!void {
         switch (walker.contract.get(target).kind) {
-            .str, .int => {},
+            .str => {},
             .unknown => unreachable,
+            .int => return walker.fail_at(node, try walker.is_a(
+                target,
+                "a template prints a Str: write Roc, `{{ price.to_str() }}`",
+            )),
             .bool => return walker.fail_at(node, "is a Bool: use it as `{{?x}}`"),
             .list => return walker.fail_at(node, "is a list: print its elements, " ++
                 "or its length in Roc, `{{ items.len().to_str() }}`"),
             .record => return walker.fail_at(node, "is a record: print its fields"),
             .other => return walker.fail_at(node, try walker.is_a(
                 target,
-                "a template prints a Str or an integer; format it in Roc, into a Str field",
+                "a template prints a Str: format it in Roc, `{{ Fmt.money(price) }}`",
             )),
         }
     }
@@ -1317,11 +1323,11 @@ const declared_line = "{ items : List({ id : U64, name : Str, price : U32 }), " 
 test "contract: an include fits where its partial's tags fit, as the copy will run" {
     var buffer: [1024]u8 = undefined;
     const fit = [_][2][]const u8{
-        .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.price }}" },
+        .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.price.to_str() }}" },
         .{ "{{> P}}", "{{{ title }}}" },
-        .{ "{{#meta |m|}}{{> P}}{{/meta}}", "{{ m.n }}" },
+        .{ "{{#meta |m|}}{{> P}}{{/meta}}", "{{ m.n.to_str() }}" },
         .{ "{{> P}}", "{{#tags |tag|}}{{ tag }}{{/tags}}" },
-        .{ "{{> P}}", "{{#items |i|}}{{ i.id }}{{/items}}" },
+        .{ "{{> P}}", "{{#items |i|}}{{ i.id.to_str() }}{{/items}}" },
         .{ "{{> P}}", "{{?on}}y{{/on}}" },
         .{ "{{> P}}", "{{ meta.label }}" },
         .{ "{{> P}}", "{{^items}}none{{/items}}" },
@@ -1346,10 +1352,20 @@ test "contract: an include fits where its partial's tags fit, as the copy will r
         .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.nope }}", "`nope` the contract has" },
         .{ "{{> P}}", "{{?items}}x{{/items}}", "`items` `{{?}}` takes a Bool" },
         .{ "{{> P}}", "{{ meta }}", "`meta` is a record" },
+        // A number is printed by Roc.
+        .{
+            "{{#items |item|}}{{> P}}{{/items}}",
+            "{{ item.price }}",
+            "`item.price` a template prints a Str: write Roc, `{{ price.to_str() }}` (it is U32)",
+        },
         // Where its includer does not bind the name it reads.
-        .{ "{{#items |item|}}{{> P}}{{/items}}{{> P}}", "{{ item.id }}", "`item` is neither" },
+        .{ "{{#items |item|}}{{> P}}{{/items}}{{> P}}", "{{ item.name }}", "`item` is neither" },
         // The same name bound to another record.
-        .{ "{{#items |x|}}{{> P}}{{/items}}{{#meta |x|}}{{> P}}{{/meta}}", "{{ x.id }}", "`id`" },
+        .{
+            "{{#items |x|}}{{> P}}{{/items}}{{#meta |x|}}{{> P}}{{/meta}}",
+            "{{ x.name }}",
+            "`name`",
+        },
         // A partial's section may not hide its includer's names.
         .{ "{{#items |item|}}{{> P}}{{/items}}", "{{#tags |item|}}{{/tags}}", "`item` names" },
     };
@@ -1362,6 +1378,7 @@ test "contract: an include fits where its partial's tags fit, as the copy will r
             "Page `P` does not fit here: ", case[2],
         });
         defer testing.allocator.free(expected);
+        errdefer std.debug.print("said {s}\n", .{result});
         try testing.expect(std.mem.startsWith(u8, result, expected));
     }
 }
@@ -1390,7 +1407,8 @@ test "contract: an inferred includer takes a declared partial's types" {
     var buffer: [512]u8 = undefined;
     const d = .{
         "D",
-        "{{% Ctx : { price : U32, tags : List(Str) } %}}{{ price }}{{#tags |t|}}{{ t }}{{/tags}}",
+        "{{% Ctx : { price : U32, tags : List(Str) } %}}{{ price.to_str() }}" ++
+            "{{#tags |t|}}{{ t }}{{/tags}}",
     };
     // Its bare names are the page's fields, wherever it stands.
     const cases = [_][2][]const u8{
@@ -1406,20 +1424,20 @@ test "contract: an inferred includer takes a declared partial's types" {
 
 test "contract: a fragment's contract is the fields of its scope it reads" {
     var buffer: [1024]u8 = undefined;
-    const price = .{ "Price", "{{ item.price }}" };
+    const price = .{ "Price", "{{ item.price.to_str() }}" };
     const cases = [_][2][]const u8{
         .{ "{{$Hello}}x{{/Hello}}", " | Hello: {}" },
-        .{ "{{$Total}}{{ n }}{{/Total}}", " | Total: { n : U32 }" },
+        .{ "{{$Total}}{{ n.to_str() }}{{/Total}}", " | Total: { n : U32 }" },
         .{ "{{#items |item|}}{{$Row}}{{ item.name }}{{/Row}}{{/items}}", " | Row: { name : Str }" },
         .{
-            "{{#items |item|}}{{$Row}}{{ item.id }}{{ item.name }}{{ item.price }}{{/Row}}" ++
-                "{{/items}}",
+            "{{#items |item|}}{{$Row}}{{ item.id.to_str() }}{{ item.name }}" ++
+                "{{ item.price.to_str() }}{{/Row}}{{/items}}",
             " | Row: { id : U64, name : Str, price : U32 }",
         },
         .{ "{{#meta |m|}}{{$M}}{{ m.label }}{{/M}}{{/meta}}", " | M: { label : Str }" },
         // A field read comes whole.
         .{
-            "{{$Top}}{{#meta |m|}}{{ m.n }}{{/meta}}{{/Top}}",
+            "{{$Top}}{{#meta |m|}}{{ m.n.to_str() }}{{/meta}}{{/Top}}",
             " | Top: { meta : { label : Str, n : U64 } }",
         },
         // A page's name read in a section inside the fragment.
@@ -1428,21 +1446,22 @@ test "contract: a fragment's contract is the fields of its scope it reads" {
             " | All: { items : List({ id : U64, name : Str, price : U32 }), title : Str }",
         },
         .{
-            "{{$Outer}}{{ title }}{{#items |item|}}{{$Inner}}{{ item.id }}{{/Inner}}{{/items}}" ++
-                "{{/Outer}}",
+            "{{$Outer}}{{ title }}{{#items |item|}}{{$Inner}}{{ item.id.to_str() }}{{/Inner}}" ++
+                "{{/items}}{{/Outer}}",
             " | Outer: { items : List({ id : U64, name : Str, price : U32 }), title : Str }" ++
                 " | Inner: { id : U64 }",
         },
         // Through a partial.
         .{
-            "{{#items |item|}}{{$Row}}{{ item.id }}{{> Price}}{{/Row}}{{/items}}",
+            "{{#items |item|}}{{$Row}}{{ item.id.to_str() }}{{> Price}}{{/Row}}{{/items}}",
             " | Row: { id : U64, price : U32 }",
         },
         .{ "{{?on}}{{$X}}{{ title }}{{/X}}{{/on}}", " | X: { title : Str }" },
         .{ "{{^tags}}{{$X}}{{ title }}{{/X}}{{/tags}}", " | X: { title : Str }" },
         // Two in one scope, each its own.
         .{
-            "{{#items |item|}}{{$A}}{{ item.id }}{{/A}}{{$B}}{{ item.name }}{{/B}}{{/items}}",
+            "{{#items |item|}}{{$A}}{{ item.id.to_str() }}{{/A}}{{$B}}{{ item.name }}{{/B}}" ++
+                "{{/items}}",
             " | A: { id : U64 } | B: { name : Str }",
         },
     };
