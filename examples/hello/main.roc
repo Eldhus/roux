@@ -1,4 +1,4 @@
-app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
+app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import templates/Holes
@@ -10,10 +10,6 @@ import templates/Holes
 ## - anything else 404.
 
 Context : {}
-
-## The holes of Roc in the app's templates, which `roux build` writes
-## (none here: it has no templates).
-Hole : Holes.Hole
 
 program = { init!, respond!, hole: Holes.hole }
 

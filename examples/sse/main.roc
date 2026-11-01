@@ -1,4 +1,4 @@
-app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
+app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.Sse
@@ -21,10 +21,6 @@ import templates/Holes
 ## - `/send-after-end`: a send after the end is `Refused`;
 ## - `/no-stream`: `Server.streamed()` returned without a stream is a 500.
 Context : {}
-
-## The holes of Roc in the app's templates, which `roux build` writes
-## (none here: it has no templates).
-Hole : Holes.Hole
 
 program = { init!, respond!, hole: Holes.hole }
 

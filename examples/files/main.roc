@@ -1,4 +1,4 @@
-app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
+app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.File
@@ -12,9 +12,6 @@ import templates/Holes
 ## `/first-line` answers notes.txt's first line as `init!` read it once, at
 ## start (as a secret or a setting is read).
 Context : { first_line : Str }
-
-## The holes of Roc in the app's templates, which `roux build` writes.
-Hole : Holes.Hole
 
 program = { init!, respond!, hole: Holes.hole }
 

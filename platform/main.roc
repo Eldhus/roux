@@ -1,13 +1,14 @@
 platform "roux"
 	requires {
-		[Context : context, Hole : hole] for program : {
+		[Context : context] for program : {
 			init! : () => Try({ config : Server.Config, context : context }, [Exit(I64), ..]),
 			# `_template`: the app's Templates.Template, which its generated
 			# constructors pin whatever the app sends.
 			respond! : Server.Request, context => Try(Server.Response(_template), _err),
 			# The app's templates/Holes.roc `hole`: the Str of each hole of
-			# Roc, `Hole` holding the values it reads.
-			hole : hole -> Str,
+			# Roc, its argument the app's `Holes.Hole` (holding the values the
+			# hole reads), which Roc infers: the app need not name it.
+			hole : _hole -> Str,
 		}
 	}
 	exposes [Server, Stdout, Stderr, Rocstache, File, Sse, Url, Sqlite, Sleep]
@@ -86,7 +87,7 @@ respond_for_host! = |request, boxed_context| {
 ## The renderer calls this at a hole of Roc, with the hole's tag and the
 ## values it reads, boxed: the host is compiled before the app, so it
 ## cannot know the union's size, and a box is one pointer whatever it holds.
-hole_for_host : Box(Hole) -> Str
+hole_for_host : Box(_) -> Str
 hole_for_host = |boxed| (program.hole)(Box.unbox(boxed))
 
 ## The status for an error `respond!` returns, by its tag: `NotFound` is

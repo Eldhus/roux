@@ -1,4 +1,4 @@
-app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
+app [Context, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.Rocstache
@@ -13,9 +13,6 @@ import templates/Holes
 ## whole response is a pure function, and `roc test` checks it. The menu
 ## is the app's context, made once by `init!`.
 Context : { menu : Page.Ctx }
-
-## The holes of Roc in the app's templates, which `roux build` writes.
-Hole : Holes.Hole
 
 program = { init!, respond!, hole: Holes.hole }
 
