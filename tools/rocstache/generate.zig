@@ -257,7 +257,7 @@ fn begin_with(
     }
     const holes = try holes_of(gpa, units, templates);
     for (kept, 0..) |k, index| {
-        const changed = try write_module(gpa, io, app, cache, k, units, index, holes);
+        const changed = try write_module(gpa, io, app, cache, k, units, index);
         if (changed) modules_changed = true;
     }
     var build = try cwd.openDir(io, options.build, .{});
@@ -268,7 +268,7 @@ fn begin_with(
     if (names.len > 0) {
         if (try write_union(gpa, io, app, cache, units, glue.id())) modules_changed = true;
     }
-    if (try write_holes(gpa, io, app, cache, holes)) modules_changed = true;
+    if (try write_holes(gpa, io, app, cache, holes, templates)) modules_changed = true;
     return .{
         .options = options,
         .cache = cache,
@@ -650,16 +650,30 @@ fn hole_less(_: void, a: roc.Hole, b: roc.Hole) bool {
     return a.key < b.key;
 }
 
-/// `Holes.roc`; says whether the file changed.
+/// `Holes.roc`, under what the blocks of the templates holding its holes
+/// import; says whether the file changed.
 fn write_holes(
     gpa: Allocator,
     io: Io,
     app: Io.Dir,
     cache: *Cache,
     holes: []const roc.Hole,
+    templates: []const contract_.Template,
 ) Error!bool {
+    var imports: std.ArrayList([]const u8) = .empty;
+    for (templates) |t| {
+        const holds = for (holes) |h| {
+            if (std.mem.eql(u8, h.template, t.name)) break true;
+        } else false;
+        if (!holds) continue;
+        for (t.contract.?.import_slice()) |name| {
+            for (imports.items) |seen| {
+                if (std.mem.eql(u8, seen, name)) break;
+            } else try imports.append(gpa, name);
+        }
+    }
     var text: Io.Writer.Allocating = .init(gpa);
-    try roc.write_holes(holes, &text.writer);
+    try roc.write_holes(holes, imports.items, &text.writer);
     return write_output(cache, gpa, io, app, "app", "Holes.roc", text.written());
 }
 
@@ -683,17 +697,9 @@ fn write_module(
     k: *Kept,
     units: []const Unit,
     index: usize,
-    all_holes: []const roc.Hole,
 ) Error!bool {
-    var holes: std.ArrayList(roc.Hole) = .empty;
-    var identity = std.hash.Wyhash.init(k.contract_key);
-    for (all_holes) |h| {
-        if (!std.mem.eql(u8, h.template, k.name)) continue;
-        try holes.append(gpa, h);
-        identity.update(std.mem.asBytes(&h.key));
-    }
-    // Its holes come from every page that includes it, too.
-    const key = identity.final();
+    // Its contract alone: the holes' Roc is in `Holes.roc`.
+    const key = k.contract_key;
     if (k.module_key == key) return false;
     var text: Io.Writer.Allocating = .init(gpa);
     var fragments: std.ArrayList(roc.Fragment) = .empty;
@@ -706,7 +712,6 @@ fn write_module(
         .name = k.name,
         .contract = k.contract.?,
         .fragments = fragments.items,
-        .holes = holes.items,
     };
     try roc.write_module(module, &text.writer);
     const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{k.name});

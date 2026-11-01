@@ -4,6 +4,9 @@ main
 # Made by roux build, and its layouts hash keys the path roc is installed at:
 # a committed copy is wrong on any other machine. The build writes it first.
 templates/Templates.roc
+# Made by roux build: the holes' Roc, which changes with every hole edit. A
+# template's own module changes only when what it takes does.
+templates/Holes.roc
 # The app's SQLite database.
 *.db
 *.db-wal
