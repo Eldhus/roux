@@ -64,6 +64,8 @@ pub const Type = struct {
     tag_union: ?TagUnion = null,
 };
 
+pub const Holes = struct { tag_union: TagUnion, size: u32 };
+
 /// A hosted function of the throwaway platform: `Contracts.t3!`, and its
 /// argument's type.
 pub const Hosted = struct { name: []const u8, type: u32 };
@@ -98,6 +100,19 @@ pub const Layouts = struct {
         for (layouts.contracts) |c| {
             if (std.mem.eql(u8, c.name, "Contracts.templates!")) {
                 return layouts.get(c.type).tag_union;
+            }
+        }
+        return null;
+    }
+
+    /// The app's `Holes.Hole`: the union `Contracts.holes!` takes, and its
+    /// size, or null (no hole of Roc, or glue did not lay it out as one).
+    pub fn holes(layouts: *const Layouts) ?Holes {
+        for (layouts.contracts) |c| {
+            if (std.mem.eql(u8, c.name, "Contracts.holes!")) {
+                const type_ = layouts.get(c.type);
+                const tag_union = type_.tag_union orelse return null;
+                return .{ .tag_union = tag_union, .size = type_.size };
             }
         }
         return null;
@@ -149,9 +164,16 @@ pub const Contract = struct {
 };
 
 /// `Contracts.roc`: one hosted function per contract that holds anything,
-/// taking it concretely (spelled out: glue lays out each alone).
-pub fn write_contracts(contracts: []const Contract, writer: *Writer) Writer.Error!void {
+/// taking it concretely (spelled out: glue lays out each alone); then the
+/// templates' union, and the holes' (`holes`: `[H…({ … }), …]`, as
+/// Holes.roc spells it, or "" when there are none).
+pub fn write_contracts(
+    contracts: []const Contract,
+    holes: []const u8,
+    writer: *Writer,
+) Writer.Error!void {
     try writer.writeAll("Contracts := [].{\n");
+    if (holes.len > 0) try writer.print("\tholes! : {s} => {{}}\n", .{holes});
     for (contracts) |c| {
         if (c.empty()) continue;
         try writer.print("\tt{d}! : ", .{c.index});
@@ -173,7 +195,11 @@ pub fn write_contracts(contracts: []const Contract, writer: *Writer) Writer.Erro
 }
 
 /// The throwaway platform's `main.roc`.
-pub fn write_platform(contracts: []const Contract, writer: *Writer) Writer.Error!void {
+pub fn write_platform(
+    contracts: []const Contract,
+    holes: []const u8,
+    writer: *Writer,
+) Writer.Error!void {
     try writer.writeAll("platform \"contracts\"\n" ++
         "\trequires {} { main! : () => {} }\n" ++
         "\texposes []\n\tpackages {}\n" ++
@@ -186,6 +212,7 @@ pub fn write_platform(contracts: []const Contract, writer: *Writer) Writer.Error
     if (contracts.len > 0) {
         try writer.writeAll("\t\t\"contract_templates\": Contracts.templates!,\n");
     }
+    if (holes.len > 0) try writer.writeAll("\t\t\"contract_holes\": Contracts.holes!,\n");
     try writer.writeAll("\t}\n" ++
         "\ttargets: { inputs_dir: \"targets/\", x64musl: { inputs: [app] } }\n\n" ++
         "import Contracts\n\nmain_for_host! : () => {}\nmain_for_host! = || main!()\n");

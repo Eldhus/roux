@@ -26,6 +26,7 @@ const roc = @import("roc.zig");
 const bytecode = @import("bytecode.zig");
 const program_ = @import("program.zig");
 const layout = @import("layout.zig");
+const hole_ = @import("hole.zig");
 const cache_ = @import("cache.zig");
 const Kept = cache_.Kept;
 
@@ -89,6 +90,8 @@ pub const Generation = struct {
     kept: []const *Kept,
     templates: []const contract_.Template,
     units: []const Unit,
+    /// The holes of Roc, by key: their tags in the app's `Holes.Hole`.
+    holes: []const roc.Hole,
     build: Io.Dir,
     glue: Glue,
     templates_count: u32,
@@ -257,15 +260,19 @@ fn begin_with(
         c.* = .{ .index = @intCast(index), .name = u.name, .contract = u.contract };
         n.* = u.name;
     }
+    const holes = try holes_of(gpa, units, templates);
     for (kept, 0..) |k, index| {
-        const changed = try write_module(gpa, io, app, cache, k, units, index);
+        const changed = try write_module(gpa, io, app, cache, k, units, index, holes);
         if (changed) modules_changed = true;
     }
     var build = try cwd.openDir(io, options.build, .{});
     errdefer build.close(io);
-    const glue = try glue_start(gpa, io, build, options, cache, unit_names, contracts, errors);
-    if (names.len > 0 and try write_union(gpa, io, app, cache, units, glue.id())) {
-        modules_changed = true;
+    const union_ = try holes_union(gpa, holes);
+    const glue =
+        try glue_start(gpa, io, build, options, cache, unit_names, contracts, union_, errors);
+    if (names.len > 0) {
+        if (try write_union(gpa, io, app, cache, units, glue.id())) modules_changed = true;
+        if (try write_holes(gpa, io, app, cache, holes)) modules_changed = true;
     }
     return .{
         .options = options,
@@ -273,6 +280,7 @@ fn begin_with(
         .kept = kept,
         .templates = templates,
         .units = units,
+        .holes = holes,
         .build = build,
         .glue = glue,
         .templates_count = @intCast(kept.len),
@@ -599,6 +607,77 @@ fn contract_of(
 
 /// A template's `Menu.roc`, unless its contract is what it was when it was
 /// last written; says whether the file changed.
+/// Every distinct hole of Roc the pages hold, by key: its parameters built
+/// again from where the page's walk met it, as the check named it.
+fn holes_of(
+    gpa: Allocator,
+    units: []const Unit,
+    templates: []const contract_.Template,
+) Error![]const roc.Hole {
+    var holes: std.ArrayList(roc.Hole) = .empty;
+    const params = try gpa.create(contract_.Contract);
+    for (units) |u| {
+        // A fragment's holes are its page's.
+        if (u.fragment != null) continue;
+        for (u.contract.hole_slice()) |*site| {
+            const seen = for (holes.items) |h| {
+                if (h.key == site.key) break true;
+            } else false;
+            if (seen) continue;
+            const template = for (templates) |t| {
+                if (std.mem.eql(u8, t.name, site.template)) break t;
+            } else unreachable;
+            const node = &template.tree.nodes[site.node];
+            const parsed = contract_.expression_of(node);
+            var leaves: [hole_.reads_max]contract_.Leaf = undefined;
+            _ = try contract_.of_hole(params, u.contract, site.scope_slice(), &parsed, &leaves);
+            var line: Io.Writer.Allocating = .init(gpa);
+            try contract_.write_line(params, params.root, &line.writer);
+            var names: std.ArrayList([]const u8) = .empty;
+            var fields = params.fields_of(params.root);
+            while (fields.next()) |f| try names.append(gpa, f.name);
+            try holes.append(gpa, .{
+                .key = site.key,
+                .template = site.template,
+                .expression = node.expression,
+                .params = line.written(),
+                .names = names.items,
+            });
+        }
+    }
+    std.mem.sortUnstable(roc.Hole, holes.items, {}, hole_less);
+    return holes.items;
+}
+
+fn hole_less(_: void, a: roc.Hole, b: roc.Hole) bool {
+    return a.key < b.key;
+}
+
+/// `Holes.roc`; says whether the file changed.
+fn write_holes(
+    gpa: Allocator,
+    io: Io,
+    app: Io.Dir,
+    cache: *Cache,
+    holes: []const roc.Hole,
+) Error!bool {
+    var text: Io.Writer.Allocating = .init(gpa);
+    try roc.write_holes(holes, &text.writer);
+    return write_output(cache, gpa, io, app, "app", "Holes.roc", text.written());
+}
+
+/// `[H…({ … }), …]`, as `Holes.roc` spells the union, for glue; "" for none.
+fn holes_union(gpa: Allocator, holes: []const roc.Hole) Error![]const u8 {
+    if (holes.len == 0) return "";
+    var text: Io.Writer.Allocating = .init(gpa);
+    try text.writer.writeAll("[");
+    for (holes, 0..) |h, k| {
+        try text.writer.print("{s}H{x:0>16}({s})", .{ if (k == 0) "" else ", ", h.key, h.params });
+    }
+    try text.writer.writeAll("]");
+    return text.written();
+}
+
 fn write_module(
     gpa: Allocator,
     io: Io,
@@ -607,8 +686,17 @@ fn write_module(
     k: *Kept,
     units: []const Unit,
     index: usize,
+    all_holes: []const roc.Hole,
 ) Error!bool {
-    const key = k.contract_key;
+    var holes: std.ArrayList(roc.Hole) = .empty;
+    var identity = std.hash.Wyhash.init(k.contract_key);
+    for (all_holes) |h| {
+        if (!std.mem.eql(u8, h.template, k.name)) continue;
+        try holes.append(gpa, h);
+        identity.update(std.mem.asBytes(&h.key));
+    }
+    // Its holes come from every page that includes it, too.
+    const key = identity.final();
     if (k.module_key == key) return false;
     var text: Io.Writer.Allocating = .init(gpa);
     var fragments: std.ArrayList(roc.Fragment) = .empty;
@@ -621,6 +709,7 @@ fn write_module(
         .name = k.name,
         .contract = k.contract.?,
         .fragments = fragments.items,
+        .holes = holes.items,
     };
     try roc.write_module(module, &text.writer);
     const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{k.name});
@@ -749,13 +838,14 @@ fn glue_start(
     cache: *Cache,
     kept: []const []const u8,
     contracts: []const layout.Contract,
+    holes: []const u8,
     errors: *Io.Writer,
 ) Error!Glue {
     try build.createDirPath(io, "glue");
     var platform: Io.Writer.Allocating = .init(gpa);
-    try layout.write_platform(contracts, &platform.writer);
+    try layout.write_platform(contracts, holes, &platform.writer);
     var declared: Io.Writer.Allocating = .init(gpa);
-    try layout.write_contracts(contracts, &declared.writer);
+    try layout.write_contracts(contracts, holes, &declared.writer);
     var identity = std.hash.Wyhash.init(0);
     identity.update(layout.spec);
     assert(options.roc_version.len > 0);
