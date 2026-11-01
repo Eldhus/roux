@@ -1,8 +1,9 @@
 //! What the language server says about a point of a template, read from
 //! its analysis (analysis.zig): the contract decides every type, as it
 //! does for `roux build`. A hover's text: the type of the path segment
-//! under the cursor, what a partial reads, what a fragment takes. And
-//! completions: the names in scope and their fields, the templates beside
+//! under the cursor, the function a hole of Roc compiles to, what a
+//! partial reads, what a fragment takes. And completions: the names in
+//! scope and their fields (in a hole of Roc too), the templates beside
 //! this one after `>`.
 
 const std = @import("std");
@@ -11,6 +12,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const parse = @import("parse.zig");
 const contract_ = @import("contract.zig");
+const hole_ = @import("hole.zig");
 const analysis = @import("analysis.zig");
 const generate = @import("generate.zig");
 const cache = @import("cache.zig");
@@ -21,10 +23,11 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
     const contract = result.contract orelse return null;
     const self = result.templates[0];
     assert(offset <= self.source.len);
-    const node = for (self.tree.slice()) |*node| {
+    const index: u16 = for (self.tree.slice(), 0..) |*node, i| {
         if (node.kind == .text) continue;
-        if (node.offset <= offset and offset < node.offset + node.length) break node;
+        if (node.offset <= offset and offset < node.offset + node.length) break @intCast(i);
     } else return null;
+    const node = &self.tree.nodes[index];
     const scopes = analysis.scopes_at(contract, self.tree, self.source, node.offset);
     const path = node.path_slice();
     for (path, 0..) |segment, k| {
@@ -34,8 +37,8 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
     }
     if (node.kind == .partial) return try partial_text(arena, result, node);
     if (node.kind == .fragment) return try fragment_text(arena, result, node);
-    // A Roc expression is Roc's to describe.
-    if (node.expression.len > 0) return null;
+    // A hole of Roc: the function it is, its parameters what it reads.
+    if (node.expression.len > 0) return try hole_text(arena, contract, self, index);
     // Elsewhere in the tag (its braces, `#`, its binder): the whole path's type.
     const target = analysis.lookup(contract, &scopes, path) orelse return null;
     return try typed(arena, contract, node.text, target);
@@ -59,6 +62,31 @@ fn typed(
     var line: std.Io.Writer.Allocating = .init(arena);
     contract_.write_line(contract, index, &line.writer) catch return error.OutOfMemory;
     return arena.print("```roc\n{s} : {s}\n```", .{ label, line.written() });
+}
+
+/// A hole of Roc as the build compiles it: a function of exactly what it
+/// reads, each value of the type it has here. Null for a hole the check
+/// did not type (a page whose holes Roc types when it builds).
+fn hole_text(
+    arena: Allocator,
+    contract: *const contract_.Contract,
+    template: contract_.Template,
+    index: u16,
+) Allocator.Error!?[]const u8 {
+    for (contract.hole_slice()) |*site| {
+        if (site.node != index or !std.mem.eql(u8, site.template, template.name)) continue;
+        const params = try cache.create_unfilled(arena, contract_.Contract);
+        var leaves: [hole_.reads_max]contract_.Leaf = undefined;
+        const parsed = contract_.expression_of(&template.tree.nodes[index]);
+        const scopes = site.scope_slice();
+        _ = contract_.of_hole(params, contract, scopes, site.binder_slice(), &parsed, &leaves) catch
+            return null;
+        var line: std.Io.Writer.Allocating = .init(arena);
+        contract_.write_line(params, params.root, &line.writer) catch return error.OutOfMemory;
+        return try arena.print("A hole of Roc, compiled as a function of what it reads:\n" ++
+            "```roc\n{s} -> Str\n```", .{line.written()});
+    }
+    return null;
 }
 
 /// A partial is copied in here and reads the names in scope here.
@@ -157,7 +185,25 @@ fn wanted(so_far: []const u8) ?Wanted {
         },
         else => {},
     };
-    return field_of(rest);
+    // A hole may be Roc: the name being typed is the path at its end
+    // (`Fmt.kr(dish.pr`); a module's (`Fmt.k`) is Roc's to complete.
+    var start = rest.len;
+    while (start > 0 and path_byte(rest[start - 1])) start -= 1;
+    const name = rest[start..];
+    if (name.len > 0 and std.ascii.isUpper(name[0])) return null;
+    // Nothing typed yet: a name may start here only at the hole's start,
+    // or after `(`, `,` or `{`.
+    if (name.len == 0 and start > 0) {
+        const before = std.mem.trimEnd(u8, rest, " \t");
+        if (before.len > 0 and std.mem.indexOfScalar(u8, "(,{", before[before.len - 1]) == null) {
+            return null;
+        }
+    }
+    return field_of(name);
+}
+
+fn path_byte(b: u8) bool {
+    return std.ascii.isAlphanumeric(b) or b == '_' or b == '.';
 }
 
 /// `a.b.pre`: a path whose last segment is still being typed.
@@ -322,9 +368,14 @@ test "assist: completion offers the fields in scope, typed or not, closed or not
         .{ declared ++ "{{^ti$}}none{{/title}}", "title" },
         .{ declared ++ "<p>{{ t$", "title" }, // never closed
         .{ declared ++ "{{! $}}", "" },
-        // Past a path, Roc's to complete.
-        .{ declared ++ "{{ title | up$}}", "" },
+        // In a hole of Roc: the name being typed at its end, its fields too.
+        .{ declared ++ "{{ Fmt.kr(user.$}}", "age name" },
+        .{ declared ++ "{{#items |item|}}{{ Fmt.kr(item.pr$) }}{{/items}}", "price" },
+        .{ declared ++ "{{ Fmt.both(title, $}}", "items title user" },
+        // A module's name is Roc's; past a whole term, nothing starts here.
+        .{ declared ++ "{{ Fmt.k$}}", "" },
         .{ declared ++ "{{ Fmt.kr(user.age) $}}", "" },
+        .{ declared ++ "{{ title | up$}}", "" },
     };
     for (cases) |case| {
         errdefer std.debug.print("case {s}\n", .{case[0]});
@@ -360,7 +411,7 @@ test "assist: hover shows the segment's type, a partial, a fragment" {
     const page = "{{% Ctx : { frame : { title : Str }, n : List(Str), " ++
         "items : List({ id : U64, name : { first : Str } }) } %}}" ++
         "{{> Top}}{{#items |item|}}{{$Row}}{{ item.name.first }}{{/Row}}" ++
-        "{{#n |line|}}{{ line }}{{/n}}{{/items}}";
+        "{{#n |line|}}{{ line }}{{/n}}{{ item.id.to_str() }}{{/items}}";
     const result = try analysis.analyze(arena, testing.io, .{
         .path = "/app/templates/Page.rocstache",
         .source = page,
@@ -379,6 +430,12 @@ test "assist: hover shows the segment's type, a partial, a fragment" {
         .{ .on = "name.first", .expected = "```roc\nname : { first : Str }\n```" },
         .{ .on = "first }", .expected = "```roc\nfirst : Str\n```" },
         .{ .on = "#n ", .expected = "```roc\nn : List(Str)\n```" },
+        // A hole of Roc: the function the build compiles.
+        .{
+            .on = "to_str",
+            .expected = "A hole of Roc, compiled as a function of what it reads:\n" ++
+                "```roc\n{ item : { id : U64 } } -> Str\n```",
+        },
         .{
             .on = "Top}}",
             .expected = "`Top.rocstache`, copied in here: its tags read the names in " ++
