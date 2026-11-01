@@ -75,6 +75,123 @@ pub const Error = error{Invalid};
 /// of, by its place on the stack, and the path's type.
 pub const Resolved = struct { scope: u8, type: u16 };
 
+/// A read a hole's parameters keep (none other covers it): the renderer
+/// copies its value, from the open scope at `scope`.
+pub const Leaf = struct { read: hole.Read, scope: u8 };
+
+pub const holes_max = 256;
+
+/// A distinct hole of a page, as its walk met it: the template whose text
+/// holds it, its node there, and the open scopes' types, from which its
+/// parameters are built again (`of_hole`). `key` names its Roc function.
+pub const HoleSite = struct {
+    key: u64,
+    template: []const u8,
+    node: u16,
+    scopes: [parse.depth_max]u16,
+    scopes_len: u8,
+
+    pub fn scope_slice(site: *const HoleSite) []const u16 {
+        return site.scopes[0..site.scopes_len];
+    }
+};
+
+/// Where `of_hole` builds a hole's parameters while a walk checks it.
+var hole_buffer: Contract = undefined;
+
+/// A hole's parameters, as a record: each free name a field, narrowed to
+/// the paths the expression reads below it, each read's value whole. A read
+/// another covers (a shorter path to it, or the same one earlier) is that
+/// one's. The reads kept are the leaves, which the renderer copies: their
+/// count is returned. `scopes` are the open scopes' types in `page`, where
+/// the check found each name in one of them.
+pub fn of_hole(
+    into: *Contract,
+    page: *const Contract,
+    scopes: []const u16,
+    parsed: *const hole.Hole,
+    leaves: *[hole.reads_max]Leaf,
+) Error!u8 {
+    into.types_len = 0;
+    into.fields_len = 0;
+    into.declared = true;
+    into.alone = true;
+    into.docs = "";
+    into.fragments_len = 0;
+    into.imports_len = 0;
+    into.holes_len = 0;
+    var diagnostic: Diagnostic = .{};
+    var walker: Walker = .{ .contract = into, .templates = &.{}, .diagnostic = &diagnostic };
+    into.root = try walker.new(.record, 0);
+    var count: u8 = 0;
+    for (parsed.read_slice(), 0..) |*read, index| {
+        if (covered(parsed, index)) continue;
+        const scope = nearest(page, scopes, read.path[0]).?;
+        leaves[count] = .{ .read = read.*, .scope = @intCast(scope) };
+        count += 1;
+        var from = scopes[scope];
+        var at = into.root;
+        for (read.path_slice(), 1..) |segment, length| {
+            from = page.field(from, segment).?;
+            const last = length == read.path_len;
+            if (into.field(at, segment)) |existing| {
+                // A shorter read would have covered this one.
+                assert(!last);
+                at = existing;
+                continue;
+            }
+            const child = try walker.new(if (last) .unknown else .record, 0);
+            try into.add_field(at, segment, child);
+            if (last) try walker.copy(page, from, child, 1);
+            at = child;
+        }
+    }
+    assert(count > 0 or parsed.reads_len == 0);
+    return count;
+}
+
+/// Whether another read of the hole covers read `index`: its path is a
+/// shorter start of this one's, or the same path read earlier.
+fn covered(parsed: *const hole.Hole, index: usize) bool {
+    const mine = parsed.reads[index].path_slice();
+    for (parsed.read_slice(), 0..) |*other, k| {
+        if (k == index) continue;
+        const theirs = other.path_slice();
+        if (theirs.len > mine.len or (theirs.len == mine.len and k > index)) continue;
+        const starts = for (theirs, mine[0..theirs.len]) |a, b| {
+            if (!std.mem.eql(u8, a, b)) break false;
+        } else true;
+        if (starts) return true;
+    }
+    return false;
+}
+
+/// The innermost open scope whose record has the field `name`.
+fn nearest(page: *const Contract, scopes: []const u16, name: []const u8) ?usize {
+    var k = scopes.len;
+    while (k > 0) {
+        k -= 1;
+        const scope = page.get(scopes[k]);
+        if (scope.kind == .record and page.field(scopes[k], name) != null) return k;
+    }
+    return null;
+}
+
+/// A hole's name: its template, its expression as written and its
+/// parameters' Roc type. A markup change that keeps all three keeps it.
+pub fn hole_key(template: []const u8, expression: []const u8, params: *const Contract) !u64 {
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try write_line(params, params.root, &writer);
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(template);
+    hasher.update(&.{0});
+    hasher.update(expression);
+    hasher.update(&.{0});
+    hasher.update(writer.buffered());
+    return hasher.final();
+}
+
 /// A value node's Roc expression, parsed again: parse.zig checked it.
 pub fn expression_of(node: *const parse.Node) hole.Hole {
     assert(node.kind == .value);
@@ -103,6 +220,10 @@ pub const Contract = struct {
     /// Roc may name, imported by its generated module.
     imports: [imports_max][]const u8 = undefined,
     imports_len: u8 = 0,
+    /// Its distinct holes whose Roc the build compiles, its partials'
+    /// included here among them.
+    holes: [holes_max]HoleSite = undefined,
+    holes_len: u16 = 0,
 
     pub fn fragment_slice(contract: *const Contract) []const Fragment {
         return contract.fragments[0..contract.fragments_len];
@@ -110,6 +231,10 @@ pub const Contract = struct {
 
     pub fn import_slice(contract: *const Contract) []const []const u8 {
         return contract.imports[0..contract.imports_len];
+    }
+
+    pub fn hole_slice(contract: *const Contract) []const HoleSite {
+        return contract.holes[0..contract.holes_len];
     }
 
     pub fn get(contract: *const Contract, index: u16) *const Type {
@@ -182,6 +307,7 @@ pub fn of(
     contract.docs = "";
     contract.fragments_len = 0;
     contract.imports_len = 0;
+    contract.holes_len = 0;
     const self = templates[0];
     var walker: Walker = .{
         .contract = contract,
@@ -213,6 +339,7 @@ pub fn of_fragment(contract: *Contract, page: *const Contract, k: u5) Error!void
     contract.docs = "";
     contract.fragments_len = 0;
     contract.imports_len = 0;
+    contract.holes_len = 0;
     var diagnostic: Diagnostic = .{};
     var walker: Walker = .{ .contract = contract, .templates = &.{}, .diagnostic = &diagnostic };
     contract.root = try walker.new(.record, 0);
@@ -246,6 +373,7 @@ fn declared_of(included: Template, diagnostic: *Diagnostic) Error!*const Contrac
     contract.docs = "";
     contract.fragments_len = 0;
     contract.imports_len = 0;
+    contract.holes_len = 0;
     try @import("declared.zig").read(contract, included, diagnostic);
     assert(contract.declared);
     return contract;
@@ -614,7 +742,7 @@ const Walker = struct {
                 .value => if (node.expression.len == 0) {
                     try walker.check_value(node, try walker.lookup(node, scopes));
                 } else if (walker.contract.alone) {
-                    try walker.check_expression(node, scopes);
+                    try walker.check_expression(node, i, scopes);
                 },
                 .conditional => {
                     const target = try walker.lookup(node, scopes);
@@ -885,11 +1013,36 @@ const Walker = struct {
     }
 
     /// The type a node's path names in the finished contract.
-    /// Each free name of a Roc expression, found where `resolve` finds it.
-    fn check_expression(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
+    /// Each free name of a Roc expression, found where `resolve` finds it;
+    /// then the hole, kept once for each distinct key.
+    fn check_expression(
+        walker: *Walker,
+        node: *const parse.Node,
+        index: u16,
+        scopes: []const u16,
+    ) Error!void {
         assert(walker.contract.alone);
         const parsed = expression_of(node);
         for (parsed.read_slice()) |*read| _ = try walker.resolve(node, scopes, read);
+        var leaves: [hole.reads_max]Leaf = undefined;
+        _ = try of_hole(&hole_buffer, walker.contract, scopes, &parsed, &leaves);
+        const key = hole_key(walker.template, node.expression, &hole_buffer) catch
+            return walker.fail(node.offset, "reads types too long to name", node.text);
+        const contract = walker.contract;
+        for (contract.hole_slice()) |site| if (site.key == key) return;
+        if (contract.holes_len == holes_max) {
+            return walker.fail(node.offset, "the page has too many holes of Roc", node.text);
+        }
+        var site: HoleSite = .{
+            .key = key,
+            .template = walker.template,
+            .node = index,
+            .scopes = undefined,
+            .scopes_len = @intCast(scopes.len),
+        };
+        @memcpy(site.scopes[0..scopes.len], scopes);
+        contract.holes[contract.holes_len] = site;
+        contract.holes_len += 1;
     }
 
     /// A free name and its path: the nearest open scope whose record has the
@@ -1243,6 +1396,72 @@ test "contract: a hole's Roc reads the fields of the open scopes, by name" {
             std.debug.print("said: {s}\n", .{said});
             return error.TestUnexpectedResult;
         }
+    }
+}
+
+/// Each hole the page keeps: `Template: { params }`, comma separated.
+fn holes_text(page: []const u8, partial: []const u8, buffer: []u8) ![]const u8 {
+    var trees: [2]parse.Tree = undefined;
+    var d: parse.Diagnostic = .{};
+    try parse.parse(page, &trees[0], &d);
+    try parse.parse(partial, &trees[1], &d);
+    const templates = [_]Template{
+        .{ .name = "Page", .source = page, .tree = &trees[0] },
+        .{ .name = "P", .source = partial, .tree = &trees[1] },
+    };
+    const contract = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(contract);
+    const params = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(params);
+    var diagnostic: Diagnostic = .{};
+    try of(contract, &templates, &diagnostic);
+    var writer: std.Io.Writer = .fixed(buffer);
+    for (contract.hole_slice(), 0..) |*site, k| {
+        const tree = if (std.mem.eql(u8, site.template, "P")) &trees[1] else &trees[0];
+        const parsed = expression_of(&tree.nodes[site.node]);
+        var leaves: [hole.reads_max]Leaf = undefined;
+        _ = try of_hole(params, contract, site.scope_slice(), &parsed, &leaves);
+        const expression = tree.nodes[site.node].expression;
+        try testing.expectEqual(site.key, try hole_key(site.template, expression, params));
+        try writer.print("{s}{s}: ", .{ if (k == 0) "" else ", ", site.template });
+        try write_line(params, params.root, &writer);
+    }
+    return writer.buffered();
+}
+
+test "contract: each distinct hole is kept once, its parameters narrowed to what it reads" {
+    var buffer: [1024]u8 = undefined;
+    const lists = "{{% Ctx : { a : List({ x : U32 }), b : List({ x : U64 }), " ++
+        "m : { label : Str, n : U64 } } %}}";
+    const cases = [_][3][]const u8{
+        .{
+            "{{#a}}{{> P}}{{/a}}{{#b}}{{> P}}{{/b}}{{#a}}{{> P}}{{/a}}",
+            "{{ x.to_str() }}",
+            "P: { x : U32 }, P: { x : U64 }",
+        },
+        .{
+            "{{ m.label.len().to_str() }}{{ m.label.len().to_str() }}",
+            "",
+            "Page: { m : { label : Str } }",
+        },
+        .{
+            "{{ \"${m.label}${m.n.to_str()}\" }}",
+            "",
+            "Page: { m : { label : Str, n : U64 } }",
+        },
+        .{ "{{ Fmt.both(m.label, m) }}", "", "Page: { m : { label : Str, n : U64 } }" },
+        .{
+            "{{#a}}{{ \"${x.to_str()}/${m.n.to_str()}\" }}{{/a}}",
+            "",
+            "Page: { m : { n : U64 }, x : U32 }",
+        },
+        .{ "{{ \"static\" }}", "", "Page: {}" },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case {s}\n", .{case[0]});
+        const page = try std.mem.concat(testing.allocator, u8, &.{ lists, case[0] });
+        defer testing.allocator.free(page);
+        try testing.expectEqualStrings(case[2], try holes_text(page, case[1], &buffer));
     }
 }
 
