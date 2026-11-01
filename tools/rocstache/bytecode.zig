@@ -147,6 +147,9 @@ pub const Template = struct {
     tree: *const parse.Tree,
     /// Its contract's type in `layouts`, or `nothing`.
     root: u32,
+    /// A fragment: the body of its node in the page's tree, from
+    /// its scope. A page is the whole tree.
+    fragment: ?u16 = null,
 };
 
 pub const Diagnostic = struct {
@@ -185,7 +188,12 @@ pub fn compile(
     };
     var scopes: Scopes = .{};
     scopes = scopes.push(template.root);
-    try compiler.range(template.tree, 0, template.tree.len, scopes, 0);
+    if (template.fragment) |node| {
+        const end = template.tree.nodes[node].end;
+        try compiler.range(template.tree, node + 1, end, scopes, 0);
+    } else {
+        try compiler.range(template.tree, 0, template.tree.len, scopes, 0);
+    }
     try builder.flush();
     builder.pending.deinit(gpa);
     return .{
@@ -306,6 +314,8 @@ const Compiler = struct {
                 .value => try compiler.value(node, scopes),
                 .section, .inverted, .conditional => try compiler.section(tree, i, scopes, depth),
                 .partial => try compiler.partial(tree, i, scopes, depth),
+                // In place, the page's scope: one bytecode, no call.
+                .fragment => try compiler.range(tree, i + 1, tree.nodes[i].end, scopes, depth),
             }
         }
     }

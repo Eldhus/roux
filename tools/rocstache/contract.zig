@@ -39,7 +39,15 @@ pub const Type = struct {
     alias: []const u8 = "",
 };
 
-pub const Field = struct { name: []const u8, type: u16, next: u16 = none };
+/// A `{{$Row}}` of the template: its node, its scope's type and that
+/// scope's place on the stack. The scope's fields it reads are its
+/// contract when it renders alone.
+pub const Fragment = struct { name: []const u8, node: u16, scope: u16, frame: u16 };
+pub const fragments_max = 32;
+
+/// `used`: a bit per fragment (its index) that reads the field from the
+/// fragment's own scope, itself or through a partial.
+pub const Field = struct { name: []const u8, type: u16, next: u16 = none, used: u32 = 0 };
 
 /// A template the contract can reach: itself and its partials.
 pub const Template = struct {
@@ -71,6 +79,12 @@ pub const Contract = struct {
     declared: bool = false,
     /// The `##` lines above a declared `Ctx`.
     docs: []const u8 = "",
+    fragments: [fragments_max]Fragment = undefined,
+    fragments_len: u8 = 0,
+
+    pub fn fragment_slice(contract: *const Contract) []const Fragment {
+        return contract.fragments[0..contract.fragments_len];
+    }
 
     pub fn get(contract: *const Contract, index: u16) *const Type {
         assert(index < contract.types_len);
@@ -139,6 +153,7 @@ pub fn of(
     contract.root = none;
     contract.declared = false;
     contract.docs = "";
+    contract.fragments_len = 0;
     const self = templates[0];
     var walker: Walker = .{
         .contract = contract,
@@ -153,6 +168,53 @@ pub fn of(
         try walker.infer(self, 0, self.tree.len, &.{contract.root}, 0);
     }
     try walker.check(self, 0, self.tree.len, &.{contract.root}, 0);
+}
+
+/// A fragment's own contract: the fields of its scope it reads, each of
+/// the type it has in the page. Narrowed at the top only: a list it reads
+/// keeps its elements' whole type. Always its own record: the page spells
+/// its scope out, so reading one field more or less changes this type
+/// alone.
+pub fn of_fragment(contract: *Contract, page: *const Contract, k: u5) Error!void {
+    const fragment = page.fragments[k];
+    contract.types_len = 0;
+    contract.fields_len = 0;
+    contract.declared = page.declared;
+    contract.docs = "";
+    contract.fragments_len = 0;
+    var diagnostic: Diagnostic = .{};
+    var walker: Walker = .{ .contract = contract, .templates = &.{}, .diagnostic = &diagnostic };
+    contract.root = try walker.new(.record, 0);
+    var at = page.get(fragment.scope).first;
+    while (at != none) : (at = page.fields[at].next) {
+        const field_ = page.fields[at];
+        if (field_.used & (@as(u32, 1) << k) == 0) continue;
+        const child = try walker.new(.unknown, 0);
+        try contract.add_field(contract.root, field_.name, child);
+        try walker.copy(page, field_.type, child, 1);
+    }
+}
+
+fn declares(template: Template) bool {
+    return std.mem.trim(u8, template.tree.block, " \t\n").len > 0;
+}
+
+/// A partial's declared `Ctx`, read for an includer whose contract is
+/// inferred: the types it states are the includer's where the includer's
+/// own tags say nothing. Static: read, merged, and done with before the
+/// next include.
+var declared_buffer: Contract = undefined;
+
+fn declared_of(included: Template, diagnostic: *Diagnostic) Error!*const Contract {
+    assert(declares(included));
+    const contract = &declared_buffer;
+    contract.types_len = 0;
+    contract.fields_len = 0;
+    contract.declared = true;
+    contract.docs = "";
+    contract.fragments_len = 0;
+    try @import("declared.zig").read(contract, included, diagnostic);
+    return contract;
 }
 
 /// The contract as one line of Roc, fields by name, every type spelled out
@@ -264,6 +326,16 @@ pub fn new_field(contract: *Contract, record: u16, name: []const u8, child: u16)
 }
 
 const above = "climbs above the template's context";
+const outside = "climbs out of its fragment, which renders alone with its own scope only";
+
+/// Names a fragment may not have: nested in its page's module, it would
+/// hide the page's `Ctx` or a type Roc's builtins expose (Builtin.roc of
+/// nightly-2026-10-24; the Roc bump re-reads its top-level types).
+const reserved = [_][]const u8{
+    "Ctx",    "Bool", "Box",    "Crypto", "Dec", "Dict", "Encoding", "F32",  "F64",
+    "Hasher", "I8",   "I16",    "I32",    "I64", "I128", "Iter",     "List", "Num",
+    "Set",    "Str",  "Stream", "Try",    "U8",  "U16",  "U32",      "U64",  "U128",
+};
 
 const Walker = struct {
     contract: *Contract,
@@ -271,6 +343,10 @@ const Walker = struct {
     diagnostic: *Diagnostic,
     /// The template being walked, for messages.
     template: []const u8 = "",
+    /// Inside a fragment: the first scope it may read, its own.
+    floor: usize = 0,
+    /// The fragments being checked, a bit each, whose reads are noted.
+    active: u32 = 0,
 
     fn fail(walker: *Walker, offset: u32, message: []const u8, subject: []const u8) Error {
         walker.diagnostic.* = .{
@@ -365,13 +441,18 @@ const Walker = struct {
                     try walker.infer(template, i + 1, node.end, scopes, depth);
                 },
                 .section, .inverted => try walker.infer_section(template, i, scopes, depth),
+                .fragment => {
+                    const floor = walker.floor;
+                    walker.floor = scopes.len - 1;
+                    try walker.infer(template, i + 1, node.end, scopes, depth);
+                    walker.floor = floor;
+                },
                 .partial => {
                     const included = try walker.partial(node, depth);
                     if (node.called()) {
                         try walker.adopt(node, included, try walker.reach(node, scopes));
                     } else {
-                        try walker.infer(included, 0, included.tree.len, scopes, depth + 1);
-                        walker.template = template.name;
+                        try walker.infer_include(template, node, included, scopes, depth);
                     }
                 },
             }
@@ -428,6 +509,7 @@ const Walker = struct {
     /// The type a node's path names, creating fields as it goes.
     fn reach(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!u16 {
         if (node.up >= scopes.len) return walker.fail_at(node, above);
+        if (scopes.len - 1 - node.up < walker.floor) return walker.fail_at(node, outside);
         var at = scopes[scopes.len - 1 - node.up];
         for (node.path_slice()) |name| {
             try walker.settle(at, .record, node);
@@ -499,6 +581,7 @@ const Walker = struct {
                     try walker.check(template, i + 1, node.end, scopes, depth);
                 },
                 .section, .inverted => try walker.check_section(template, i, scopes, depth),
+                .fragment => try walker.check_fragment(template, i, scopes, depth),
                 .partial => {
                     const included = try walker.partial(node, depth);
                     if (node.called()) {
@@ -509,7 +592,12 @@ const Walker = struct {
                             return walker.fail_at(node, try walker.is_a(target, message));
                         }
                     } else {
-                        try walker.check(included, 0, included.tree.len, scopes, depth + 1);
+                        // The partial is checked where it stands, its copy
+                        // as it will run: what fits is exactly what renders.
+                        walker.check(included, 0, included.tree.len, scopes, depth + 1) catch {
+                            if (depth > 0) return error.Invalid;
+                            return walker.misfit(template, node, scopes[scopes.len - 1]);
+                        };
                         walker.template = template.name;
                     }
                 },
@@ -559,6 +647,169 @@ const Walker = struct {
         walker.template = template.name;
     }
 
+    /// A fragment: checked in place, and its scope noted, its contract
+    /// when it renders alone. Only the template's own: a partial's
+    /// fragments are the partial's, from its own contract.
+    fn check_fragment(
+        walker: *Walker,
+        template: Template,
+        index: u16,
+        scopes: []const u16,
+        depth: u8,
+    ) Error!void {
+        const node = &template.tree.nodes[index];
+        const scope = scopes[scopes.len - 1];
+        const active = walker.active;
+        if (depth == 0) {
+            try walker.fragment_allowed(template, node, scope);
+            const contract = walker.contract;
+            contract.fragments[contract.fragments_len] = .{
+                .name = node.text,
+                .node = index,
+                .scope = scope,
+                .frame = @intCast(scopes.len - 1),
+            };
+            walker.active |= @as(u32, 1) << @intCast(contract.fragments_len);
+            contract.fragments_len += 1;
+        }
+        const floor = walker.floor;
+        walker.floor = scopes.len - 1;
+        try walker.check(template, index + 1, node.end, scopes, depth);
+        walker.floor = floor;
+        walker.active = active;
+        walker.template = template.name;
+    }
+
+    fn fragment_allowed(
+        walker: *Walker,
+        template: Template,
+        node: *const parse.Node,
+        scope: u16,
+    ) Error!void {
+        const contract = walker.contract;
+        // Rendered alone, a fragment's fields are typed by a handler: an
+        // inferred page would give it `Str` where an integer was meant.
+        if (!contract.declared) {
+            return walker.fail_at(node, "is in a page with an inferred contract: " ++
+                "a fragment renders alone, so its page declares `{{% Ctx : ... %}}`");
+        }
+        if (contract.get(scope).kind != .record) {
+            const message = "a fragment's scope is a record (open a list's elements or a record)";
+            return walker.fail_at(node, try walker.is_a(scope, message));
+        }
+        for (contract.fragment_slice()) |f| {
+            if (std.mem.eql(u8, f.name, node.text)) {
+                return walker.fail_at(node, "names a second fragment of that name");
+            }
+        }
+        // Nested in the page's module, the name would be the module's own,
+        // or hide the page's `Ctx` or one of Roc's types there.
+        if (std.mem.eql(u8, template.name, node.text)) {
+            return walker.fail_at(node, "is its page's name: the page's module would nest itself");
+        }
+        for (reserved) |name| {
+            if (std.mem.eql(u8, name, node.text)) {
+                return walker.fail_at(node, "is a name Roc's own types or the page's Ctx have");
+            }
+        }
+        if (contract.fragments_len == fragments_max) {
+            return walker.fail_at(node, "the template has too many fragments");
+        }
+    }
+
+    /// An include in an inferred contract. A partial that declares its
+    /// `Ctx` gives the scope those types, where the includer's tags have
+    /// not said otherwise; one that does not adds its reads, as the
+    /// includer's own tags would.
+    fn infer_include(
+        walker: *Walker,
+        template: Template,
+        node: *const parse.Node,
+        included: Template,
+        scopes: []const u16,
+        depth: u8,
+    ) Error!void {
+        const scope = scopes[scopes.len - 1];
+        if (declares(included)) {
+            const theirs = try declared_of(included, walker.diagnostic);
+            try walker.merge(theirs, theirs.root, scope, 0);
+            return;
+        }
+        walker.infer(included, 0, included.tree.len, scopes, depth + 1) catch {
+            if (depth > 0) return error.Invalid;
+            return walker.misfit(template, node, scope);
+        };
+        walker.template = template.name;
+    }
+
+    /// `theirs`'s type `from` into `into` where `into` says nothing yet;
+    /// where both have a type, the check compares what the partial reads.
+    fn merge(walker: *Walker, theirs: *const Contract, from: u16, into: u16, depth: u8) Error!void {
+        if (depth == 32) return walker.fail(0, "the contract nests too deep", "");
+        const mine = walker.contract.types[into];
+        const source = theirs.get(from);
+        if (mine.kind == .unknown) return walker.copy(theirs, from, into, depth);
+        if (mine.kind == .list and source.kind == .list) {
+            return walker.merge(theirs, source.element, mine.element, depth + 1);
+        }
+        if (mine.kind != .record or source.kind != .record) return;
+        var at = source.first;
+        while (at != none) : (at = theirs.fields[at].next) {
+            const field_ = theirs.fields[at];
+            const child = walker.contract.field(into, field_.name) orelse blk: {
+                const child = try walker.new(.unknown, mine.offset);
+                walker.contract.add_field(into, field_.name, child) catch {
+                    const message = "the contract has too many fields";
+                    return walker.fail(mine.offset, message, field_.name);
+                };
+                break :blk child;
+            };
+            try walker.merge(theirs, field_.type, child, depth + 1);
+        }
+    }
+
+    // A misfit's message quotes the partial's own, which may sit in
+    // `message_buffer`: it is written here.
+    var misfit_buffer: [1024]u8 = undefined;
+
+    /// A partial that does not fit where it is included: the message is at
+    /// the include, in the template being written, with the scope there
+    /// and where in the partial the read failed.
+    fn misfit(walker: *Walker, template: Template, node: *const parse.Node, scope: u16) Error {
+        const inner = walker.diagnostic.*;
+        const source = for (walker.templates) |t| {
+            if (std.mem.eql(u8, t.name, inner.template)) break t.source;
+        } else "";
+        const at: parse.Diagnostic = .{ .offset = inner.offset };
+        var writer: std.Io.Writer = .fixed(&misfit_buffer);
+        writer.print("does not fit here: `{s}` {s}\n    this scope  ", .{
+            inner.subject, inner.message,
+        }) catch {};
+        write_line(walker.contract, scope, &writer) catch {};
+        writer.print("\n    read at     templates/{s}.rocstache:{d}:{d}", .{
+            inner.template, at.line(source), at.column(source),
+        }) catch {};
+        walker.template = template.name;
+        return walker.fail(node.offset, writer.buffered(), node.text);
+    }
+
+    /// A read from scope `frame` of field `name` (all of it when the path
+    /// is `.`): noted for each fragment being checked whose own scope that
+    /// is. Reads deeper in come with the field's type.
+    fn note_read(walker: *Walker, frame: usize, record: u16, path: []const []const u8) void {
+        const contract = walker.contract;
+        var bits = walker.active;
+        while (bits != 0) : (bits &= bits - 1) {
+            const k: u5 = @intCast(@ctz(bits));
+            if (contract.fragments[k].frame != frame) continue;
+            var at = contract.get(record).first;
+            while (at != none) : (at = contract.fields[at].next) {
+                const f = &contract.fields[at];
+                if (path.len == 0 or std.mem.eql(u8, f.name, path[0])) f.used |= @as(u32, 1) << k;
+            }
+        }
+    }
+
     fn check_value(walker: *Walker, node: *const parse.Node, target: u16) Error!void {
         var kind = walker.contract.get(target).kind;
         for (node.pipe_slice()) |pipe| {
@@ -592,7 +843,11 @@ const Walker = struct {
     /// The type a node's path names in the finished contract.
     fn lookup(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!u16 {
         if (node.up >= scopes.len) return walker.fail_at(node, above);
+        if (scopes.len - 1 - node.up < walker.floor) return walker.fail_at(node, outside);
         var at = scopes[scopes.len - 1 - node.up];
+        if (walker.contract.get(at).kind == .record) {
+            walker.note_read(scopes.len - 1 - node.up, at, node.path_slice());
+        }
         for (node.path_slice()) |name| {
             if (walker.contract.get(at).kind != .record) {
                 return walker.fail(node.offset, try walker.is_a(at, "has no fields"), name);
@@ -680,45 +935,220 @@ test "contract: inferred, every shape" {
     }
 }
 
-test "contract: a called partial has its own contract, its includer's field that type" {
-    const top_source = "<title>{{ title }}</title>{{#nav}}{{ label }}{{/nav}}";
-    var trees: [2]parse.Tree = undefined;
+/// The page's contract, then each fragment's (`{ … } | Row: { … }`); or
+/// what refused it: `Template `subject` message`.
+fn outcome(page: []const u8, partials: []const [2][]const u8, buffer: []u8) ![]const u8 {
+    var trees: [4]parse.Tree = undefined;
+    var templates: [4]Template = undefined;
     var d: parse.Diagnostic = .{};
-    try parse.parse(top_source, &trees[0], &d);
-    const top = try testing.allocator.create(Contract);
-    defer testing.allocator.destroy(top);
+    try parse.parse(page, &trees[0], &d);
+    templates[0] = .{ .name = "Page", .source = page, .tree = &trees[0] };
+    for (partials, 1..) |p, k| {
+        try parse.parse(p[1], &trees[k], &d);
+        templates[k] = .{ .name = p[0], .source = p[1], .tree = &trees[k] };
+    }
+    const contract = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(contract);
+    const fragment = try testing.allocator.create(Contract);
+    defer testing.allocator.destroy(fragment);
     var diagnostic: Diagnostic = .{};
-    try of(top, &.{.{ .name = "Top", .source = top_source, .tree = &trees[0] }}, &diagnostic);
+    var writer: std.Io.Writer = .fixed(buffer);
+    of(contract, templates[0 .. partials.len + 1], &diagnostic) catch {
+        try writer.print("{s} `{s}` {s}", .{
+            diagnostic.template, diagnostic.subject, diagnostic.message,
+        });
+        return writer.buffered();
+    };
+    try write_line(contract, contract.root, &writer);
+    for (contract.fragment_slice(), 0..) |f, k| {
+        try of_fragment(fragment, contract, @intCast(k));
+        try writer.print(" | {s}: ", .{f.name});
+        try write_line(fragment, fragment.root, &writer);
+    }
+    return writer.buffered();
+}
 
-    const page = try testing.allocator.create(Contract);
-    defer testing.allocator.destroy(page);
-    const sources = [_][]const u8{
-        "{{> Top frame}}<p>{{ body }}</p>",
-        "{{% Ctx : { frame : { title : Str }, body : Str } %}}{{> Top frame}}",
+const declared_page = "{{% Ctx : { title : Str, n : U32, on : Bool, tags : List(Str), " ++
+    "items : List({ id : U64, name : Str, price : U32 }), meta : { label : Str, n : U64 } } %}}";
+const declared_line = "{ items : List({ id : U64, name : Str, price : U32 }), " ++
+    "meta : { label : Str, n : U64 }, n : U32, on : Bool, tags : List(Str), title : Str }";
+
+test "contract: an include fits where its partial's tags fit, as the copy will run" {
+    var buffer: [1024]u8 = undefined;
+    const fit = [_][2][]const u8{
+        .{ "{{#items}}{{> P}}{{/items}}", "{{ price }}" },
+        .{ "{{> P}}", "{{ title | upper }}" },
+        .{ "{{#meta}}{{> P}}{{/meta}}", "{{ n | plural \"a\" \"b\" }}" },
+        .{ "{{> P}}", "{{ tags | len }}" },
+        .{ "{{> P}}", "{{ items | len }}" },
+        .{ "{{> P}}", "{{#on}}y{{/on}}" },
+        .{ "{{> P}}", "{{ meta.label }}" },
+        .{ "{{> P}}", "{{^items}}none{{/items}}" },
+        .{ "{{> P}}", "{{#meta}}{{ label }}{{/meta}}" },
+        .{ "{{> P}}", "{{#meta}}x{{/meta}}" },
+        .{ "{{#on}}{{> P}}{{/on}}", "<footer>hi</footer>" },
+        // One partial, two scopes: each copy for its own.
+        .{ "{{#items}}{{> P}}{{/items}}{{#meta}}{{> P}}{{/meta}}", "{{ ../title }}" },
+        // `n` a U32 at the root, a U64 in `meta`.
+        .{ "{{> P}}{{#meta}}{{> P}}{{/meta}}", "{{ n }}" },
     };
-    // Inferred: `frame` takes Top's contract, named for the module.
-    try parse.parse(sources[0], &trees[1], &d);
-    const templates = [_]Template{
-        .{ .name = "Page", .source = sources[0], .tree = &trees[1] },
-        .{ .name = "Top", .source = top_source, .tree = &trees[0], .contract = top },
+    for (fit) |case| {
+        errdefer std.debug.print("case {s} / {s}\n", .{ case[0], case[1] });
+        const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
+        defer testing.allocator.free(page);
+        const result = try outcome(page, &.{.{ "P", case[1] }}, &buffer);
+        try testing.expectEqualStrings(declared_line, result);
+    }
+    const misfit = [_][3][]const u8{
+        .{ "{{> P}}", "{{ n | upper }}", "`n` `upper`, `lower` and `url` take a Str" },
+        .{ "{{> P}}", "{{ missing }}", "`missing` the contract has no such field here" },
+        .{ "{{#items}}{{> P}}{{/items}}", "{{ nope }}", "`nope` the contract has no such" },
+        .{ "{{> P}}", "{{?items}}x{{/items}}", "`items` `{{?}}` takes a Bool" },
+        .{ "{{> P}}", "{{ meta }}", "`meta` is a record" },
+        .{ "{{> P}}", "{{ ../x }}", "`../x` climbs above the template's context" },
+        .{ "{{#items}}{{> P}}{{/items}}{{> P}}", "{{ id }}", "`id` the contract has no such" },
     };
-    try of(page, &templates, &diagnostic);
-    var buffer: [256]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buffer);
-    try write_line(page, page.root, &writer);
-    try testing.expectEqualStrings(
-        "{ body : Str, frame : { nav : List({ label : Str }), title : Str } }",
-        writer.buffered(),
-    );
-    try testing.expectEqualStrings("Top", page.get(page.field(page.root, "frame").?).alias);
-    // Declared otherwise: refused.
-    try parse.parse(sources[1], &trees[1], &d);
-    const declared = [_]Template{
-        .{ .name = "Page", .source = sources[1], .tree = &trees[1] },
-        .{ .name = "Top", .source = top_source, .tree = &trees[0], .contract = top },
+    for (misfit) |case| {
+        errdefer std.debug.print("case {s} / {s}\n", .{ case[0], case[1] });
+        const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
+        defer testing.allocator.free(page);
+        const result = try outcome(page, &.{.{ "P", case[1] }}, &buffer);
+        const expected = try std.mem.concat(testing.allocator, u8, &.{
+            "Page `P` does not fit here: ", case[2],
+        });
+        defer testing.allocator.free(expected);
+        try testing.expect(std.mem.startsWith(u8, result, expected));
+    }
+}
+
+test "contract: a misfit is said at the include, with the scope and the partial's line" {
+    var buffer: [1024]u8 = undefined;
+    // Through a partial: the include in the page, the line in the last one.
+    const page = declared_page ++ "{{#meta}}{{> P}}{{/meta}}";
+    const result = try outcome(page, &.{
+        .{ "P", "<b>\n{{> Q}}</b>" },
+        .{ "Q", "x {{ price }}" },
+    }, &buffer);
+    try testing.expectEqualStrings("Page `P` does not fit here: `price` the contract has no " ++
+        "such field here (it has: label, n)\n" ++
+        "    this scope  { label : Str, n : U64 }\n" ++
+        "    read at     templates/Q.rocstache:1:3", result);
+    // Inferred, a clash between the page's reads and the partial's.
+    const clash = try outcome("{{ price | upper }}{{> P}}", &.{
+        .{ "P", "{{ price | plural \"a\" \"b\" }}" },
+    }, &buffer);
+    try testing.expect(std.mem.startsWith(u8, clash, "Page `P` does not fit here: " ++
+        "`price` is a Str elsewhere, and a number here"));
+}
+
+test "contract: an inferred includer takes a declared partial's types" {
+    var buffer: [512]u8 = undefined;
+    const d = .{
+        "D",
+        "{{% Ctx : { price : U32, tags : List(Str) } %}}{{ price }}{{ tags | len }}",
     };
-    try testing.expectError(error.Invalid, of(page, &declared, &diagnostic));
-    try testing.expectEqualStrings("Top", diagnostic.subject);
+    const cases = [_][2][]const u8{
+        .{ "{{#items}}{{> D}}{{/items}}", "{ items : List({ price : U32, tags : List(Str) }) }" },
+        // The page's own read came first: the copy prints a Str as well.
+        .{
+            "{{#items}}{{ price }}{{> D}}{{/items}}",
+            "{ items : List({ price : Str, tags : List(Str) }) }",
+        },
+    };
+    for (cases) |case| {
+        try testing.expectEqualStrings(case[1], try outcome(case[0], &.{d}, &buffer));
+    }
+}
+
+test "contract: a fragment's contract is the fields of its scope it reads" {
+    var buffer: [1024]u8 = undefined;
+    const price = .{ "Price", "{{ price }}" };
+    const cases = [_][2][]const u8{
+        .{ "{{$Hello}}x{{/Hello}}", " | Hello: {}" },
+        .{ "{{$Total}}{{ n }}{{/Total}}", " | Total: { n : U32 }" },
+        .{ "{{#items}}{{$Row}}{{ name }}{{/Row}}{{/items}}", " | Row: { name : Str }" },
+        .{
+            "{{#items}}{{$Row}}{{ id }}{{ name }}{{ price }}{{/Row}}{{/items}}",
+            " | Row: { id : U64, name : Str, price : U32 }",
+        },
+        .{ "{{#meta}}{{$M}}{{ label }}{{/M}}{{/meta}}", " | M: { label : Str }" },
+        // A field read comes whole.
+        .{
+            "{{$Top}}{{#meta}}{{ n }}{{/meta}}{{/Top}}",
+            " | Top: { meta : { label : Str, n : U64 } }",
+        },
+        // `../` that stays inside the fragment.
+        .{
+            "{{$All}}{{#items}}{{ ../title }}{{/items}}{{/All}}",
+            " | All: { items : List({ id : U64, name : Str, price : U32 }), title : Str }",
+        },
+        .{
+            "{{$Outer}}{{ title }}{{#items}}{{$Inner}}{{ id }}{{/Inner}}{{/items}}{{/Outer}}",
+            " | Outer: { items : List({ id : U64, name : Str, price : U32 }), title : Str }" ++
+                " | Inner: { id : U64 }",
+        },
+        // Through a partial.
+        .{
+            "{{#items}}{{$Row}}{{ id }}{{> Price}}{{/Row}}{{/items}}",
+            " | Row: { id : U64, price : U32 }",
+        },
+        .{ "{{?on}}{{$X}}{{ title }}{{/X}}{{/on}}", " | X: { title : Str }" },
+        .{ "{{^tags}}{{$X}}{{ title }}{{/X}}{{/tags}}", " | X: { title : Str }" },
+        // Two in one scope, each its own.
+        .{
+            "{{#items}}{{$A}}{{ id }}{{/A}}{{$B}}{{ name }}{{/B}}{{/items}}",
+            " | A: { id : U64 } | B: { name : Str }",
+        },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case {s}\n", .{case[0]});
+        const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
+        defer testing.allocator.free(page);
+        const expected = try std.mem.concat(testing.allocator, u8, &.{ declared_line, case[1] });
+        defer testing.allocator.free(expected);
+        try testing.expectEqualStrings(expected, try outcome(page, &.{price}, &buffer));
+    }
+}
+
+test "contract: a fragment's refusals" {
+    var buffer: [1024]u8 = undefined;
+    const climbs = .{ "P", "{{ ../title }}" };
+    const cases = [_][3][]const u8{
+        .{ "{{$Row}}a{{/Row}}{{#meta}}{{$Row}}b{{/Row}}{{/meta}}", "Row", "names a second" },
+        .{ "{{$Ctx}}x{{/Ctx}}", "Ctx", "is a name Roc's own types" },
+        .{ "{{$Str}}x{{/Str}}", "Str", "is a name Roc's own types" },
+        .{ "{{$Iter}}x{{/Iter}}", "Iter", "is a name Roc's own types" },
+        .{ "{{$Page}}x{{/Page}}", "Page", "is its page's name" },
+        .{ "{{#tags}}{{$Row}}{{ . }}{{/Row}}{{/tags}}", "Row", "a fragment's scope is a record" },
+        .{ "{{#on}}{{$Row}}x{{/Row}}{{/on}}", "Row", "a fragment's scope is a record" },
+        .{ "{{#items}}{{$Row}}{{ ../title }}{{/Row}}{{/items}}", "../title", "climbs out" },
+        .{ "{{#items}}{{$Row}}{{> P}}{{/Row}}{{/items}}", "P", "does not fit here: " ++
+            "`../title` climbs out of its fragment" },
+    };
+    for (cases) |case| {
+        errdefer std.debug.print("case {s}\n", .{case[0]});
+        const page = try std.mem.concat(testing.allocator, u8, &.{ declared_page, case[0] });
+        defer testing.allocator.free(page);
+        const result = try outcome(page, &.{climbs}, &buffer);
+        const expected = try std.fmt.allocPrint(testing.allocator, "Page `{s}` {s}", .{
+            case[1], case[2],
+        });
+        defer testing.allocator.free(expected);
+        try testing.expect(std.mem.startsWith(u8, result, expected));
+    }
+    // In an inferred page: refused, its types would be guesses.
+    const inferred = try outcome("{{#items}}{{$Row}}{{ id }}{{/Row}}{{/items}}", &.{}, &buffer);
+    try testing.expect(std.mem.startsWith(u8, inferred, "Page `Row` is in a page with an " ++
+        "inferred contract"));
+    // More than a contract holds.
+    var source: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer source.deinit();
+    try source.writer.writeAll(declared_page);
+    for (0..fragments_max + 1) |k| {
+        try source.writer.print("{{{{$Part{d}}}}}x{{{{/Part{d}}}}}", .{ k, k });
+    }
+    const many = try outcome(source.written(), &.{}, &buffer);
+    try testing.expect(std.mem.endsWith(u8, many, "the template has too many fragments"));
 }
 
 test "contract: a partial's fields are its includer's" {

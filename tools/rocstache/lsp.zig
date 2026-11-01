@@ -540,10 +540,11 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
         "[{\"range\":{\"start\":{\"line\":1,\"character\":4}," ++
             "\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"roux\"," ++
             "\"message\":\"is not a template here (no such .rocstache)\"}]",
-        // Top opened, wrong: its mistake on the tag reaching it.
-        "[{\"range\":{\"start\":{\"line\":1,\"character\":0}," ++
-            "\"end\":{\"line\":1,\"character\":9}},\"severity\":1,\"source\":\"roux\"," ++
-            "\"message\":\"in Top.rocstache:1:1: `a` is a Str elsewhere, and a list here\"}]",
+        // Top opened, not fitting Page's scope: on the include's name (the
+        // message goes on with the scope and Top's line).
+        "[{\"range\":{\"start\":{\"line\":1,\"character\":4}," ++
+            "\"end\":{\"line\":1,\"character\":7}},\"severity\":1,\"source\":\"roux\"," ++
+            "\"message\":\"does not fit here: `a` is a Str elsewhere, and a list here\\n",
         // Top fixed: cleared.
         "[]",
     };

@@ -402,7 +402,7 @@ test "analysis: a sound template has its contract, its partials from buffers" {
         .path = "/app/templates/Top.rocstache",
         .text = "<title>{{ title }}</title>",
     };
-    const page = "{{> Top frame}}{{#items}}{{ name }}{{/items}}";
+    const page = "{{#frame}}{{> Top}}{{/frame}}{{#items}}{{ name }}{{/items}}";
     try testing.expectEqual(@as(?Problem, null), try problem_with(arena, page, &.{top}));
 }
 
@@ -418,30 +418,33 @@ test "analysis: a mistake is underlined where it is, or on the tag reaching it" 
     const open = (try problem_with(arena, "<p>{{ a", &.{})).?;
     try testing.expectEqual(@as(u32, 3), open.offset);
     try testing.expectEqualStrings("a tag that never closes", open.message);
-    // In a partial, inlined or called, parsed or checked: the tag, the partial's line.
+    // A partial that does not parse: the include's tag, the partial's line.
+    const unclosed: Buffer = .{ .path = "/app/templates/Top.rocstache", .text = "\n{{#a}}" };
+    const includer = "x\n{{> Top}}";
+    const broken = (try problem_with(arena, includer, &.{unclosed})).?;
+    try testing.expectEqualStrings("{{> Top}}", includer[broken.offset..][0..broken.length]);
+    try testing.expectEqualStrings("in Top.rocstache:2:1: `a` is never closed", broken.message);
+    // A partial that does not fit its scope, inferred or checked: the
+    // include's name, with the scope there and the partial's line.
     const cases = [_]struct { page: []const u8, top: []const u8, message: []const u8 }{
-        .{
-            .page = "x\n{{> Top}}",
-            .top = "\n{{#a}}",
-            .message = "in Top.rocstache:2:1: `a` is never closed",
-        },
         .{
             .page = "{{ a }}{{> Top}}",
             .top = "{{#a}}{{ b }}{{/a}}",
-            .message = "in Top.rocstache:1:1: `a` is a Str elsewhere, and a list here",
+            .message = "does not fit here: `a` is a Str elsewhere, and a list here",
         },
         .{
-            .page = "{{> Top frame}}",
+            .page = "{{> Top}}",
             .top = "{{ ../x }}",
-            .message = "in Top.rocstache:1:1: `../x` climbs above the template's context",
+            .message = "does not fit here: `../x` climbs above the template's context",
         },
     };
     for (cases) |case| {
         const top: Buffer = .{ .path = "/app/templates/Top.rocstache", .text = case.top };
         const problem = (try problem_with(arena, case.page, &.{top})).?;
-        const tag = case.page[problem.offset..][0..problem.length];
-        try testing.expect(std.mem.startsWith(u8, tag, "{{> Top"));
-        try testing.expectEqualStrings(case.message, problem.message);
+        errdefer std.debug.print("{s}\n", .{problem.message});
+        try testing.expectEqualStrings("Top", case.page[problem.offset..][0..problem.length]);
+        try testing.expect(std.mem.startsWith(u8, problem.message, case.message));
+        try testing.expect(std.mem.endsWith(u8, problem.message, "templates/Top.rocstache:1:1"));
     }
 }
 

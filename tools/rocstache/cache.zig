@@ -6,9 +6,10 @@
 //!   partials it inlines, the contracts of those it calls;
 //! - its module's identity, so an unchanged `Page.roc` is not even written
 //!   into memory;
-//! - its compiled chunk, while its key is: the sources it compiles from
-//!   (its own, the partials it inlines), the layouts, the templates' names
-//!   (a call is an index) and its root's type;
+//! - its compiled chunks, the page's and each fragment's, while each one's
+//!   key is: the sources it compiles from (its own, the partials it
+//!   inlines), the layouts, the templates' names (a call is an index) and
+//!   its root's type;
 //! - the contracts' layouts, parsed, while glue's inputs are unchanged;
 //! - the hash of what each output file was last written with, so an
 //!   unchanged one is neither read back nor written. roux dev is the only
@@ -118,6 +119,7 @@ pub const Cache = struct {
         if (k.tree) |tree| destroy_unfilled(cache.gpa, tree);
         if (k.contract) |c| destroy_unfilled(cache.gpa, c);
         if (k.chunk) |chunk| free_chunk(cache.gpa, chunk);
+        for (k.fragment_chunks) |slot| if (slot) |chunk| free_chunk(cache.gpa, chunk);
         cache.gpa.free(k.name);
     }
 
@@ -142,6 +144,9 @@ pub const Kept = struct {
     module_key: u64 = 0,
     chunk: ?bytecode.Chunk = null,
     chunk_key: u64 = 0,
+    /// Each of its fragments' chunks, by the fragment's place in the page.
+    fragment_chunks: [contract_.fragments_max]?bytecode.Chunk = @splat(null),
+    fragment_chunk_keys: [contract_.fragments_max]u64 = @splat(0),
     /// Read in this generation (a template not seen was deleted).
     seen: bool = false,
 };

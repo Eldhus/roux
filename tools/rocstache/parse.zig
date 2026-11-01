@@ -15,7 +15,10 @@ pub const args_max = 2;
 pub const depth_max = 16;
 pub const source_bytes_max = 1 << 20;
 
-pub const Kind = enum(u8) { text, value, section, inverted, conditional, partial };
+/// `fragment`: `{{$Row}} … {{/Row}}`, a part of the page that renders in
+/// place and also alone, its contract what it reads of the scope where it
+/// stands.
+pub const Kind = enum(u8) { text, value, section, inverted, conditional, partial, fragment };
 
 pub const Formatter = enum(u8) {
     /// A list's length.
@@ -190,7 +193,7 @@ pub fn section_end(source: []const u8, opener: Span) ?u32 {
     const found = bounds(source, opener.start, &diagnostic) catch return null;
     assert(found.end == opener_end);
     switch (found.inner[0]) {
-        '#', '^', '?' => {},
+        '#', '^', '?', '$' => {},
         else => return null,
     }
     var depth: u32 = 1;
@@ -198,7 +201,7 @@ pub fn section_end(source: []const u8, opener: Span) ?u32 {
     while (std.mem.indexOfPos(u8, source, at, "{{")) |start| {
         const tag = bounds(source, start, &diagnostic) catch return null;
         switch (tag.inner[0]) {
-            '#', '^', '?' => depth += 1,
+            '#', '^', '?', '$' => depth += 1,
             '/' => {
                 depth -= 1;
                 if (depth == 0) return @intCast(tag.end);
@@ -259,7 +262,7 @@ const Line = struct {
 fn standalone(source: []const u8, text_start: usize, tag_start: usize, found: Bounds) ?Line {
     if (found.triple) return null;
     switch (found.inner[0]) {
-        '#', '^', '?', '/', '!', '>' => {},
+        '#', '^', '?', '/', '!', '>', '$' => {},
         else => return null,
     }
     const before = source[0..tag_start];
@@ -314,29 +317,20 @@ fn add_tag(
             open_len.* += 1;
             try push(tree, node, diagnostic);
         },
-        '>' => {
-            // `{{> Top}}` reads the includer's scope; `{{> Top frame}}`
-            // renders Top with its own contract, the includer's `frame`.
-            const name_end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
-            const name = rest[0..name_end];
-            if (!is_type_name(name)) {
-                return fail(diagnostic, start, "a partial is a template's name, like `Top`", name);
+        '$' => {
+            if (open_len.* == depth_max) {
+                return fail(diagnostic, start, "sections nest too deep", rest);
             }
-            const context = std.mem.trim(u8, rest[name_end..], " \t");
-            var node: Node = .{ .kind = .partial, .text = name, .offset = @intCast(start) };
-            if (context.len > 0) {
-                const path = try path_node(context, start, diagnostic);
-                if (path.path_len == 0) {
-                    const message = "a partial's context is a field, not `.`";
-                    return fail(diagnostic, start, message, context);
-                }
-                node.up = path.up;
-                node.path = path.path;
-                node.path_len = path.path_len;
+            if (!is_type_name(rest)) {
+                const message = "a fragment's name is a type name, like `Row`";
+                return fail(diagnostic, start, message, rest);
             }
-            node.end = tree.len + 1;
+            open[open_len.*] = tree.len;
+            open_len.* += 1;
+            const node: Node = .{ .kind = .fragment, .text = rest, .offset = @intCast(start) };
             try push(tree, node, diagnostic);
         },
+        '>' => try push(tree, try partial_node(tree, rest, start, diagnostic), diagnostic),
         else => {
             var node = try value_node(inner, start, diagnostic);
             node.escape = !triple;
@@ -344,6 +338,28 @@ fn add_tag(
             try push(tree, node, diagnostic);
         },
     }
+}
+
+/// `{{> Top}}`: Top reads the scope where it stands. It takes no context:
+/// a field becomes its scope by a section around it.
+fn partial_node(
+    tree: *const Tree,
+    rest: []const u8,
+    start: usize,
+    diagnostic: *Diagnostic,
+) Error!Node {
+    const name_end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
+    const name = rest[0..name_end];
+    if (!is_type_name(name)) {
+        return fail(diagnostic, start, "a partial is a template's name, like `Top`", name);
+    }
+    const context = std.mem.trim(u8, rest[name_end..], " \t");
+    if (context.len > 0) {
+        const message = "a partial reads the scope where it stands: " ++
+            "open the field first, `{{#field}}{{> Name}}{{/field}}`";
+        return fail(diagnostic, start, message, context);
+    }
+    return .{ .kind = .partial, .text = name, .offset = @intCast(start), .end = tree.len + 1 };
 }
 
 fn close_section(
@@ -545,15 +561,39 @@ test "parse: partials, conditionals, raw values, parents, arguments with spaces"
 test "parse: a node's length spans its tag, braces included, or its text" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
-    const source = "<p>{{{ raw }}}{{#xs}}{{ . | upper }}{{/xs}}{{! c }}{{> Top frame}}</p>";
+    const source = "<p>{{{ raw }}}{{#xs}}{{ . | upper }}{{/xs}}{{! c }}{{> Top}}" ++
+        "{{$Row}}r{{/Row}}</p>";
     try parse(source, &tree, &diagnostic);
     const expected = [_][]const u8{
-        "<p>", "{{{ raw }}}", "{{#xs}}", "{{ . | upper }}", "{{> Top frame}}", "</p>",
+        "<p>", "{{{ raw }}}", "{{#xs}}", "{{ . | upper }}", "{{> Top}}", "{{$Row}}", "r", "</p>",
     };
     try testing.expectEqual(expected.len, tree.len);
     for (tree.slice(), expected) |node, written| {
         try testing.expectEqualStrings(written, source[node.offset..][0..node.length]);
     }
+    const row = tree.slice()[5];
+    try testing.expectEqual(Kind.fragment, row.kind);
+    try testing.expectEqualStrings("Row", row.text);
+    try testing.expectEqual(@as(u16, 7), row.end);
+}
+
+test "parse: fragments nest, pair by name, and take their line" {
+    var tree: Tree = .{};
+    var diagnostic: Diagnostic = .{};
+    const source = "<ul>\n{{$ List }}\n{{#xs}}{{$Row}}<li>{{ . }}</li>{{/Row}}{{/xs}}\n" ++
+        "{{/List}}\n</ul>";
+    try parse(source, &tree, &diagnostic);
+    const n = tree.slice();
+    try testing.expectEqualStrings("<ul>\n", n[0].text);
+    try testing.expectEqual(Kind.fragment, n[1].kind);
+    try testing.expectEqualStrings("List", n[1].text);
+    try testing.expectEqual(tree.len - 1, n[1].end); // the closing line is gone
+    try testing.expectEqual(Kind.fragment, n[3].kind);
+    try testing.expectEqualStrings("</ul>", n[tree.len - 1].text);
+    // The language server pairs `{{$Row}}` with its end as a section's.
+    const row_at: u32 = @intCast(std.mem.indexOf(u8, source, "{{$Row}}").? + 3);
+    const row_end: u32 = @intCast(std.mem.indexOf(u8, source, "{{/Row}}").? + "{{/Row}}".len);
+    try testing.expectEqual(@as(?u32, row_end), section_end(source, tag_at(source, row_at).?));
 }
 
 test "parse: tag_at finds the tag around an offset as parse does, closed or not" {
@@ -614,6 +654,11 @@ test "parse: each mistake says where and what" {
         .{ .source = "x\n{{% Ctx : {} %}}", .line = 2, .subject = "" },
         .{ .source = "\n{{ if }}", .line = 2, .subject = "if" },
         .{ .source = "{{#a.match}}{{/a.match}}", .line = 1, .subject = "a.match" },
+        .{ .source = "\n{{> Top frame}}", .line = 2, .subject = "frame" },
+        .{ .source = "{{$row}}x{{/row}}", .line = 1, .subject = "row" },
+        .{ .source = "{{$Row.A}}x{{/Row.A}}", .line = 1, .subject = "Row.A" },
+        .{ .source = "{{$Row}}x\n{{/Rows}}", .line = 2, .subject = "Rows" },
+        .{ .source = "{{$Row}}x", .line = 1, .subject = "Row" },
     };
     for (cases) |case| {
         var tree: Tree = .{};

@@ -88,11 +88,81 @@ pub const Generation = struct {
     cache: *Cache,
     kept: []const *Kept,
     templates: []const contract_.Template,
+    units: []const Unit,
     build: Io.Dir,
     glue: Glue,
     templates_count: u32,
     modules_changed: bool,
 };
+
+/// What renders alone, a tag of the union each: every file's page, then
+/// each of its fragments (`Menu`, `MenuRow`), whose contract is the fields
+/// of its scope it reads, and whose code is its node's body.
+const Unit = struct {
+    /// The tag: the page's name, or the page's and the fragment's.
+    name: []const u8,
+    /// Its file, in `kept`.
+    kept: usize,
+    fragment: ?contract_.Fragment = null,
+    /// Its fragment's place in the page's, for the chunk kept for it.
+    fragment_index: u8 = 0,
+    contract: *const contract_.Contract,
+};
+
+fn units_of(gpa: Allocator, kept: []const *Kept, errors: *Io.Writer) Error![]const Unit {
+    var units: std.ArrayList(Unit) = .empty;
+    for (kept, 0..) |k, index| {
+        const page = k.contract.?;
+        try units.append(gpa, .{ .name = k.name, .kept = index, .contract = page });
+        for (page.fragment_slice(), 0..) |f, i| {
+            const contract = try gpa.create(contract_.Contract);
+            // Bounded as the page's: a part of it.
+            contract_.of_fragment(contract, page, @intCast(i)) catch unreachable;
+            try units.append(gpa, .{
+                .name = try std.fmt.allocPrint(gpa, "{s}{s}", .{ k.name, f.name }),
+                .kept = index,
+                .fragment = f,
+                .fragment_index = @intCast(i),
+                .contract = contract,
+            });
+        }
+    }
+    try refuse_same_tags(gpa, kept, units.items, errors);
+    return units.items;
+}
+
+/// `Row` in `Menu` and a file `MenuRow.rocstache` (or `BC` in `A` and `C`
+/// in `AB`) would be one tag of the union: refused, naming both. Files
+/// alone cannot share a name.
+fn refuse_same_tags(
+    gpa: Allocator,
+    kept: []const *Kept,
+    units: []const Unit,
+    errors: *Io.Writer,
+) Error!void {
+    for (units, 0..) |u, index| {
+        const f = u.fragment orelse continue;
+        for (units, 0..) |other, other_index| {
+            if (other_index == index or !std.mem.eql(u8, u.name, other.name)) continue;
+            const page = kept[u.kept];
+            const what = if (other.fragment) |o|
+                try std.fmt.allocPrint(gpa, "the fragment `{s}` of {s}.rocstache", .{
+                    o.name, kept[other.kept].name,
+                })
+            else
+                try std.fmt.allocPrint(gpa, "{s}.rocstache", .{other.name});
+            const message = try std.fmt.allocPrint(gpa, "makes the tag `{s}`, " ++
+                "as {s} does: rename one", .{ u.name, what });
+            try report(errors, page.source, .{
+                .template = page.name,
+                .offset = page.tree.?.nodes[f.node].offset,
+                .subject = f.name,
+                .message = message,
+            });
+            return error.Invalid;
+        }
+    }
+}
 
 /// Parses the templates, decides their contracts, writes their modules and
 /// glue's inputs, and starts glue when the layouts must be made again.
@@ -177,17 +247,22 @@ fn begin_with(
         t.* = .{ .name = k.*.name, .source = k.*.source, .tree = k.*.tree.? };
     }
     try compute_contracts(gpa, cache, kept, templates, errors);
+    const units = try units_of(gpa, kept, errors);
     var modules_changed = false;
-    const contracts = try gpa.alloc(layout.Contract, names.len);
-    for (kept, contracts, 0..) |k, *c, index| {
-        c.* = .{ .index = @intCast(index), .name = k.name, .contract = k.contract.? };
-        const changed = try write_module(gpa, io, app, cache, k);
+    const contracts = try gpa.alloc(layout.Contract, units.len);
+    const unit_names = try gpa.alloc([]const u8, units.len);
+    for (units, contracts, unit_names, 0..) |u, *c, *n, index| {
+        c.* = .{ .index = @intCast(index), .name = u.name, .contract = u.contract };
+        n.* = u.name;
+    }
+    for (kept, 0..) |k, index| {
+        const changed = try write_module(gpa, io, app, cache, k, units, index);
         if (changed) modules_changed = true;
     }
     var build = try cwd.openDir(io, options.build, .{});
     errdefer build.close(io);
-    const glue = try glue_start(gpa, io, build, options, cache, kept, contracts, errors);
-    if (names.len > 0 and try write_union(gpa, io, app, cache, names, kept, glue.id())) {
+    const glue = try glue_start(gpa, io, build, options, cache, unit_names, contracts, errors);
+    if (names.len > 0 and try write_union(gpa, io, app, cache, units, glue.id())) {
         modules_changed = true;
     }
     return .{
@@ -195,9 +270,10 @@ fn begin_with(
         .cache = cache,
         .kept = kept,
         .templates = templates,
+        .units = units,
         .build = build,
         .glue = glue,
-        .templates_count = @intCast(names.len),
+        .templates_count = @intCast(kept.len),
         .modules_changed = modules_changed,
     };
 }
@@ -210,12 +286,15 @@ fn write_union(
     io: Io,
     app: Io.Dir,
     cache: *Cache,
-    names: []const []const u8,
-    kept: []const *Kept,
+    units: []const Unit,
     layouts: u64,
 ) Error!bool {
-    const roots = try gpa.alloc(*const contract_.Contract, names.len);
-    for (kept, roots) |k, *root| root.* = k.contract.?;
+    const names = try gpa.alloc([]const u8, units.len);
+    const roots = try gpa.alloc(*const contract_.Contract, units.len);
+    for (units, names, roots) |u, *name, *root| {
+        name.* = u.name;
+        root.* = u.contract;
+    }
     var text: Io.Writer.Allocating = .init(gpa);
     const union_: roc.Union = .{ .names = names, .contracts = roots, .layouts = layouts };
     try roc.write_templates(union_, &text.writer);
@@ -224,8 +303,8 @@ fn write_union(
 
 fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error!Result {
     const laid = try glue_finish(gpa, io, g.build, g.options, g.cache, &g.glue, errors);
-    const chunks = try compile(gpa, g.cache, g.kept, g.templates, &laid, errors);
-    const templates = try union_table(gpa, g.kept, &laid.layouts, errors);
+    const chunks = try compile(gpa, g.cache, g.kept, g.units, g.templates, &laid, errors);
+    const templates = try union_table(gpa, g.units, &laid.layouts, errors);
     const program = try bytecode.assemble(gpa, chunks, templates);
     const program_changed = try write_program(gpa, io, g.build, g.cache, .{
         .code = program.code,
@@ -243,7 +322,7 @@ fn finish_with(gpa: Allocator, io: Io, g: *Generation, errors: *Io.Writer) Error
 /// union out: found by name, never by position.
 fn union_table(
     gpa: Allocator,
-    kept: []const *Kept,
+    kept: []const Unit,
     layouts: *const layout.Layouts,
     errors: *Io.Writer,
 ) Error!bytecode.Union {
@@ -518,11 +597,29 @@ fn contract_of(
 
 /// A template's `Menu.roc`, unless its contract is what it was when it was
 /// last written; says whether the file changed.
-fn write_module(gpa: Allocator, io: Io, app: Io.Dir, cache: *Cache, k: *Kept) Error!bool {
+fn write_module(
+    gpa: Allocator,
+    io: Io,
+    app: Io.Dir,
+    cache: *Cache,
+    k: *Kept,
+    units: []const Unit,
+    index: usize,
+) Error!bool {
     const key = k.contract_key;
     if (k.module_key == key) return false;
     var text: Io.Writer.Allocating = .init(gpa);
-    const module: roc.Module = .{ .name = k.name, .contract = k.contract.? };
+    var fragments: std.ArrayList(roc.Fragment) = .empty;
+    for (units) |u| {
+        if (u.kept != index) continue;
+        const f = u.fragment orelse continue;
+        try fragments.append(gpa, .{ .name = f.name, .tag = u.name, .contract = u.contract });
+    }
+    const module: roc.Module = .{
+        .name = k.name,
+        .contract = k.contract.?,
+        .fragments = fragments.items,
+    };
     try roc.write_module(module, &text.writer);
     const path = try std.fmt.allocPrint(gpa, "{s}.roc", .{k.name});
     const changed = try write_output(cache, gpa, io, app, "app", path, text.written());
@@ -530,30 +627,45 @@ fn write_module(gpa: Allocator, io: Io, app: Io.Dir, cache: *Cache, k: *Kept) Er
     return changed;
 }
 
-/// Every template's chunk, compiled unless its key is the kept one's.
+/// Every unit's chunk, compiled unless its key is the kept one's: a page's
+/// in its file's `chunk`, a fragment's in the file's slot for it.
 fn compile(
     gpa: Allocator,
     cache: *Cache,
     kept: []const *Kept,
+    units: []const Unit,
     templates: []const contract_.Template,
     laid: *const Laid,
     errors: *Io.Writer,
 ) Error![]const bytecode.Chunk {
-    const compiled = try gpa.alloc(bytecode.Template, kept.len);
-    for (templates, compiled, 0..) |t, *c, index| {
+    const compiled = try gpa.alloc(bytecode.Template, units.len);
+    for (units, compiled, 0..) |u, *c, index| {
         const root = laid.layouts.root(index) orelse bytecode.nothing;
-        c.* = .{ .name = t.name, .tree = t.tree, .root = root };
+        const t = templates[u.kept];
+        const node = if (u.fragment) |f| f.node else null;
+        c.* = .{ .name = t.name, .tree = t.tree, .root = root, .fragment = node };
     }
-    const chunks = try gpa.alloc(bytecode.Chunk, kept.len);
-    for (kept, chunks, 0..) |k, *chunk, index| {
-        const key = chunk_key(kept, templates, index, laid.id);
-        if (k.chunk == null or k.chunk_key != key) {
-            const fresh = try compile_one(cache, laid, templates, compiled, index, errors);
-            if (k.chunk) |old| try cache.retire(.{ .chunk = old });
-            k.chunk = fresh;
-            k.chunk_key = key;
+    const chunks = try gpa.alloc(bytecode.Chunk, units.len);
+    for (units, chunks, 0..) |u, *chunk, unit_index| {
+        const k = kept[u.kept];
+        const key = chunk_key(kept, templates, u.kept, laid.id) +% unit_index;
+        const f = u.fragment_index;
+        const slot = if (u.fragment == null) &k.chunk else &k.fragment_chunks[f];
+        const slot_key = if (u.fragment == null) &k.chunk_key else &k.fragment_chunk_keys[f];
+        if (slot.* == null or slot_key.* != key) {
+            const fresh = try compile_one(cache, laid, templates, compiled, unit_index, errors);
+            if (slot.*) |old| try cache.retire(.{ .chunk = old });
+            slot.* = fresh;
+            slot_key.* = key;
         }
-        chunk.* = k.chunk.?;
+        chunk.* = slot.*.?;
+    }
+    // A fragment the page no longer has gives back its chunk.
+    for (kept) |k| {
+        for (k.fragment_chunks[k.contract.?.fragments_len..]) |*slot| {
+            if (slot.*) |old| try cache.retire(.{ .chunk = old });
+            slot.* = null;
+        }
     }
     return chunks;
 }
@@ -633,7 +745,7 @@ fn glue_start(
     build: Io.Dir,
     options: Options,
     cache: *Cache,
-    kept: []const *Kept,
+    kept: []const []const u8,
     contracts: []const layout.Contract,
     errors: *Io.Writer,
 ) Error!Glue {
@@ -647,7 +759,7 @@ fn glue_start(
     assert(options.roc_version.len > 0);
     identity.update(options.roc_version);
     identity.update(declared.written());
-    for (kept) |k| identity.update(k.name);
+    for (kept) |name| identity.update(name);
     const id = identity.final();
     // The layouts are the compiler's: a new spec or another nightly (a
     // bump) lays them out again, as a contract does.

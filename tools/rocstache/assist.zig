@@ -13,6 +13,7 @@ const parse = @import("parse.zig");
 const contract_ = @import("contract.zig");
 const analysis = @import("analysis.zig");
 const generate = @import("generate.zig");
+const cache = @import("cache.zig");
 
 /// Markdown about what is at `offset` of the checked template. Null over
 /// text, and when the template has a problem: no contract to read from.
@@ -36,6 +37,7 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
         if (within(self.source, pipe.name, offset)) return formatter_text(pipe.formatter);
     }
     if (node.kind == .partial) return try partial_text(arena, result, node);
+    if (node.kind == .fragment) return try fragment_text(arena, result, node);
     // Elsewhere in the tag (its braces, `#`, `../`): the whole path's type.
     const target = analysis.lookup(contract, scopes.slice(), node.up, path) orelse return null;
     return try typed(arena, contract, node.text, target);
@@ -73,28 +75,38 @@ fn formatter_text(formatter: parse.Formatter) []const u8 {
     };
 }
 
-/// An inlined partial reads this scope; a called one has its own contract.
+/// A partial is copied in here and reads this scope.
 fn partial_text(
     arena: Allocator,
     result: analysis.Analysis,
     node: *const parse.Node,
 ) Allocator.Error![]const u8 {
     assert(node.kind == .partial);
-    if (!node.called()) {
-        return arena.print("`{s}.rocstache`, inlined: its tags read this scope, so what " ++
-            "it reads is in this template's contract.", .{node.text});
-    }
-    const included = for (result.templates) |t| {
-        if (std.mem.eql(u8, t.name, node.text)) break t;
-    } else unreachable; // the analysis found it, or it would have a problem
-    const theirs = included.contract.?;
+    _ = result;
+    return arena.print("`{s}.rocstache`, copied in here: its tags read this scope, " ++
+        "and were checked against it.", .{node.text});
+}
+
+/// A fragment: its module and what it takes when it renders alone.
+fn fragment_text(
+    arena: Allocator,
+    result: analysis.Analysis,
+    node: *const parse.Node,
+) Allocator.Error!?[]const u8 {
+    assert(node.kind == .fragment);
+    const page = result.contract.?;
+    const k = for (page.fragment_slice(), 0..) |f, index| {
+        if (std.mem.eql(u8, f.name, node.text)) break index;
+    } else return null; // a partial's own fragment, not this page's
+    const contract = try cache.create_unfilled(arena, contract_.Contract);
+    contract_.of_fragment(contract, page, @intCast(k)) catch return null;
     var line: std.Io.Writer.Allocating = .init(arena);
-    contract_.write_line(theirs, theirs.root, &line.writer) catch return error.OutOfMemory;
-    const up = try arena.alloc(u8, 3 * @as(usize, node.up));
-    for (0..node.up) |k| @memcpy(up[3 * k ..][0..3], "../");
-    const path = try std.mem.join(arena, ".", node.path_slice());
-    return arena.print("`{s}.rocstache`, called with `{s}{s}` as its context:\n" ++
-        "```roc\n{s}.Ctx : {s}\n```", .{ node.text, up, path, node.text, line.written() });
+    contract_.write_line(contract, contract.root, &line.writer) catch return error.OutOfMemory;
+    const name = result.templates[0].name;
+    return try arena.print("The fragment `{0s}.{1s}`: rendered here, and alone by " ++
+        "`{0s}.{1s}.template`, from what it reads:\n```roc\n{0s}.{1s}.Ctx : {2s}\n```", .{
+        name, node.text, line.written(),
+    });
 }
 
 pub const Item = struct {
@@ -147,13 +159,13 @@ const Field = struct {
 fn wanted(so_far: []const u8) ?Wanted {
     var rest = std.mem.trimStart(u8, so_far, " \t");
     if (rest.len > 0) switch (rest[0]) {
-        '!', '/', '%' => return null,
+        // A fragment's name is new, written by hand.
+        '!', '/', '%', '$' => return null,
         '>' => {
             const inner = std.mem.trimStart(u8, rest[1..], " \t");
-            const name_end = std.mem.indexOfAny(u8, inner, " \t") orelse
-                return .{ .template = inner };
-            // `{{> Top frame}}`: the context is a path.
-            return field_of(std.mem.trimStart(u8, inner[name_end..], " \t"));
+            // A partial takes no context: nothing after its name.
+            if (std.mem.indexOfAny(u8, inner, " \t") != null) return null;
+            return .{ .template = inner };
         },
         '#', '^', '?' => rest = std.mem.trimStart(u8, rest[1..], " \t"),
         else => {},
@@ -352,12 +364,13 @@ test "assist: completion offers the templates beside this one after `>`" {
         .{ .path = "/elsewhere/Thing.rocstache", .text = "" },
     };
     try testing.expectEqualStrings("Tail Top", try labels(arena, "{{> T$}}", &buffers));
-    // A called partial's context is a field.
-    const page = "{{> Top fr$}}{{> Top frame}}";
-    try testing.expectEqualStrings("frame", try labels(arena, page, &buffers));
+    // A partial takes no context, and a fragment's name is new: nothing.
+    const page = "{{#frame}}{{> Top fr$}}{{/frame}}{{#frame}}{{> Top}}{{/frame}}";
+    try testing.expectEqualStrings("", try labels(arena, page, &buffers));
+    try testing.expectEqualStrings("", try labels(arena, "{{$Ro$}}x{{/Row}}", &buffers));
 }
 
-test "assist: hover shows the segment's type, a formatter, a partial" {
+test "assist: hover shows the segment's type, a formatter, a partial, a fragment" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -365,24 +378,35 @@ test "assist: hover shows the segment's type, a formatter, a partial" {
         .path = "/app/templates/Top.rocstache",
         .text = "<title>{{ title }}</title>",
     };
-    const page = "{{> Top frame}}{{#items}}{{ name.first | upper }}{{ ../n | len }}" ++
-        "{{/items}}{{> Top frame}}";
+    const page = "{{% Ctx : { frame : { title : Str }, n : List(Str), " ++
+        "items : List({ id : U64, name : { first : Str } }) } %}}" ++
+        "{{#frame}}{{> Top}}{{/frame}}{{#items}}{{$Row}}{{ name.first | upper }}{{/Row}}" ++
+        "{{ ../n | len }}{{/items}}";
     const result = try analysis.analyze(arena, testing.io, .{
         .path = "/app/templates/Page.rocstache",
         .source = page,
         .buffers = &.{top},
     });
     const cases = [_]struct { on: []const u8, expected: []const u8 }{
-        .{ .on = "items", .expected = "```roc\nitems : List({ name : { first : Str } })\n```" },
-        .{ .on = "name", .expected = "```roc\nname : { first : Str }\n```" },
-        .{ .on = "first", .expected = "```roc\nfirst : Str\n```" },
+        .{
+            .on = "#items",
+            .expected = "```roc\nitems : List({ id : U64, name : { first : Str } })\n```",
+        },
+        .{ .on = "name.first", .expected = "```roc\nname : { first : Str }\n```" },
+        .{ .on = "first |", .expected = "```roc\nfirst : Str\n```" },
         .{ .on = "upper", .expected = "`upper`: the Str in upper case." },
         .{ .on = "{{ ../n", .expected = "```roc\n../n : List(Str)\n```" },
-        .{ .on = "frame", .expected = "```roc\nframe : { title : Str }\n```" },
+        .{ .on = "#frame", .expected = "```roc\nframe : { title : Str }\n```" },
         .{
-            .on = "Top",
-            .expected = "`Top.rocstache`, called with `frame` as its context:\n" ++
-                "```roc\nTop.Ctx : { title : Str }\n```",
+            .on = "Top}}",
+            .expected = "`Top.rocstache`, copied in here: its tags read this scope, " ++
+                "and were checked against it.",
+        },
+        .{
+            .on = "$Row",
+            .expected = "The fragment `Page.Row`: rendered here, and alone by " ++
+                "`Page.Row.template`, from what it reads:\n" ++
+                "```roc\nPage.Row.Ctx : { name : { first : Str } }\n```",
         },
     };
     for (cases) |case| {

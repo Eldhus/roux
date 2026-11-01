@@ -256,6 +256,7 @@ const Oracle = struct {
                     if (enter) try o.walk(tree, i + 1, node.end, scopes);
                 },
                 .partial => try o.partial(node, scopes),
+                .fragment => try o.walk(tree, i + 1, node.end, scopes),
             }
         }
     }
@@ -463,8 +464,9 @@ const Generator = struct {
         var ups: std.ArrayList(u8) = .empty;
         for (0..up) |_| try ups.appendSlice(g.arena, "../");
         if (at == .ctx and g.random.int_less_than(u32, 4) == 0) {
-            // Badge called, over `meta`.
-            return g.out.print(g.arena, "{{{{> Badge {s}meta}}}}", .{ups.items});
+            // Badge over `meta`: its scope opened first by a section.
+            const badge = "{{{{#{0s}meta}}}}{{{{> Badge}}}}{{{{/{0s}meta}}}}";
+            return g.out.print(g.arena, badge, .{ups.items});
         }
         const c = choices[g.random.int_less_than(usize, choices.len)];
         const path = try std.fmt.allocPrint(g.arena, "{s}{s}", .{ ups.items, c.name });
@@ -535,6 +537,7 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
         },
         .{ .name = "Page", .root = T.ctx, .tree = try parsed(arena, page) },
     };
+    try accepted(arena, seed, page);
     var compiled: [sources.len]bytecode.Template = undefined;
     for (sources, &compiled) |s, *c| c.* = .{ .name = s.name, .tree = s.tree, .root = s.root };
     var chunks: [sources.len]bytecode.Chunk = undefined;
@@ -581,6 +584,120 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
         runs += 1;
     }
     return runs;
+}
+
+/// The checker accepts what the VM runs: the page, its `Ctx` declared as
+/// the layouts lay it, and Badge included where it stands.
+fn accepted(arena: std.mem.Allocator, seed: u64, page: []const u8) !void {
+    const contract = rocstache.contract;
+    const block = "{{% Ctx : { title : Str, note : Str, items : List({ name : Str, " ++
+        "tags : List({ label : Str }), price : U32, hot : Bool }), " ++
+        "meta : { label : Str, n : U32 }, delta : I64, count : U32, open : Bool } %}}";
+    const declared = try std.mem.concat(arena, u8, &.{ block, page });
+    const badge = "<b>{{ label }}={{ n }}</b>";
+    const sources = [_]contract.Template{
+        .{ .name = "Page", .source = declared, .tree = try parsed(arena, declared) },
+        .{ .name = "Badge", .source = badge, .tree = try parsed(arena, badge) },
+    };
+    const checked = try arena.create(contract.Contract);
+    var diagnostic: contract.Diagnostic = .{};
+    contract.of(checked, &sources, &diagnostic) catch |err| {
+        std.debug.print("seed {d}: refused `{s}` {s}\n{s}\n", .{
+            seed, diagnostic.subject, diagnostic.message, page,
+        });
+        return err;
+    };
+}
+
+test "fragments: alone, the bytes they render in place" {
+    var host: abi.RocHost = .{
+        .env = undefined,
+        .roc_alloc = host_alloc,
+        .roc_dealloc = host_dealloc,
+        .roc_realloc = host_realloc,
+        .roc_dbg = host_say,
+        .roc_expect_failed = host_say,
+        .roc_crashed = host_say,
+    };
+    for (0..200) |seed| {
+        var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        host.env = @ptrCast(@constCast(&arena));
+        try fragments_seed(arena, &host, seed);
+    }
+}
+
+/// A page with fragments at its root, in a record's section and in a
+/// list's element through a partial, over a random record: each fragment
+/// compiled alone renders, over its scope's value, the bytes it renders in
+/// the page, in order. Each is laid out as its whole scope: a narrowed
+/// layout is glue's, checked by the examples.
+fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void {
+    var prng: Prng = .init(seed);
+    const page = "<h1>{{ title }}</h1>{{$Head}}<p>{{ note | upper }} " ++
+        "{{ count | plural \"a\" \"b\" }}{{#meta}}{{$M}}[{{ label }}={{ n }}]{{/M}}{{/meta}}" ++
+        "</p>{{/Head}}<ul>\n{{#items}}\n  {{$Row}}<li>{{ name }} {{ price }}" ++
+        "{{#tags}}<i>{{ label }}</i>{{/tags}}{{> Hot}}</li>{{/Row}}\n{{/items}}\n</ul>";
+    const tree = try parsed(arena, page);
+    var fragments: [3]u16 = undefined;
+    var found: usize = 0;
+    for (tree.slice(), 0..) |n, i| if (n.kind == .fragment) {
+        fragments[found] = @intCast(i);
+        found += 1;
+    };
+    try testing.expectEqual(@as(usize, 3), found);
+    const compiled = [_]bytecode.Template{
+        .{ .name = "Hot", .tree = try parsed(arena, "{{?hot}}!{{/hot}}"), .root = T.item },
+        .{ .name = "Page", .tree = tree, .root = T.ctx },
+        .{ .name = "PageHead", .tree = tree, .root = T.ctx, .fragment = fragments[0] },
+        .{ .name = "PageM", .tree = tree, .root = T.meta, .fragment = fragments[1] },
+        .{ .name = "PageRow", .tree = tree, .root = T.item, .fragment = fragments[2] },
+    };
+    var chunks: [compiled.len]bytecode.Chunk = undefined;
+    for (&chunks, 0..) |*chunk, index| {
+        var diagnostic: bytecode.Diagnostic = .{};
+        chunk.* = try bytecode.compile(arena, &layouts, &compiled, index, &diagnostic);
+    }
+    var tags: [compiled.len]bytecode.Tag = undefined;
+    for (&tags, 0..) |*t, k| t.* = .{ .discriminant = @intCast(k), .payload_offset = 0 };
+    const program = try bytecode.assemble(arena, &chunks, .{
+        .discriminant_offset = @offsetOf(Template, "tag"),
+        .discriminant_size = 1,
+        .tags = &tags,
+    });
+    const text = try arena.alloc(u8, program.text.len + templates.slack);
+    @memcpy(text[0..program.text.len], program.text);
+    const data: templates.Data = .{
+        .code = program.code,
+        .text = text[0..program.text.len],
+        .layouts = layouts_id,
+    };
+    const ctx = try random_ctx(&prng, arena);
+    const whole = render_as(data, host, std.mem.asBytes(ctx), 1);
+    var at: usize = 0;
+    const head = render_as(data, host, std.mem.asBytes(ctx), 2);
+    at = (std.mem.indexOfPos(u8, whole, at, head) orelse return error.HeadNotInPage) + head.len;
+    const m = render_as(data, host, std.mem.asBytes(&ctx.meta), 3);
+    try testing.expect(std.mem.indexOf(u8, head, m) != null);
+    for (items_of(ctx.items)) |*item| {
+        const row = render_as(data, host, std.mem.asBytes(item), 4);
+        at = (std.mem.indexOfPos(u8, whole, at, row) orelse return error.RowNotInPage) + row.len;
+    }
+}
+
+/// The union's value with `payload` under `tag`, rendered.
+fn render_as(
+    data: templates.Data,
+    host: *abi.RocHost,
+    payload: []const u8,
+    tag: u8,
+) []const u8 {
+    var value: Template = undefined;
+    @memset(std.mem.asBytes(&value), 0);
+    @memcpy(std.mem.asBytes(&value)[0..payload.len], payload);
+    value.tag = tag;
+    return templates.render_union(data, layouts_id, @ptrCast(&value), host).items();
 }
 
 test "attached: the host reads the section roux build adds, and only that" {
