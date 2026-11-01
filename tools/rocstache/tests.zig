@@ -3,6 +3,7 @@
 
 test {
     _ = @import("parse.zig");
+    _ = @import("hole.zig");
     _ = @import("contract.zig");
     _ = @import("declared.zig");
     _ = @import("layout.zig");
