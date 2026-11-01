@@ -3,8 +3,8 @@
 //! It is the template's declared `Ctx`, when its `{{% %}}` block has one;
 //! otherwise it is inferred from the tags: dotted paths are records, a
 //! section (`{{#dishes |dish|}}`) is a list of what its body reads of its
-//! binder, `{{^x}}` and `{{?x}}` alone make a Bool, `len` makes a list, a
-//! value piped into `plural` is a `U64`, and every other value a `Str`.
+//! binder, `{{^x}}` and `{{?x}}` alone make a Bool, and a printed value is a
+//! `Str`. A field only holes of Roc read is typed by Roc (probe.zig).
 //! A name is a section's binder or a field of the page's `Ctx`. A partial
 //! (`{{> Top}}`) reads the names in scope where it is included, so its
 //! fields are its includer's.
@@ -733,19 +733,8 @@ const Walker = struct {
 
     fn infer_value(walker: *Walker, node: *const parse.Node, scopes: []const u16) Error!void {
         assert(node.expression.len == 0);
-        const target = try walker.reach(node, scopes);
-        const pipes = node.pipe_slice();
-        const kind: Kind = if (pipes.len == 0) .str else switch (pipes[0].formatter) {
-            .len => .list,
-            .plural => .int,
-            .upper, .lower, .url => .str,
-        };
-        try walker.settle(target, kind, node);
-        const type_ = &walker.contract.types[target];
-        if (kind == .int and type_.name.len == 0) type_.name = "U64";
-        if (kind == .list and type_.element == none) {
-            type_.element = try walker.new(.unknown, node.offset);
-        }
+        // A printed path is a Str, unless something says otherwise.
+        try walker.settle(try walker.reach(node, scopes), .str, node);
     }
 
     fn infer_section(
@@ -1116,27 +1105,12 @@ const Walker = struct {
     }
 
     fn check_value(walker: *Walker, node: *const parse.Node, target: u16) Error!void {
-        var kind = walker.contract.get(target).kind;
-        for (node.pipe_slice()) |pipe| {
-            const takes: Kind, const gives: Kind = switch (pipe.formatter) {
-                .len => .{ .list, .int },
-                .plural => .{ .int, .str },
-                .upper, .lower, .url => .{ .str, .str },
-            };
-            if (kind != takes) {
-                return walker.fail_at(node, switch (pipe.formatter) {
-                    .len => "`len` takes a list",
-                    .plural => "`plural` takes a number",
-                    .upper, .lower, .url => "`upper`, `lower` and `url` take a Str",
-                });
-            }
-            kind = gives;
-        }
-        switch (kind) {
+        switch (walker.contract.get(target).kind) {
             .str, .int => {},
             .unknown => unreachable,
             .bool => return walker.fail_at(node, "is a Bool: use it as `{{?x}}`"),
-            .list => return walker.fail_at(node, "is a list: print its elements, or `| len`"),
+            .list => return walker.fail_at(node, "is a list: print its elements, " ++
+                "or its length in Roc, `{{ items.len().to_str() }}`"),
             .record => return walker.fail_at(node, "is a record: print its fields"),
             .other => return walker.fail_at(node, try walker.is_a(
                 target,
@@ -1282,11 +1256,11 @@ test "contract: inferred, every shape" {
             "{ dishes : List({ name : Str, price : Str }) }",
         },
         .{
-            "<title>{{ title }}</title>{{ items | len | plural \"dish\" \"dishes\" }}" ++
+            "<title>{{ title }}</title>" ++
                 "{{#items |item|}}{{ item.name }}{{/items}}{{^items}}none{{/items}}" ++
                 "{{?admin}}<a>{{ user.name }}</a>{{/admin}}{{#tags |tag|}}{{ tag }}{{/tags}}" ++
-                "{{?home}}h{{/home}}{{ n | plural \"a\" \"b\" }}{{^off}}on{{/off}}",
-            "{ admin : Bool, home : Bool, items : List({ name : Str }), n : U64, " ++
+                "{{?home}}h{{/home}}{{^off}}on{{/off}}",
+            "{ admin : Bool, home : Bool, items : List({ name : Str }), " ++
                 "off : Bool, tags : List(Str), title : Str, user : { name : Str } }",
         },
         // Nested, the outer binder read inside; a binder never read.
@@ -1344,10 +1318,10 @@ test "contract: an include fits where its partial's tags fit, as the copy will r
     var buffer: [1024]u8 = undefined;
     const fit = [_][2][]const u8{
         .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.price }}" },
-        .{ "{{> P}}", "{{ title | upper }}" },
-        .{ "{{#meta |m|}}{{> P}}{{/meta}}", "{{ m.n | plural \"a\" \"b\" }}" },
-        .{ "{{> P}}", "{{ tags | len }}" },
-        .{ "{{> P}}", "{{ items | len }}" },
+        .{ "{{> P}}", "{{{ title }}}" },
+        .{ "{{#meta |m|}}{{> P}}{{/meta}}", "{{ m.n }}" },
+        .{ "{{> P}}", "{{#tags |tag|}}{{ tag }}{{/tags}}" },
+        .{ "{{> P}}", "{{#items |i|}}{{ i.id }}{{/items}}" },
         .{ "{{> P}}", "{{?on}}y{{/on}}" },
         .{ "{{> P}}", "{{ meta.label }}" },
         .{ "{{> P}}", "{{^items}}none{{/items}}" },
@@ -1367,7 +1341,7 @@ test "contract: an include fits where its partial's tags fit, as the copy will r
         try testing.expectEqualStrings(declared_line, result);
     }
     const misfit = [_][3][]const u8{
-        .{ "{{> P}}", "{{ n | upper }}", "`n` `upper`, `lower` and `url` take a Str" },
+        .{ "{{> P}}", "{{ tags }}", "`tags` is a list: print its elements" },
         .{ "{{> P}}", "{{ missing }}", "`missing` is neither a field of the page's `Ctx`" },
         .{ "{{#items |item|}}{{> P}}{{/items}}", "{{ item.nope }}", "`nope` the contract has" },
         .{ "{{> P}}", "{{?items}}x{{/items}}", "`items` `{{?}}` takes a Bool" },
@@ -1405,18 +1379,18 @@ test "contract: a misfit is said at the include, with the scope and the partial'
         "    this scope  { label : Str, n : U64 }\n" ++
         "    read at     templates/Q.rocstache:1:3", result);
     // Inferred, a clash between the page's reads and the partial's.
-    const clash = try outcome("{{ price | upper }}{{> P}}", &.{
-        .{ "P", "{{ price | plural \"a\" \"b\" }}" },
+    const clash = try outcome("{{ price }}{{> P}}", &.{
+        .{ "P", "{{#price |p|}}{{ p }}{{/price}}" },
     }, &buffer);
     try testing.expect(std.mem.startsWith(u8, clash, "Page `P` does not fit here: " ++
-        "`price` is a Str elsewhere, and a number here"));
+        "`price` is a Str elsewhere, and a list here"));
 }
 
 test "contract: an inferred includer takes a declared partial's types" {
     var buffer: [512]u8 = undefined;
     const d = .{
         "D",
-        "{{% Ctx : { price : U32, tags : List(Str) } %}}{{ price }}{{ tags | len }}",
+        "{{% Ctx : { price : U32, tags : List(Str) } %}}{{ price }}{{#tags |t|}}{{ t }}{{/tags}}",
     };
     // Its bare names are the page's fields, wherever it stands.
     const cases = [_][2][]const u8{
@@ -1764,7 +1738,7 @@ test "contract: conflicts and mistakes name the tag" {
     const cases = [_]struct { source: []const u8, subject: []const u8 }{
         .{ .source = "{{ a }}{{ a.b }}", .subject = "a.b" },
         .{ .source = "{{#xs |x|}}{{ x.y }}{{/xs}}{{ xs }}", .subject = "xs" },
-        .{ .source = "{{ n | upper }}{{ n | plural \"a\" \"b\" }}", .subject = "n" },
+        .{ .source = "{{ n }}{{?n}}x{{/n}}", .subject = "n" },
         .{ .source = "{{?flag}}x{{/flag}}{{#flag |f|}}{{ f.y }}{{/flag}}", .subject = "flag" },
         // A binder hides nothing: not an open section's, nor a page's field.
         .{ .source = "{{#xs |x|}}{{#x.ys |x|}}{{/x.ys}}{{/xs}}", .subject = "x" },

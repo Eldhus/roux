@@ -11,8 +11,6 @@ const hole = @import("hole.zig");
 
 pub const nodes_max = 1024;
 pub const path_max = 4;
-pub const pipes_max = 3;
-pub const args_max = 2;
 pub const depth_max = 16;
 pub const source_bytes_max = 1 << 20;
 
@@ -20,31 +18,6 @@ pub const source_bytes_max = 1 << 20;
 /// place and also alone, its contract what it reads of the scope where it
 /// stands.
 pub const Kind = enum(u8) { text, value, section, inverted, conditional, partial, fragment };
-
-pub const Formatter = enum(u8) {
-    /// A list's length.
-    len,
-    /// A count and a noun: `plural "dish" "dishes"`.
-    plural,
-    upper,
-    lower,
-    /// Percent-encoded for a URL's path segment or query value.
-    url,
-
-    pub fn args_count(formatter: Formatter) u8 {
-        return if (formatter == .plural) 2 else 0;
-    }
-};
-
-pub const formatters_known = "len, plural, upper, lower, url";
-
-pub const Pipe = struct {
-    formatter: Formatter,
-    /// The formatter's name as written, a slice of the source: where the
-    /// language server finds it under the cursor.
-    name: []const u8 = "",
-    args: [args_max][]const u8 = @splat(""),
-};
 
 pub const Node = struct {
     kind: Kind,
@@ -66,17 +39,11 @@ pub const Node = struct {
     /// A value that is a Roc expression (`dish.id.to_str()`), as written:
     /// compiled by Roc. Empty for a path, which the renderer reads.
     expression: []const u8 = "",
-    pipes: [pipes_max]Pipe = undefined,
-    pipes_len: u8 = 0,
     /// Index one past this node's subtree (`index + 1` for a leaf).
     end: u16 = 0,
 
     pub fn path_slice(node: *const Node) []const []const u8 {
         return node.path[0..node.path_len];
-    }
-
-    pub fn pipe_slice(node: *const Node) []const Pipe {
-        return node.pipes[0..node.pipes_len];
     }
 
     /// A partial given its own context (`{{> Top frame}}`): compiled once,
@@ -482,13 +449,15 @@ fn push_text(tree: *Tree, text: []const u8, offset: usize, diagnostic: *Diagnost
     }, diagnostic);
 }
 
-/// `path | formatter "arg" | formatter`, or a Roc expression of type Str
-/// (hole.zig), kept as written.
+/// A path, or a Roc expression of type Str (hole.zig), kept as written. A
+/// path then `|` was a formatter: refused, with the Roc that replaces it.
 fn value_node(found: Bounds, offset: usize, diagnostic: *Diagnostic) Error!Node {
     const inner = found.inner;
-    const head_end = std.mem.indexOfScalar(u8, inner, '|') orelse inner.len;
-    if (path_like(std.mem.trim(u8, inner[0..head_end], " \t"))) {
-        return piped_node(inner, offset, diagnostic);
+    const bar = std.mem.indexOfScalar(u8, inner, '|');
+    const head = std.mem.trim(u8, inner[0 .. bar orelse inner.len], " \t");
+    if (path_like(head)) {
+        if (bar) |at| return refuse_formatter(inner[at + 1 ..], offset, diagnostic);
+        return path_node(head, offset, diagnostic);
     }
     var refused: Diagnostic = .{};
     _ = hole.of(inner, &refused) catch {
@@ -510,30 +479,25 @@ fn path_like(text: []const u8) bool {
     return true;
 }
 
-/// `path | formatter "arg" | formatter`.
-fn piped_node(inner: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Node {
-    var pieces = std.mem.splitScalar(u8, inner, '|');
-    const head = std.mem.trim(u8, pieces.first(), " \t");
-    var node = try path_node(head, offset, diagnostic);
-    while (pieces.next()) |piece| {
-        if (node.pipes_len == pipes_max) {
-            return fail(diagnostic, offset, "too many formatters", head);
-        }
-        node.pipes[node.pipes_len] = try pipe(std.mem.trim(u8, piece, " \t"), offset, diagnostic);
-        node.pipes_len += 1;
+/// `path | formatter`, the formatters roux had: each is Roc now, and the
+/// message says which Roc.
+fn refuse_formatter(after: []const u8, offset: usize, diagnostic: *Diagnostic) Error {
+    const rest = std.mem.trim(u8, after, " \t");
+    const name = rest[0 .. std.mem.indexOfAny(u8, rest, " \t|") orelse rest.len];
+    const replacements = [_][2][]const u8{
+        .{ "len", "`| len` is gone: write Roc, `{{ items.len().to_str() }}`" },
+        .{ "plural", "`| plural` is gone: write it as a Roc function of your own, " ++
+            "`{{ Fmt.plural(items.len(), \"dish\", \"dishes\") }}`" },
+        .{ "upper", "`| upper` is gone: write Roc, `{{ name.with_ascii_uppercased() }}`" },
+        .{ "lower", "`| lower` is gone: write Roc, `{{ name.with_ascii_lowercased() }}`" },
+        .{ "url", "`| url` is gone: percent-encode it in a Roc function of your own, " ++
+            "`{{ Fmt.url(query) }}`" },
+    };
+    for (replacements) |r| {
+        if (std.mem.eql(u8, r[0], name)) return fail(diagnostic, offset, r[1], name);
     }
-    if (!chain_valid(node.pipe_slice())) return fail(diagnostic, offset, chain_message, head);
-    return node;
-}
-
-const chain_message = "formatters chain as `len`, then `plural`; or one of `upper`, `lower`, `url`";
-
-/// Each formatter writes its output straight into the page, so a chain
-/// never builds an intermediate string: `len`, `plural`, `len | plural`,
-/// or one of `upper`, `lower`, `url` alone.
-fn chain_valid(pipes: []const Pipe) bool {
-    if (pipes.len <= 1) return true;
-    return pipes.len == 2 and pipes[0].formatter == .len and pipes[1].formatter == .plural;
+    const message = "a formatter is a Roc function now: `{{ Fmt.name(value) }}`";
+    return fail(diagnostic, offset, message, name);
 }
 
 fn path_node(written: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Node {
@@ -560,37 +524,6 @@ fn path_node(written: []const u8, offset: usize, diagnostic: *Diagnostic) Error!
         node.path_len += 1;
     }
     return node;
-}
-
-/// `name "arg" "arg"`: arguments are string literals, without escapes.
-fn pipe(piece: []const u8, offset: usize, diagnostic: *Diagnostic) Error!Pipe {
-    const name_end = std.mem.indexOfAny(u8, piece, " \t") orelse piece.len;
-    const name = piece[0..name_end];
-    if (name.len == 0) return fail(diagnostic, offset, "an empty formatter", "");
-    const formatter = std.meta.stringToEnum(Formatter, name) orelse return fail(
-        diagnostic,
-        offset,
-        "is not a formatter (" ++ formatters_known ++ "): compute it in Roc, into a field",
-        name,
-    );
-    var result: Pipe = .{ .formatter = formatter, .name = name };
-    var args_len: u8 = 0;
-    var rest = std.mem.trim(u8, piece[name_end..], " \t");
-    while (rest.len > 0) {
-        if (rest[0] != '"') {
-            return fail(diagnostic, offset, "a formatter's argument is a \"string\"", rest);
-        }
-        const close = std.mem.indexOfScalarPos(u8, rest, 1, '"') orelse
-            return fail(diagnostic, offset, "a string that never closes", rest);
-        if (args_len == args_max) return fail(diagnostic, offset, "too many arguments", name);
-        result.args[args_len] = rest[1..close];
-        args_len += 1;
-        rest = std.mem.trim(u8, rest[close + 1 ..], " \t");
-    }
-    if (args_len != formatter.args_count()) {
-        return fail(diagnostic, offset, "takes another number of arguments", name);
-    }
-    return result;
 }
 
 fn is_path_start(c: u8) bool {
@@ -641,7 +574,7 @@ test "parse: sections nest, the block is recorded and skipped" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
     const source = "{{%\nCtx : { a : List({ b : { c : Str } }) }\n%}}\n" ++
-        "<p>{{#a |x|}}{{ x.b.c | upper }}{{/a}}{{^a}}none{{/a}}</p>";
+        "<p>{{#a |x|}}{{ x.b.c }}{{/a}}{{^a}}none{{/a}}</p>";
     try parse(source, &tree, &diagnostic);
     const n = tree.slice();
     try testing.expectEqual(@as(usize, 6), n.len);
@@ -653,16 +586,15 @@ test "parse: sections nest, the block is recorded and skipped" {
     try testing.expectEqual(@as(u16, 3), n[1].end);
     try testing.expectEqualStrings("c", n[2].path_slice()[2]);
     try testing.expectEqualStrings("", n[3].binder);
-    try testing.expectEqual(Formatter.upper, n[2].pipes[0].formatter);
     try testing.expectEqual(Kind.inverted, n[3].kind);
     try testing.expectEqual(@as(u16, 5), n[3].end);
 }
 
-test "parse: partials, conditionals, raw values, binders, arguments with spaces" {
+test "parse: partials, conditionals, raw values, binders, expressions with spaces" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
     const source = "{{> Top}}{{?home}}{{{ html }}}{{/home}}" ++
-        "{{#xs | x |}}{{ n | plural \"a dish\" \"dishes\" }}" ++
+        "{{#xs | x |}}{{ Fmt.plural(n, \"a dish\", \"dishes\") }}" ++
         "{{#x.ys |y|}}{{ y }}{{/x.ys}}{{/xs}}{{! note }}";
     try parse(source, &tree, &diagnostic);
     const n = tree.slice();
@@ -672,7 +604,7 @@ test "parse: partials, conditionals, raw values, binders, arguments with spaces"
     try testing.expectEqual(Kind.conditional, n[1].kind);
     try testing.expect(!n[2].escape);
     try testing.expectEqualStrings("x", n[3].binder);
-    try testing.expectEqualStrings("a dish", n[4].pipes[0].args[0]);
+    try testing.expectEqualStrings("Fmt.plural(n, \"a dish\", \"dishes\")", n[4].expression);
     try testing.expectEqualStrings("x.ys", n[5].text);
     // The scope each node stands in is named by its innermost section.
     try testing.expectEqualStrings("", binder_at(&tree, 3));
@@ -701,11 +633,11 @@ test "parse: a path's head is the innermost binder of that name, else the page's
 test "parse: a node's length spans its tag, braces included, or its text" {
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
-    const source = "<p>{{{ raw }}}{{#xs |x|}}{{ x | upper }}{{/xs}}{{! c }}{{> Top}}" ++
+    const source = "<p>{{{ raw }}}{{#xs |x|}}{{ x.to_str() }}{{/xs}}{{! c }}{{> Top}}" ++
         "{{$Row}}r{{/Row}}</p>";
     try parse(source, &tree, &diagnostic);
     const expected = [_][]const u8{
-        "<p>",       "{{{ raw }}}", "{{#xs |x|}}", "{{ x | upper }}",
+        "<p>",       "{{{ raw }}}", "{{#xs |x|}}", "{{ x.to_str() }}",
         "{{> Top}}", "{{$Row}}",    "r",           "</p>",
     };
     try testing.expectEqual(expected.len, tree.len);
@@ -738,22 +670,22 @@ test "parse: fragments nest, pair by name, and take their line" {
 }
 
 test "parse: tag_at finds the tag around an offset as parse does, closed or not" {
-    const source = "{{% Ctx : {} %}}<p>{{ a | upper }}</p>{{{ b }}}{{#c";
+    const source = "{{% Ctx : {} %}}<p>{{ a.b.cdefg }}</p>{{{ b }}}{{#c";
     const none: ?Span = null;
     try testing.expectEqual(none, tag_at(source, 5)); // the block
     try testing.expectEqual(none, tag_at(source, 17)); // text
-    // `{{ a | upper }}` is 19..34: inside from after `{{` to before `}}`.
+    // `{{ a.b.cdefg }}` is 19..34: inside from after `{{` to before `}}`.
     try testing.expectEqual(Span{ .start = 19, .end = 34 }, tag_at(source, 21).?);
     try testing.expectEqual(Span{ .start = 19, .end = 34 }, tag_at(source, 32).?);
     try testing.expectEqual(none, tag_at(source, 33));
     try testing.expectEqual(Span{ .start = 38, .end = 47 }, tag_at(source, 41).?);
     try testing.expectEqual(Span{ .start = 47, .end = null }, tag_at(source, source.len).?);
-    // The formatter's name is a slice of the source.
+    // A path's segment is a slice of the source.
     var tree: Tree = .{};
     var diagnostic: Diagnostic = .{};
     try parse(source[0..38], &tree, &diagnostic);
-    const name = tree.slice()[1].pipes[0].name;
-    try testing.expectEqual(@as(usize, 26), @intFromPtr(name.ptr) - @intFromPtr(source.ptr));
+    const segment = tree.slice()[1].path_slice()[2];
+    try testing.expectEqual(@as(usize, 26), @intFromPtr(segment.ptr) - @intFromPtr(source.ptr));
 }
 
 test "parse: section_end pairs an opener with its closing tag by nesting, not by name" {
@@ -798,13 +730,16 @@ test "parse: each mistake says where and what" {
         .{ .source = "{{#xs |x|}}\n{{ ../n }}{{/xs}}", .line = 2, .subject = "../n" },
         .{ .source = "{{#xs |x|}}\n{{ . }}{{/xs}}", .line = 2, .subject = "." },
         .{ .source = "{{?.}}{{/.}}", .line = 1, .subject = "." },
+        // The formatters are gone, each message naming the Roc to write.
         .{ .source = "\n\n{{ x | bold }}", .line = 3, .subject = "bold" },
+        .{ .source = "{{ items | len }}", .line = 1, .subject = "len" },
+        .{ .source = "{{ n | plural \"a\" \"b\" }}", .line = 1, .subject = "plural" },
+        .{ .source = "{{{ name | upper }}}", .line = 1, .subject = "upper" },
+        .{ .source = "{{ items | len | plural \"a\" \"b\" }}", .line = 1, .subject = "len" },
         .{ .source = "{{ [x] }}", .line = 1, .subject = "[" },
         .{ .source = "\n\n{{ a +\n [b] }}", .line = 4, .subject = "[" },
         .{ .source = "{{ a.b.to_str() | upper }}", .line = 1, .subject = "|" },
         .{ .source = "{{> top}}", .line = 1, .subject = "top" },
-        .{ .source = "{{ n | plural \"one\" }}", .line = 1, .subject = "plural" },
-        .{ .source = "{{ n | plural \"a\" \"b\" | upper }}", .line = 1, .subject = "n" },
         .{ .source = "x\n{{% Ctx : {} %}}", .line = 2, .subject = "" },
         .{ .source = "\n{{ if }}", .line = 2, .subject = "if" },
         .{ .source = "{{#a.match}}{{/a.match}}", .line = 1, .subject = "a.match" },

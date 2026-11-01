@@ -10,19 +10,15 @@
 //! bits). A value's op is followed by the static run before it, one word,
 //! so text and value are written together (fused). A run is `offset *
 //! 65536 + length` into the app's text, which all templates share; a Str
-//! value's run has its mode in the top byte (escaped, raw, upper, lower,
-//! url).
+//! value's run has its mode in the top byte (escaped, raw).
 //!
 //! | op | words | rest | what |
 //! |---|---|---|---|
 //! | TEXT | 1 | | a static run, in the bits above the op |
 //! | STR | 2 | | a Str |
 //! | INT | 2 | its type | an integer |
-//! | LEN | 2 | | a list's length |
-//! | PLURAL | 4 | the count's type | a count, then the singular or plural noun's run |
 //! | LIST | 2, body | body words | each element, the body in its scope; the element's size next |
 //! | RECORD | 1, body | body words | the body in the record's scope |
-//! | WHEN | 1, body | body words | a Bool's section: the body, when true, in a scope of its own |
 //! | COND | 1, body | body words | the body when the Bool is true, in the same scope |
 //! | UNLESS | 1, body | body words | the body when the Bool is false |
 //! | EMPTY | 1, body | body words | the body when the list is empty |
@@ -36,9 +32,10 @@
 //! the payload (16).
 //!
 //! The scopes are the template's: each section opens one (a list's
-//! element, a record, a Bool), and `../` counts them, as the template
-//! does. The code starts with a header: the number of templates, each
-//! one's `[start, end)` (by its index, templates sorted by name; a CALL
+//! element, a record), named by its binder; a read's `up` counts the
+//! scopes to the one its name is bound in. The code starts with a header:
+//! the number of templates, each one's `[start, end)` (by its index,
+//! templates sorted by name; a CALL
 //! names its partial by that index), then the union (`Union`): its
 //! discriminant's offset and size, and each template's discriminant and
 //! payload offset. The host finds a rendered template by its tag.
@@ -55,11 +52,8 @@ pub const Op = enum(u4) {
     text,
     str,
     int,
-    len,
-    plural,
     list,
     record,
-    when,
     cond,
     unless,
     empty,
@@ -71,9 +65,9 @@ pub const Op = enum(u4) {
 pub const hole_bytes_max = 512;
 /// A scope's contract type when the template has no contract.
 const no_contract = std.math.maxInt(u16);
-pub const Mode = enum(u8) { escaped, raw, upper, lower, url, upper_raw, lower_raw };
-/// An integer's type, in an INT's or PLURAL's rest; `list` counts a list.
-pub const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list };
+pub const Mode = enum(u8) { escaped, raw };
+/// An integer's type, in an INT's rest.
+pub const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64 };
 
 pub const run_bytes_max = 65535;
 pub const mode_shift = 56;
@@ -407,42 +401,16 @@ const Compiler = struct {
         assert(node.expression.len == 0);
         const b = compiler.builder;
         const t = try compiler.target(node, scopes);
-        const pipes = node.pipe_slice();
         const text = try b.take();
-        if (pipes.len > 0 and pipes[pipes.len - 1].formatter == .plural) {
-            const count = int_of(compiler.kind(t)) orelse
-                return compiler.fail(node, "counts neither an integer nor a list");
-            const nouns = pipes[pipes.len - 1].args;
-            try b.emit(word(.plural, t.up, t.offset, @backingInt(count)));
-            try b.emit_run(text, 0);
-            for (nouns[0..2]) |bytes| {
-                const written = try noun(b.gpa, bytes, node.escape);
-                defer b.gpa.free(written);
-                try b.emit_run(try b.run(written), 0);
-            }
-        } else if (pipes.len > 0 and pipes[0].formatter == .len) {
-            if (compiler.kind(t) != .list) return compiler.fail(node, "is not a list");
-            try b.emit(word(.len, t.up, t.offset, 0));
-            try b.emit_run(text, 0);
-        } else if (int_of(compiler.kind(t))) |int| {
-            if (int == .list) return compiler.fail(node, "is a list: write it with a section");
+        if (int_of(compiler.kind(t))) |int| {
             try b.emit(word(.int, t.up, t.offset, @backingInt(int)));
             try b.emit_run(text, 0);
-        } else {
-            if (compiler.kind(t) != .str) {
-                return compiler.fail(node, "is neither a Str nor an integer");
-            }
-            const mode: Mode = if (pipes.len == 0)
-                (if (node.escape) .escaped else .raw)
-            else switch (pipes[0].formatter) {
-                .upper => if (node.escape) .upper else .upper_raw,
-                .lower => if (node.escape) .lower else .lower_raw,
-                .url => .url,
-                .len, .plural => unreachable,
-            };
-            try b.emit(word(.str, t.up, t.offset, 0));
-            try b.emit_run(text + (@as(u64, @backingInt(mode)) << mode_shift), 0);
+            return;
         }
+        if (compiler.kind(t) != .str) return compiler.fail(node, "is neither a Str nor an integer");
+        const mode: Mode = if (node.escape) .escaped else .raw;
+        try b.emit(word(.str, t.up, t.offset, 0));
+        try b.emit_run(text + (@as(u64, @backingInt(mode)) << mode_shift), 0);
     }
 
     fn section(
@@ -461,8 +429,7 @@ const Compiler = struct {
             .section => switch (type_.kind) {
                 .list => .list,
                 .record => .record,
-                .bool => .when,
-                else => return compiler.fail(node, "opens neither a list, a record nor a Bool"),
+                else => return compiler.fail(node, "opens neither a list nor a record"),
             },
             .inverted => switch (type_.kind) {
                 .list => .empty,
@@ -483,7 +450,7 @@ const Compiler = struct {
         const element = if (compiler.contract) |contract| contract.get(c).element else no_contract;
         const inner = switch (op) {
             .list => scopes.push(type_.element, element, node.binder),
-            .record, .when => scopes.push(t.type_, c, node.binder),
+            .record => scopes.push(t.type_, c, node.binder),
             else => scopes,
         };
         try compiler.range(tree, index + 1, node.end, inner, depth);
@@ -619,30 +586,8 @@ fn int_of(kind: layout.Kind) ?Int {
         .i16 => .i16,
         .i32 => .i32,
         .i64 => .i64,
-        .list => .list,
-        .other, .record, .str, .bool, .tag_union => null,
+        .other, .record, .list, .str, .bool, .tag_union => null,
     };
-}
-
-/// A plural's noun: a space, then the noun, HTML-escaped when the tag
-/// escapes (it is static, so it is escaped here). The caller frees it.
-fn noun(gpa: std.mem.Allocator, bytes: []const u8, escape: bool) error{OutOfMemory}![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
-    try out.append(gpa, ' ');
-    if (!escape) {
-        try out.appendSlice(gpa, bytes);
-        return out.toOwnedSlice(gpa);
-    }
-    for (bytes) |c| switch (c) {
-        '&' => try out.appendSlice(gpa, "&amp;"),
-        '<' => try out.appendSlice(gpa, "&lt;"),
-        '>' => try out.appendSlice(gpa, "&gt;"),
-        '"' => try out.appendSlice(gpa, "&quot;"),
-        '\'' => try out.appendSlice(gpa, "&#39;"),
-        else => try out.append(gpa, c),
-    };
-    return out.toOwnedSlice(gpa);
 }
 
 test "bytecode: assembled chunks, their runs moved past the text before them" {

@@ -1,9 +1,9 @@
 //! What the language server says about a point of a template, read from
 //! its analysis (analysis.zig): the contract decides every type, as it
 //! does for `roux build`. A hover's text: the type of the path segment
-//! under the cursor, what a formatter does, what a partial reads. And
-//! completions: the fields in scope, the formatters after `|`, the
-//! templates beside this one after `>`.
+//! under the cursor, what a partial reads, what a fragment takes. And
+//! completions: the names in scope and their fields, the templates beside
+//! this one after `>`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -32,9 +32,6 @@ pub fn hover(arena: Allocator, result: analysis.Analysis, offset: u32) Allocator
         const target = analysis.lookup(contract, &scopes, path[0 .. k + 1]) orelse return null;
         return try typed(arena, contract, segment, target);
     }
-    for (node.pipe_slice()) |pipe| {
-        if (within(self.source, pipe.name, offset)) return formatter_text(pipe.formatter);
-    }
     if (node.kind == .partial) return try partial_text(arena, result, node);
     if (node.kind == .fragment) return try fragment_text(arena, result, node);
     // A Roc expression is Roc's to describe.
@@ -62,18 +59,6 @@ fn typed(
     var line: std.Io.Writer.Allocating = .init(arena);
     contract_.write_line(contract, index, &line.writer) catch return error.OutOfMemory;
     return arena.print("```roc\n{s} : {s}\n```", .{ label, line.written() });
-}
-
-fn formatter_text(formatter: parse.Formatter) []const u8 {
-    return switch (formatter) {
-        .len => "`len`: a list's length, a number; `| len | plural \"dish\" \"dishes\"` " ++
-            "names it.",
-        .plural => "`plural \"one\" \"many\"`: the number, a space, and the noun that fits " ++
-            "it: `1 dish`, `3 dishes`.",
-        .upper => "`upper`: the Str in upper case.",
-        .lower => "`lower`: the Str in lower case.",
-        .url => "`url`: the Str percent-encoded, for a URL's path segment or query value.",
-    };
 }
 
 /// A partial is copied in here and reads the names in scope here.
@@ -112,8 +97,8 @@ fn fragment_text(
 
 pub const Item = struct {
     label: []const u8,
-    kind: enum { field, formatter, template },
-    /// A field's type, a formatter's text, a template's file.
+    kind: enum { field, template },
+    /// A field's type, a template's file.
     detail: []const u8,
 };
 
@@ -132,15 +117,12 @@ pub fn complete(
     const want = wanted(source[span.start + braces .. offset]) orelse return &.{};
     return switch (want) {
         .field => |field| fields(arena, io, options, span, field),
-        .formatter => |prefix| formatters(arena, prefix),
         .template => |prefix| templates(arena, io, options, prefix),
     };
 }
 
 const Wanted = union(enum) {
     field: Field,
-    /// The formatter's name typed so far.
-    formatter: []const u8,
     /// The template's name typed so far.
     template: []const u8,
 };
@@ -156,7 +138,7 @@ const Field = struct {
 
 /// What a tag typed so far (after its braces) asks for, by the tag's
 /// grammar (parse.zig's table) read up to the cursor; null where nothing
-/// is completed (a comment, a closing tag, a formatter's arguments).
+/// is completed (a comment, a closing tag, a binder, a Roc expression).
 fn wanted(so_far: []const u8) ?Wanted {
     var rest = std.mem.trimStart(u8, so_far, " \t");
     if (rest.len > 0) switch (rest[0]) {
@@ -175,11 +157,6 @@ fn wanted(so_far: []const u8) ?Wanted {
         },
         else => {},
     };
-    if (std.mem.lastIndexOfScalar(u8, rest, '|')) |bar| {
-        const name = std.mem.trimStart(u8, rest[bar + 1 ..], " \t");
-        if (std.mem.indexOfAny(u8, name, " \t\"") != null) return null; // its arguments
-        return .{ .formatter = name };
-    }
     return field_of(rest);
 }
 
@@ -244,19 +221,6 @@ fn fields(
         var line: Io.Writer.Allocating = .init(arena);
         contract_.write_line(contract, f.type, &line.writer) catch return error.OutOfMemory;
         try items.append(arena, .{ .label = f.name, .kind = .field, .detail = line.written() });
-    }
-    return items.items;
-}
-
-fn formatters(arena: Allocator, prefix: []const u8) Allocator.Error![]const Item {
-    const all = [_]parse.Formatter{ .len, .plural, .upper, .lower, .url };
-    comptime assert(all.len == @typeInfo(parse.Formatter).@"enum".field_names.len);
-    var items: std.ArrayList(Item) = .empty;
-    for (all) |formatter| {
-        const name = @tagName(formatter);
-        if (!std.mem.startsWith(u8, name, prefix)) continue;
-        const detail = formatter_text(formatter);
-        try items.append(arena, .{ .label = name, .kind = .formatter, .detail = detail });
     }
     return items.items;
 }
@@ -357,10 +321,10 @@ test "assist: completion offers the fields in scope, typed or not, closed or not
         .{ declared ++ "{{#it$ |item|}}{{ item.name }}{{/items}}", "items" },
         .{ declared ++ "{{^ti$}}none{{/title}}", "title" },
         .{ declared ++ "<p>{{ t$", "title" }, // never closed
-        .{ declared ++ "{{ title | up$}}", "upper" },
-        .{ declared ++ "{{ items | $}}", "len plural upper lower url" },
         .{ declared ++ "{{! $}}", "" },
-        .{ declared ++ "{{ user | plural \"$\" }}", "" },
+        // Past a path, Roc's to complete.
+        .{ declared ++ "{{ title | up$}}", "" },
+        .{ declared ++ "{{ Fmt.kr(user.age) $}}", "" },
     };
     for (cases) |case| {
         errdefer std.debug.print("case {s}\n", .{case[0]});
@@ -385,7 +349,7 @@ test "assist: completion offers the templates beside this one after `>`" {
     try testing.expectEqualStrings("", try labels(arena, "{{$Ro$}}x{{/Row}}", &buffers));
 }
 
-test "assist: hover shows the segment's type, a formatter, a partial, a fragment" {
+test "assist: hover shows the segment's type, a partial, a fragment" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -395,8 +359,8 @@ test "assist: hover shows the segment's type, a formatter, a partial, a fragment
     };
     const page = "{{% Ctx : { frame : { title : Str }, n : List(Str), " ++
         "items : List({ id : U64, name : { first : Str } }) } %}}" ++
-        "{{> Top}}{{#items |item|}}{{$Row}}{{ item.name.first | upper }}{{/Row}}" ++
-        "{{ n | len }}{{/items}}";
+        "{{> Top}}{{#items |item|}}{{$Row}}{{ item.name.first }}{{/Row}}" ++
+        "{{#n |line|}}{{ line }}{{/n}}{{/items}}";
     const result = try analysis.analyze(arena, testing.io, .{
         .path = "/app/templates/Page.rocstache",
         .source = page,
@@ -413,9 +377,8 @@ test "assist: hover shows the segment's type, a formatter, a partial, a fragment
             .expected = "```roc\nitem : { id : U64, name : { first : Str } }\n```",
         },
         .{ .on = "name.first", .expected = "```roc\nname : { first : Str }\n```" },
-        .{ .on = "first |", .expected = "```roc\nfirst : Str\n```" },
-        .{ .on = "upper", .expected = "`upper`: the Str in upper case." },
-        .{ .on = "{{ n |", .expected = "```roc\nn : List(Str)\n```" },
+        .{ .on = "first }", .expected = "```roc\nfirst : Str\n```" },
+        .{ .on = "#n ", .expected = "```roc\nn : List(Str)\n```" },
         .{
             .on = "Top}}",
             .expected = "`Top.rocstache`, copied in here: its tags read the names in " ++

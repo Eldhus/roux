@@ -29,11 +29,8 @@ const Op = enum(u4) {
     text,
     str,
     int,
-    len,
-    plural,
     list,
     record,
-    when,
     cond,
     unless,
     empty,
@@ -41,7 +38,7 @@ const Op = enum(u4) {
     hole,
     _,
 };
-const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
+const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, _ };
 /// The most a hole's union holds (bytecode.zig's `hole_bytes_max`).
 const hole_bytes_max = 512;
 
@@ -206,7 +203,7 @@ pub const slack = 32;
 
 /// How a `Str` part's value is written: the top byte of its run
 /// (tools/rocstache/bytecode.zig's Mode).
-const Mode = enum(u8) { escaped, raw, upper, lower, url, upper_raw, lower_raw, _ };
+const Mode = enum(u8) { escaped, raw, _ };
 const mode_shift = 56;
 
 /// A shard's buffer: a page larger than this is written to the heap.
@@ -504,19 +501,10 @@ const Vm = struct {
                     sink.string(string.asSlice(), @fromBackingInt(@intCast(ref >> mode_shift)));
                     pc += 2;
                 },
-                .int, .len => {
-                    const int: Int = if (op == .len) .list else @fromBackingInt(@intCast(rest));
+                .int => {
                     sink.run(code[pc + 1]);
-                    sink.number(read_int(at, int));
+                    sink.number(read_int(at, @fromBackingInt(@intCast(rest))));
                     pc += 2;
-                },
-                .plural => {
-                    const n = read_int(at, @fromBackingInt(@intCast(rest)));
-                    sink.run(code[pc + 1]);
-                    sink.number(n);
-                    const one = !n.negative and n.magnitude == 1;
-                    sink.run(if (one) code[pc + 2] else code[pc + 3]);
-                    pc += 4;
                 },
                 // A body in the same scope: run inline, or skipped.
                 .cond, .unless, .empty => {
@@ -528,7 +516,7 @@ const Vm = struct {
                     };
                     pc += if (enter) 1 else 1 + rest;
                 },
-                .list, .record, .when => pc = vm.section(op, at, rest, pc, scopes, len),
+                .list, .record => pc = vm.section(op, at, rest, pc, scopes, len),
                 .call => {
                     vm.template(rest, at);
                     pc += 1;
@@ -605,8 +593,8 @@ const Vm = struct {
         @memcpy(into, from[0..into.len]);
     }
 
-    /// A section opening a scope: each of a list's elements, a record, a
-    /// Bool when true. Returns the code after it.
+    /// A section opening a scope: each of a list's elements, or a record.
+    /// Returns the code after it.
     fn section(
         vm: *Vm,
         op: Op,
@@ -631,11 +619,10 @@ const Vm = struct {
             }
             return body + body_len;
         }
+        assert(op == .record);
         const body = pc + 1;
-        if (op == .record or read_bool(at)) {
-            scopes[len] = at;
-            vm.run(body, body + body_len, scopes, len + 1);
-        }
+        scopes[len] = at;
+        vm.run(body, body + body_len, scopes, len + 1);
         return body + body_len;
     }
 };
@@ -646,7 +633,7 @@ fn read_bool(at: usize) bool {
 
 const Number = struct { negative: bool, magnitude: u64 };
 
-/// The integer at `at`, or a list's length.
+/// The integer at `at`.
 inline fn read_int(at: usize, int: Int) Number {
     return switch (int) {
         .u8 => unsigned(@as(*const u8, @ptrFromInt(at)).*),
@@ -657,7 +644,6 @@ inline fn read_int(at: usize, int: Int) Number {
         .i16 => signed(@as(*const i16, @ptrFromInt(at)).*),
         .i32 => signed(@as(*const i32, @ptrFromInt(at)).*),
         .i64 => signed(@as(*const i64, @ptrFromInt(at)).*),
-        .list => unsigned(@as(*const List, @ptrFromInt(at)).length),
         _ => unreachable,
     };
 }
@@ -704,11 +690,6 @@ const Sink = struct {
             // Inline here whatever else calls it: the fields' path is the hot one.
             .escaped => @call(.always_inline, Sink.escape, .{ sink, bytes }),
             .raw => sink.raw(bytes),
-            .upper => sink.cased(bytes, .upper, true),
-            .lower => sink.cased(bytes, .lower, true),
-            .upper_raw => sink.cased(bytes, .upper, false),
-            .lower_raw => sink.cased(bytes, .lower, false),
-            .url => sink.percent(bytes),
             _ => unreachable,
         }
     }
@@ -825,44 +806,6 @@ const Sink = struct {
     inline fn raw_unreserved(sink: *Sink, bytes_: []const u8) void {
         @memcpy(sink.buffer[sink.len..][0..bytes_.len], bytes_);
         sink.len += bytes_.len;
-    }
-
-    /// Letters changed to `case`, escaped when `escaped` (the entities are
-    /// never changed).
-    fn cased(
-        sink: *Sink,
-        value: []const u8,
-        comptime case: enum { upper, lower },
-        comptime escaped: bool,
-    ) void {
-        sink.reserve(value.len * 6);
-        for (value) |b| {
-            if (escaped and entity_len[b] != 0) {
-                sink.buffer[sink.len..][0..8].* = entity8[b];
-                sink.len += entity_len[b];
-            } else {
-                sink.buffer[sink.len] = switch (case) {
-                    .upper => std.ascii.toUpper(b),
-                    .lower => std.ascii.toLower(b),
-                };
-                sink.len += 1;
-            }
-        }
-    }
-
-    /// Every byte but `A-Z a-z 0-9 - . _ ~` as `%XX` (RFC 3986).
-    fn percent(sink: *Sink, value: []const u8) void {
-        sink.reserve(value.len * 3);
-        const hex = "0123456789ABCDEF";
-        for (value) |b| {
-            if (std.ascii.isAlphanumeric(b) or b == '-' or b == '.' or b == '_' or b == '~') {
-                sink.buffer[sink.len] = b;
-                sink.len += 1;
-            } else {
-                sink.buffer[sink.len..][0..3].* = .{ '%', hex[b >> 4], hex[b & 15] };
-                sink.len += 3;
-            }
-        }
     }
 
     /// Two digits at a time from a table, straight into place.

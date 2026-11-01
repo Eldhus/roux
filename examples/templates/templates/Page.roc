@@ -6,7 +6,7 @@ import Templates
 Page :: [].{
 
 	## The menu page. Declared rather than inferred, because the prices are
-	## numbers (an inferred contract's values are `Str`).
+	## numbers, which a printed path alone would take for a `Str`.
 	Ctx : { items : List({ name : Str, price : U32 }), title : Str }
 
 	## The template's value: what a response sends, rendered by the

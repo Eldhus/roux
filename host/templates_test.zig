@@ -294,53 +294,16 @@ const Oracle = struct {
     }
 
     fn value(o: *Oracle, node: *const parse.Node, v: Value) !void {
-        const pipes = node.pipe_slice();
-        if (pipes.len > 0 and pipes[pipes.len - 1].formatter == .plural) {
-            const n: i128 = switch (v) {
-                .number => |n| n,
-                .items => |l| @intCast(l.len),
-                .tags => |l| @intCast(l.len),
-                else => unreachable,
-            };
-            try o.out.print(o.arena, "{d} ", .{n});
-            const noun = pipes[pipes.len - 1].args[if (n == 1) 0 else 1];
-            return o.text(noun, if (node.escape) .escaped else .raw);
-        }
         switch (v) {
             .number => |n| try o.out.print(o.arena, "{d}", .{n}),
-            .items => |l| try o.out.print(o.arena, "{d}", .{l.len}), // `| len`
-            .tags => |l| try o.out.print(o.arena, "{d}", .{l.len}),
-            .str => |s| {
-                const how: How = if (pipes.len == 0)
-                    (if (node.escape) .escaped else .raw)
-                else switch (pipes[0].formatter) {
-                    .upper => if (node.escape) .upper else .upper_raw,
-                    .lower => if (node.escape) .lower else .lower_raw,
-                    .url => .url,
-                    else => unreachable,
-                };
-                try o.text(s, how);
-            },
+            .str => |s| try o.text(s, node.escape),
             else => unreachable,
         }
     }
 
-    const How = enum { escaped, raw, upper, lower, upper_raw, lower_raw, url };
-
-    fn text(o: *Oracle, s: []const u8, how: How) !void {
+    fn text(o: *Oracle, s: []const u8, escaped: bool) !void {
         for (s) |c| {
-            const cased = switch (how) {
-                .upper, .upper_raw => std.ascii.toUpper(c),
-                .lower, .lower_raw => std.ascii.toLower(c),
-                else => c,
-            };
-            const escaped = how == .escaped or how == .upper or how == .lower;
-            if (how == .url) {
-                const mark = std.mem.indexOfScalar(u8, "-._~", c) != null;
-                if (std.ascii.isAlphanumeric(c) or mark) {
-                    try o.out.append(o.arena, c);
-                } else try o.out.print(o.arena, "%{X:0>2}", .{c});
-            } else if (escaped and std.mem.indexOfScalar(u8, "&<>\"'", c) != null) {
+            if (escaped and std.mem.indexOfScalar(u8, "&<>\"'", c) != null) {
                 try o.out.appendSlice(o.arena, switch (c) {
                     '&' => "&amp;",
                     '<' => "&lt;",
@@ -348,7 +311,7 @@ const Oracle = struct {
                     '"' => "&quot;",
                     else => "&#39;",
                 });
-            } else try o.out.append(o.arena, cased);
+            } else try o.out.append(o.arena, c);
         }
     }
 };
@@ -404,20 +367,16 @@ const Generator = struct {
         const close = if (open.len == 3) " }}" else " }}}";
         try g.out.appendSlice(g.arena, open);
         try g.prefix(k);
-        const strs = [_][]const u8{ "", " | upper", " | lower", " | url" };
-        const pipe = strs[g.random.int_less_than(usize, strs.len)];
-        const plural = " | plural \"dish\" \"<dishes>\"";
         const choice = g.random.int_less_than(u32, 3);
         try g.out.appendSlice(g.arena, switch (kinds[k]) {
             .ctx => switch (choice) {
-                0 => try std.fmt.allocPrint(g.arena, "title{s}", .{pipe}),
-                1 => if (g.random.boolean()) "delta" else "count" ++ plural,
-                else => if (g.random.boolean()) "items | len" else "meta.label",
+                0 => if (g.random.boolean()) "title" else "note",
+                1 => if (g.random.boolean()) "delta" else "count",
+                else => "meta.label",
             },
             .item => switch (choice) {
-                0 => try std.fmt.allocPrint(g.arena, "name{s}", .{pipe}),
-                1 => "price",
-                else => "tags | len" ++ plural,
+                0 => "name",
+                else => "price",
             },
             .tag => "label",
             .meta => if (choice == 0) "n" else "label",
@@ -647,8 +606,8 @@ test "fragments: alone, the bytes they render in place" {
 /// layout is glue's, checked by the examples.
 fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void {
     var prng: Prng = .init(seed);
-    const page = "<h1>{{ title }}</h1>{{$Head}}<p>{{ note | upper }} " ++
-        "{{ count | plural \"a\" \"b\" }}{{#meta |m|}}{{$M}}[{{ m.label }}={{ m.n }}]{{/M}}" ++
+    const page = "<h1>{{ title }}</h1>{{$Head}}<p>{{{ note }}} " ++
+        "{{ count }}{{#meta |m|}}{{$M}}[{{ m.label }}={{ m.n }}]{{/M}}" ++
         "{{/meta}}</p>{{/Head}}<ul>\n{{#items |item|}}\n  {{$Row}}<li>{{ item.name }} " ++
         "{{ item.price }}{{#item.tags |tag|}}<i>{{ tag.label }}</i>{{/item.tags}}{{> Hot}}" ++
         "</li>{{/Row}}\n{{/items}}\n</ul>";

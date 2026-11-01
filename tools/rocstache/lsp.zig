@@ -199,7 +199,6 @@ const Server = struct {
         for (items, result) |item, *entry| {
             const kind: u8 = switch (item.kind) {
                 .field => 5,
-                .formatter => 3,
                 .template => 17,
             };
             entry.* = .{ .label = item.label, .kind = kind, .detail = item.detail };

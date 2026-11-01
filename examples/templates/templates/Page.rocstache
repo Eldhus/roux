@@ -1,6 +1,7 @@
 {{%
+import Fmt
 ## The menu page. Declared rather than inferred, because the prices are
-## numbers (an inferred contract's values are `Str`).
+## numbers, which a printed path alone would take for a `Str`.
 Ctx : { title : Str, items : List({ name : Str, price : U32 }) }
 %}}
 <!doctype html>
@@ -8,7 +9,7 @@ Ctx : { title : Str, items : List({ name : Str, price : U32 }) }
 <meta charset="utf-8">
 <title>{{ title }}</title>
 <h1>{{ title }}</h1>
-<p>{{ items | len | plural "dish" "dishes" }} on the menu.</p>
+<p>{{ Fmt.plural(items.len(), "dish", "dishes") }} on the menu.</p>
 <ul>
 {{#items |item|}}  <li>{{ item.name }}: {{ item.price }} kr</li>
 {{/items}}</ul>

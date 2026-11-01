@@ -352,7 +352,7 @@ test "roc: a page's module nests its fragments, each taking any record with its 
     const parse = @import("parse.zig");
     const source = "{{% Ctx : { a : Str, b : U64, items : List({ id : U64, name : Str }) } %}}" ++
         "{{$Hello}}x{{/Hello}}{{$One}}{{ a }}{{/One}}" ++
-        "{{$Two}}{{ a }}{{ b | plural \"x\" \"y\" }}{{/Two}}" ++
+        "{{$Two}}{{ a }}{{ b }}{{/Two}}" ++
         "{{#items |item|}}{{$Row}}{{ item.id }}{{ item.name }}{{/Row}}{{/items}}";
     var tree: parse.Tree = .{};
     var d: parse.Diagnostic = .{};
