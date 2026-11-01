@@ -39,8 +39,8 @@ pub const templates_dir = "templates";
 
 pub const Options = struct {
     /// The app's templates' directory (`<app>/templates`), holding its
-    /// `*.rocstache` and the modules written for them; missing for an app
-    /// without templates.
+    /// `*.rocstache` and the modules written for them; made for an app
+    /// without templates, which gets its `Holes.roc` there all the same.
     app: []const u8,
     /// The build directory (`<app>/.roux/main`), made by the caller: the
     /// program (`templates.bin`) and glue's files (`glue/`).
@@ -226,18 +226,12 @@ fn begin_with(
     errors: *Io.Writer,
 ) Error!Generation {
     const cwd = Io.Dir.cwd();
-    // No `templates/`: an app without templates (nothing is written there).
-    const opened: ?Io.Dir = cwd.openDir(io, options.app, .{ .iterate = true }) catch |err|
-        switch (err) {
-            error.FileNotFound => null,
-            else => return err,
-        };
-    defer if (opened) |dir| dir.close(io);
-    const app = opened orelse cwd;
-    const names: []const []const u8 = if (opened == null)
-        &.{}
-    else
-        try names_of(gpa, io, app, options, cache, errors);
+    // An app without templates still gets `templates/Holes.roc`, holding no
+    // hole: every app gives the platform its `Hole` the same way.
+    try cwd.createDirPath(io, options.app);
+    var app = try cwd.openDir(io, options.app, .{ .iterate = true });
+    defer app.close(io);
+    const names = try names_of(gpa, io, app, options, cache, errors);
     // Every name kept first: the map may move as it grows, then never.
     for (names) |name| _ = try cache.kept(name);
     const kept = try gpa.alloc(*Kept, names.len);
@@ -272,8 +266,8 @@ fn begin_with(
         try glue_start(gpa, io, build, options, cache, unit_names, contracts, union_, errors);
     if (names.len > 0) {
         if (try write_union(gpa, io, app, cache, units, glue.id())) modules_changed = true;
-        if (try write_holes(gpa, io, app, cache, holes)) modules_changed = true;
     }
+    if (try write_holes(gpa, io, app, cache, holes)) modules_changed = true;
     return .{
         .options = options,
         .cache = cache,

@@ -1,6 +1,7 @@
 app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
+import templates/Holes
 
 ## The smallest app, and its negative space:
 ## - `/`: `hello`;
@@ -10,10 +11,11 @@ import pf.Server
 
 Context : {}
 
-## No templates, so no hole of Roc: a union no template makes.
-Hole : [None]
+## The holes of Roc in the app's templates, which `roux build` writes
+## (none here: it has no templates).
+Hole : Holes.Hole
 
-program = { init!, respond!, hole: |_| "" }
+program = { init!, respond!, hole: Holes.hole }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({ config: { port: 8080, static_dir: "" }, context: {} })

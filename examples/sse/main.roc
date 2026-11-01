@@ -5,6 +5,7 @@ import pf.Sse
 import pf.Url
 import pf.Stdout
 import pf.Sleep
+import templates/Holes
 
 ## Server-sent events, and their negative space:
 ## - `/count?n=N`: N events, the last flushed alone after the others;
@@ -21,10 +22,11 @@ import pf.Sleep
 ## - `/no-stream`: `Server.streamed()` returned without a stream is a 500.
 Context : {}
 
-## No templates, so no hole of Roc: a union no template makes.
-Hole : [None]
+## The holes of Roc in the app's templates, which `roux build` writes
+## (none here: it has no templates).
+Hole : Holes.Hole
 
-program = { init!, respond!, hole: |_| "" }
+program = { init!, respond!, hole: Holes.hole }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({ config: { port: 8080, static_dir: "" }, context: {} })
