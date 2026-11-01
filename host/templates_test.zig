@@ -524,6 +524,25 @@ test "templates: compiled and run by the VM, as a plain walk of the tree says" {
     try testing.expectEqual(4 * seeds, checked);
 }
 
+/// The app's `hole`, which an app's Roc defines: these templates hold no
+/// hole of Roc, so the renderer never calls it here.
+export fn roc_hole_for_host(boxed: abi.RocBox) callconv(.c) abi.RocStr {
+    _ = boxed;
+    @panic("a hole of Roc in the renderer's tests, which have none");
+}
+
+/// The compile's context for templates over layouts made by hand: each
+/// template's source, by name, for its includes; no holes of Roc.
+fn context_of(arena: std.mem.Allocator, compiled: []const bytecode.Template) !bytecode.Context {
+    const sources = try arena.alloc(rocstache.contract.Template, compiled.len);
+    for (compiled, sources) |c, *s| s.* = .{ .name = c.name, .source = "", .tree = c.tree };
+    return .{
+        .sources = sources,
+        .holes = null,
+        .params = try arena.create(rocstache.contract.Contract),
+    };
+}
+
 fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
     var prng: Prng = .init(seed);
     const random = &prng;
@@ -540,10 +559,12 @@ fn check_seed(arena: std.mem.Allocator, seed: u64, host: *abi.RocHost) !u32 {
     try accepted(arena, seed, page);
     var compiled: [sources.len]bytecode.Template = undefined;
     for (sources, &compiled) |s, *c| c.* = .{ .name = s.name, .tree = s.tree, .root = s.root };
+    const context = try context_of(arena, &compiled);
     var chunks: [sources.len]bytecode.Chunk = undefined;
     for (&chunks, 0..) |*chunk, index| {
         var diagnostic: bytecode.Diagnostic = .{};
-        chunk.* = bytecode.compile(arena, &layouts, &compiled, index, &diagnostic) catch |err| {
+        const compiling = bytecode.compile(arena, &layouts, &compiled, index, context, &diagnostic);
+        chunk.* = compiling catch |err| {
             std.debug.print("seed {d}: {t} {s} `{s}`\n{s}\n", .{
                 seed, err, diagnostic.message, diagnostic.subject, page,
             });
@@ -654,10 +675,11 @@ fn fragments_seed(arena: std.mem.Allocator, host: *abi.RocHost, seed: u64) !void
         .{ .name = "PageM", .tree = tree, .root = T.meta, .fragment = fragments[1] },
         .{ .name = "PageRow", .tree = tree, .root = T.item, .fragment = fragments[2] },
     };
+    const context = try context_of(arena, &compiled);
     var chunks: [compiled.len]bytecode.Chunk = undefined;
     for (&chunks, 0..) |*chunk, index| {
         var diagnostic: bytecode.Diagnostic = .{};
-        chunk.* = try bytecode.compile(arena, &layouts, &compiled, index, &diagnostic);
+        chunk.* = try bytecode.compile(arena, &layouts, &compiled, index, context, &diagnostic);
     }
     var tags: [compiled.len]bytecode.Tag = undefined;
     for (&tags, 0..) |*t, k| t.* = .{ .discriminant = @intCast(k), .payload_offset = 0 };

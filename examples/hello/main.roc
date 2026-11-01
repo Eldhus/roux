@@ -1,4 +1,4 @@
-app [Context, program] { pf: platform "../../platform/main.roc" }
+app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 
@@ -10,7 +10,10 @@ import pf.Server
 
 Context : {}
 
-program = { init!, respond! }
+## No templates, so no hole of Roc: a union no template makes.
+Hole : [None]
+
+program = { init!, respond!, hole: |_| "" }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({ config: { port: 8080, static_dir: "" }, context: {} })

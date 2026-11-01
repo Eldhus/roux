@@ -1,9 +1,10 @@
-app [Context, program] { pf: platform "../../platform/main.roc" }
+app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.File
 import pf.Rocstache
 import templates/Notes
+import templates/Holes
 
 ## Static files and file reads: `public/` is served by the host before
 ## `respond!` (style.css, with gzip and ETags); `/notes` reads notes.txt
@@ -12,7 +13,10 @@ import templates/Notes
 ## start (as a secret or a setting is read).
 Context : { first_line : Str }
 
-program = { init!, respond! }
+## The holes of Roc in the app's templates, which `roux build` writes.
+Hole : Holes.Hole
+
+program = { init!, respond!, hole: Holes.hole }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64), FileErr(File.FileErr)])
 init! = || {

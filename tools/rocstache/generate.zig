@@ -734,8 +734,19 @@ fn compile(
         const root = laid.layouts.root(index) orelse bytecode.nothing;
         const t = templates[u.kept];
         const node = if (u.fragment) |f| f.node else null;
-        c.* = .{ .name = t.name, .tree = t.tree, .root = root, .fragment = node };
+        c.* = .{
+            .name = t.name,
+            .tree = t.tree,
+            .root = root,
+            .contract = u.contract,
+            .fragment = node,
+        };
     }
+    const context: bytecode.Context = .{
+        .sources = templates,
+        .holes = laid.layouts.holes(),
+        .params = try gpa.create(contract_.Contract),
+    };
     const chunks = try gpa.alloc(bytecode.Chunk, units.len);
     for (units, chunks, 0..) |u, *chunk, unit_index| {
         const k = kept[u.kept];
@@ -744,7 +755,8 @@ fn compile(
         const slot = if (u.fragment == null) &k.chunk else &k.fragment_chunks[f];
         const slot_key = if (u.fragment == null) &k.chunk_key else &k.fragment_chunk_keys[f];
         if (slot.* == null or slot_key.* != key) {
-            const fresh = try compile_one(cache, laid, templates, compiled, unit_index, errors);
+            const fresh =
+                try compile_one(cache, laid, compiled, unit_index, context, errors);
             if (slot.*) |old| try cache.retire(.{ .chunk = old });
             slot.* = fresh;
             slot_key.* = key;
@@ -765,17 +777,18 @@ fn compile(
 fn compile_one(
     cache: *Cache,
     laid: *const Laid,
-    templates: []const contract_.Template,
     compiled: []const bytecode.Template,
     index: usize,
+    context: bytecode.Context,
     errors: *Io.Writer,
 ) Error!bytecode.Chunk {
     var diagnostic: bytecode.Diagnostic = .{};
-    return bytecode.compile(cache.gpa, &laid.layouts, compiled, index, &diagnostic) catch |err|
+    const layouts = &laid.layouts;
+    return bytecode.compile(cache.gpa, layouts, compiled, index, context, &diagnostic) catch |err|
         switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Invalid => {
-                const source = for (templates) |t| {
+                const source = for (context.sources) |t| {
                     if (std.mem.eql(u8, t.name, diagnostic.template)) break t.source;
                 } else unreachable;
                 try report(errors, source, .{

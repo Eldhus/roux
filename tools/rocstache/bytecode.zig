@@ -27,6 +27,13 @@
 //! | UNLESS | 1, body | body words | the body when the Bool is false |
 //! | EMPTY | 1, body | body words | the body when the list is empty |
 //! | CALL | 1 | the template | a called partial, the record its context |
+//! | HOLE | 3 + leaves | leaves | a hole of Roc: its tag of `Holes.Hole`, then Roc's Str |
+//!
+//! A HOLE's third word is the union: the tag's discriminant (16 bits), the
+//! discriminant's offset (16) and size (8), the union's size (16). Each
+//! leaf word copies one value into the tag's payload: how many scopes up
+//! it starts (4 bits), its offset there (24), its size (16), its offset in
+//! the payload (16).
 //!
 //! The scopes are the template's: each section opens one (a list's
 //! element, a record, a Bool), and `../` counts them, as the template
@@ -40,6 +47,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const parse = @import("parse.zig");
 const layout = @import("layout.zig");
+const contract_ = @import("contract.zig");
+const hole_ = @import("hole.zig");
 const Layouts = layout.Layouts;
 
 pub const Op = enum(u4) {
@@ -55,7 +64,13 @@ pub const Op = enum(u4) {
     unless,
     empty,
     call,
+    hole,
 };
+
+/// The most a HOLE's union may hold: the renderer builds it in place.
+pub const hole_bytes_max = 512;
+/// A scope's contract type when the template has no contract.
+const no_contract = std.math.maxInt(u16);
 pub const Mode = enum(u8) { escaped, raw, upper, lower, url, upper_raw, lower_raw };
 /// An integer's type, in an INT's or PLURAL's rest; `list` counts a list.
 pub const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list };
@@ -147,9 +162,22 @@ pub const Template = struct {
     tree: *const parse.Tree,
     /// Its contract's type in `layouts`, or `nothing`.
     root: u32,
+    /// Its contract (a fragment's own): the types its holes' keys name.
+    /// Without one (the renderer's tests, over layouts made by hand), a hole
+    /// is refused.
+    contract: ?*const contract_.Contract = null,
     /// A fragment: the body of its node in the page's tree, from
     /// its scope. A page is the whole tree.
     fragment: ?u16 = null,
+};
+
+/// What a compile reads beyond its templates: every template's source (a
+/// partial is found by name, rendered alone or not), the layout of the
+/// app's holes, and where to build a hole's parameters.
+pub const Context = struct {
+    sources: []const contract_.Template,
+    holes: ?layout.Holes,
+    params: *contract_.Contract,
 };
 
 pub const Diagnostic = struct {
@@ -168,6 +196,7 @@ pub fn compile(
     layouts: *const Layouts,
     templates: []const Template,
     index: usize,
+    context: Context,
     diagnostic: *Diagnostic,
 ) Error!Chunk {
     const template = templates[index];
@@ -185,9 +214,11 @@ pub fn compile(
         .templates = templates,
         .diagnostic = diagnostic,
         .template = template.name,
+        .contract = template.contract,
+        .context = context,
     };
     var scopes: Scopes = .{};
-    scopes = scopes.push(template.root);
+    scopes = scopes.push(template.root, if (template.contract) |c| c.root else no_contract);
     if (template.fragment) |node| {
         const end = template.tree.nodes[node].end;
         try compiler.range(template.tree, node + 1, end, scopes, 0);
@@ -265,17 +296,21 @@ pub fn assemble(
     return .{ .code = code, .text = text };
 }
 
-/// The template's open scopes, innermost last: their types in the layouts.
+/// The template's open scopes, innermost last: their types in the layouts,
+/// and in the contract, pushed where the contract's check pushes them.
 const Scopes = struct {
-    types: [parse.depth_max * (layout_partials + 1) + 1]u32 = undefined,
+    types: [capacity]u32 = undefined,
+    contracts: [capacity]u16 = undefined,
     len: u8 = 0,
 
-    const layout_partials = @import("contract.zig").partial_depth_max;
+    const layout_partials = contract_.partial_depth_max;
+    const capacity = parse.depth_max * (layout_partials + 1) + 1;
 
-    fn push(scopes: Scopes, type_: u32) Scopes {
-        assert(scopes.len < scopes.types.len);
+    fn push(scopes: Scopes, type_: u32, contract_type: u16) Scopes {
+        assert(scopes.len < capacity);
         var result = scopes;
         result.types[result.len] = type_;
+        result.contracts[result.len] = contract_type;
         result.len += 1;
         return result;
     }
@@ -287,6 +322,8 @@ const Compiler = struct {
     templates: []const Template,
     diagnostic: *Diagnostic,
     template: []const u8,
+    contract: ?*const contract_.Contract,
+    context: Context,
 
     fn fail(compiler: *Compiler, node: *const parse.Node, message: []const u8) Error {
         compiler.diagnostic.* = .{
@@ -311,7 +348,11 @@ const Compiler = struct {
             const node = &tree.nodes[i];
             switch (node.kind) {
                 .text => try compiler.builder.pending.appendSlice(compiler.builder.gpa, node.text),
-                .value => try compiler.value(node, scopes),
+                .value => if (node.expression.len > 0) {
+                    try compiler.hole(tree, node, scopes);
+                } else {
+                    try compiler.value(node, scopes);
+                },
                 .section, .inverted, .conditional => try compiler.section(tree, i, scopes, depth),
                 .partial => try compiler.partial(tree, i, scopes, depth),
                 // In place, the page's scope: one bytecode, no call.
@@ -351,9 +392,7 @@ const Compiler = struct {
     }
 
     fn value(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) Error!void {
-        if (node.expression.len > 0) {
-            return compiler.fail(node, "is a Roc expression, which the renderer cannot run yet");
-        }
+        assert(node.expression.len == 0);
         const b = compiler.builder;
         const t = try compiler.target(node, scopes);
         const pipes = node.pipe_slice();
@@ -428,9 +467,11 @@ const Compiler = struct {
         try b.emit(0); // the op, once the body's length is known
         if (op == .list) try b.emit(compiler.layouts.get(type_.element).size);
         const head = b.code.items.len - at;
+        const c = compiler.contract_target(node, scopes);
+        const element = if (compiler.contract) |contract| contract.get(c).element else no_contract;
         const inner = switch (op) {
-            .list => scopes.push(type_.element),
-            .record, .when => scopes.push(t.type_),
+            .list => scopes.push(type_.element, element),
+            .record, .when => scopes.push(t.type_, c),
             else => scopes,
         };
         try compiler.range(tree, index + 1, node.end, inner, depth);
@@ -448,10 +489,10 @@ const Compiler = struct {
         depth: u8,
     ) Error!void {
         const node = &tree.nodes[index];
-        const called = for (compiler.templates, 0..) |t, k| {
-            if (std.mem.eql(u8, t.name, node.text)) break k;
-        } else unreachable; // the contract found it
         if (node.called()) {
+            const called = for (compiler.templates, 0..) |t, k| {
+                if (std.mem.eql(u8, t.name, node.text)) break k;
+            } else unreachable; // the contract found it
             const t = try compiler.target(node, scopes);
             if (compiler.kind(t) != .record) return compiler.fail(node, "is not a record");
             try compiler.builder.flush();
@@ -459,8 +500,94 @@ const Compiler = struct {
             return;
         }
         assert(depth < Scopes.layout_partials);
-        const included = compiler.templates[called];
+        const included = for (compiler.context.sources) |t| {
+            if (std.mem.eql(u8, t.name, node.text)) break t;
+        } else unreachable; // the contract found it
         try compiler.range(included.tree, 0, included.tree.len, scopes, depth + 1);
+    }
+
+    /// Where a node's path leads in the contract: the check found it.
+    fn contract_target(compiler: *Compiler, node: *const parse.Node, scopes: Scopes) u16 {
+        assert(node.up < scopes.len);
+        const contract = compiler.contract orelse return no_contract;
+        var at = scopes.contracts[scopes.len - 1 - node.up];
+        for (node.path_slice()) |name| at = contract.field(at, name).?;
+        return at;
+    }
+
+    /// A hole of Roc: its tag of the app's `Holes.Hole`, by the key the
+    /// check gave it, and a leaf for each value it reads.
+    fn hole(
+        compiler: *Compiler,
+        tree: *const parse.Tree,
+        node: *const parse.Node,
+        scopes: Scopes,
+    ) Error!void {
+        const b = compiler.builder;
+        const contract = compiler.contract orelse
+            return compiler.fail(node, "is a hole of Roc, in a template without a contract");
+        const holes = compiler.context.holes orelse
+            return compiler.fail(node, "has no layout for the app's holes (roc glue's)");
+        if (holes.size > hole_bytes_max) {
+            return compiler.fail(node, "is one of holes whose values take over 512 bytes");
+        }
+        const parsed = contract_.expression_of(node);
+        var leaves: [hole_.reads_max]contract_.Leaf = undefined;
+        const params = compiler.context.params;
+        const contracts = scopes.contracts[0..scopes.len];
+        const count = contract_.of_hole(params, contract, contracts, &parsed, &leaves) catch
+            return compiler.fail(node, "reads more than its parameters can hold");
+        const source = for (compiler.context.sources) |t| {
+            if (t.tree == tree) break t.name;
+        } else unreachable;
+        const key = contract_.hole_key(source, node.expression, params) catch
+            return compiler.fail(node, "reads types too long to name");
+        var name_buffer: [17]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buffer, "H{x:0>16}", .{key}) catch unreachable;
+        const tag = for (holes.tag_union.tags) |t| {
+            if (std.mem.eql(u8, t.name, name)) break t;
+        } else return compiler.fail(node, "is not in the layout of the app's holes (roc glue's)");
+        const text = try b.take();
+        const mode: Mode = if (node.escape) .escaped else .raw;
+        try b.emit(word(.hole, 0, 0, count));
+        try b.emit_run(text + (@as(u64, @backingInt(mode)) << mode_shift), 0);
+        const u = holes.tag_union;
+        try b.emit(@as(u64, tag.discriminant) | @as(u64, u.discriminant_offset) << 16 |
+            @as(u64, u.discriminant_size) << 32 | @as(u64, holes.size) << 40);
+        for (leaves[0..count]) |*leaf| try b.emit(try compiler.leaf_word(node, scopes, leaf, tag));
+    }
+
+    /// A leaf's word: where its value is in the scope, and in the payload.
+    fn leaf_word(
+        compiler: *Compiler,
+        node: *const parse.Node,
+        scopes: Scopes,
+        leaf_: *const contract_.Leaf,
+        tag: layout.Tag,
+    ) Error!u64 {
+        assert(leaf_.scope < scopes.len);
+        var from = scopes.types[leaf_.scope];
+        var from_offset: u32 = 0;
+        var into = tag.type;
+        var into_offset: u32 = tag.payload_offset;
+        for (leaf_.read.path_slice()) |segment| {
+            const mine = compiler.layouts.field(from, segment) orelse
+                return compiler.fail(node, "is not in the contract's layout (roc glue's)");
+            const theirs = compiler.layouts.field(into, segment) orelse
+                return compiler.fail(node, "is not in the layout of the app's holes (roc glue's)");
+            from_offset += mine.offset;
+            from = mine.type;
+            into_offset += theirs.offset;
+            into = theirs.type;
+        }
+        const size = compiler.layouts.get(from).size;
+        assert(size == compiler.layouts.get(into).size);
+        const up = scopes.len - 1 - leaf_.scope;
+        if (up > up_max) return compiler.fail(node, "reads more than 15 scopes up");
+        if (from_offset > offset_max) return compiler.fail(node, "is 16 MiB into its record");
+        assert(into_offset + size <= hole_bytes_max);
+        return @as(u64, up) | @as(u64, from_offset) << 4 | @as(u64, size) << 28 |
+            @as(u64, into_offset) << 44;
     }
 };
 

@@ -1,4 +1,4 @@
-app [Context, program] { pf: platform "../../platform/main.roc" }
+app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.Sqlite
@@ -25,7 +25,10 @@ import db/Reviews
 ##   `BodyDuringWrite`, said in the answer
 Context : { db : Sqlite.Db }
 
-program = { init!, respond! }
+## No templates, so no hole of Roc: a union no template makes.
+Hole : [None]
+
+program = { init!, respond!, hole: |_| "" }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64), DbErr(Sqlite.Err)])
 init! = || {

@@ -1,8 +1,9 @@
-app [Context, program] { pf: platform "../../platform/main.roc" }
+app [Context, Hole, program] { pf: platform "../../platform/main.roc" }
 
 import pf.Server
 import pf.Rocstache
 import templates/Page
+import templates/Holes
 
 ## A page from a template: `templates/Page.rocstache`, whose contract `roux
 ## build` writes to `templates/Page.roc` (with `Page.template`, which makes
@@ -13,7 +14,10 @@ import templates/Page
 ## is the app's context, made once by `init!`.
 Context : { menu : Page.Ctx }
 
-program = { init!, respond! }
+## The holes of Roc in the app's templates, which `roux build` writes.
+Hole : Holes.Hole
+
+program = { init!, respond!, hole: Holes.hole }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || Ok({

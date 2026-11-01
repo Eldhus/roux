@@ -38,9 +38,12 @@ const Op = enum(u4) {
     unless,
     empty,
     call,
+    hole,
     _,
 };
 const Int = enum(u8) { u8, u16, u32, u64, i8, i16, i32, i64, list, _ };
+/// The most a hole's union holds (bytecode.zig's `hole_bytes_max`).
+const hole_bytes_max = 512;
 
 /// The program roux build attached to the executable, read at start-up
 /// (`load_attached`): roc links the app as any platform's, and roux adds
@@ -276,7 +279,11 @@ pub fn render_from(data: Data, index: u64, context: abi.RocBox, roc_host: *abi.R
         scratch = fresh;
         break :blk fresh;
     };
-    var vm: Vm = .{ .sink = .{ .buffer = buffer, .text = data.text }, .code = data.code };
+    var vm: Vm = .{
+        .sink = .{ .buffer = buffer, .text = data.text },
+        .code = data.code,
+        .roc_host = roc_host,
+    };
     defer vm.sink.deinit();
     vm.template(index, @intFromPtr(context));
     const sink = &vm.sink;
@@ -453,6 +460,8 @@ fn log_reload_failure(err: ReadError) void {
 const Vm = struct {
     sink: Sink,
     code: []const u64,
+    /// What releases a Str a hole's Roc allocated.
+    roc_host: *abi.RocHost,
 
     /// A template over the record at `base`: from its own scope, as a
     /// call starts a called partial.
@@ -519,9 +528,62 @@ const Vm = struct {
                     vm.template(rest, at);
                     pc += 1;
                 },
+                .hole => pc = vm.hole(pc, rest, scopes, len),
                 .text, _ => unreachable,
             }
         }
+    }
+
+    /// A hole of Roc: its tag of the app's `Holes.Hole` built in a box whose
+    /// count is Roc's static data (0: never freed, a retain or release of it
+    /// a branch), each leaf's value copied in from its scope, not retained:
+    /// Roc retains what it takes from a box it does not own. Then the Str
+    /// Roc makes of it, written as the run's mode says, and released when
+    /// Roc allocated it. Returns the code after it.
+    fn hole(vm: *Vm, pc: usize, leaves: usize, scopes: *const [scopes_max]usize, len: usize) usize {
+        const code = vm.code;
+        assert(pc + 3 + leaves <= code.len);
+        const ref = code[pc + 1];
+        const meta = code[pc + 2];
+        const discriminant: u64 = meta & 0xffff;
+        const discriminant_offset: usize = @intCast((meta >> 16) & 0xffff);
+        const discriminant_size: usize = @intCast((meta >> 32) & 0xff);
+        const size: usize = @intCast((meta >> 40) & 0xffff);
+        assert(size <= hole_bytes_max);
+        assert(discriminant_offset + discriminant_size <= size or discriminant_size == 0);
+        var boxed: [16 + hole_bytes_max]u8 align(16) = undefined;
+        std.mem.writeInt(u64, boxed[8..16], 0, .little);
+        const payload = boxed[16..][0..size];
+        @memset(payload, 0);
+        for (code[pc + 3 ..][0..leaves]) |leaf| {
+            const up: usize = @intCast(leaf & 15);
+            assert(up < len);
+            const from = scopes[len - 1 - up] + @as(usize, @intCast((leaf >> 4) & 0xffffff));
+            const bytes: usize = @intCast((leaf >> 28) & 0xffff);
+            const into: usize = @intCast((leaf >> 44) & 0xffff);
+            assert(into + bytes <= size);
+            @memcpy(payload[into..][0..bytes], @as([*]const u8, @ptrFromInt(from))[0..bytes]);
+        }
+        const tag = payload[discriminant_offset..];
+        switch (discriminant_size) {
+            0 => {},
+            1 => tag[0] = @intCast(discriminant),
+            2 => std.mem.writeInt(u16, tag[0..2], @intCast(discriminant), .little),
+            4 => std.mem.writeInt(u32, tag[0..4], @intCast(discriminant), .little),
+            8 => std.mem.writeInt(u64, tag[0..8], discriminant, .little),
+            else => unreachable,
+        }
+        vm.sink.run(ref);
+        const string = abi.roc_hole_for_host(@ptrCast(payload.ptr));
+        const mode: Mode = @fromBackingInt(@intCast(ref >> mode_shift));
+        assert(mode == .escaped or mode == .raw);
+        if (string.isSmallStr()) {
+            vm.sink.small(string, mode == .raw);
+        } else {
+            vm.sink.string(string.asSlice(), mode);
+            string.decref(vm.roc_host);
+        }
+        return pc + 3 + leaves;
     }
 
     /// A section opening a scope: each of a list's elements, a record, a
@@ -620,7 +682,8 @@ const Sink = struct {
     /// A Str, written as its mode says.
     fn string(sink: *Sink, bytes: []const u8, mode: Mode) void {
         switch (mode) {
-            .escaped => sink.escape(bytes),
+            // Inline here whatever else calls it: the fields' path is the hot one.
+            .escaped => @call(.always_inline, Sink.escape, .{ sink, bytes }),
             .raw => sink.raw(bytes),
             .upper => sink.cased(bytes, .upper, true),
             .lower => sink.cased(bytes, .lower, true),
@@ -709,6 +772,32 @@ const Sink = struct {
     }
 
     /// Fewer than 16 bytes, room reserved: byte by byte (short runs only).
+    /// A small Str (its bytes within its own 24), written from those: whole
+    /// when raw, or when its first 16 hold it all with nothing to escape;
+    /// else escaped. A small Str owns no allocation: nothing to release.
+    inline fn small(sink: *Sink, value: abi.RocStr, raw_: bool) void {
+        const bytes: [24]u8 = std.mem.asBytes(&value).*;
+        const length: usize = bytes[23] & 0x7f;
+        assert(length <= 23);
+        if (raw_) {
+            sink.reserve(24);
+            sink.buffer[sink.len..][0..24].* = bytes;
+            sink.len += length;
+            return;
+        }
+        if (length <= 16) {
+            const chunk = bytes[0..16].*;
+            if (specials(chunk) & live(length) == 0) {
+                sink.reserve(16);
+                sink.buffer[sink.len..][0..16].* = chunk;
+                sink.len += length;
+                return;
+            }
+        }
+        // Rare: out of line, so `escape` stays inline where `string` calls it.
+        @call(.never_inline, Sink.escape, .{ sink, bytes[0..length] });
+    }
+
     inline fn copy_short(sink: *Sink, bytes_: []const u8) void {
         for (bytes_, sink.buffer[sink.len..][0..bytes_.len]) |b, *d| d.* = b;
         sink.len += bytes_.len;

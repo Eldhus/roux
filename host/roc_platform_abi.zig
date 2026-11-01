@@ -2982,3 +2982,6 @@ pub extern fn roc_init_for_host() callconv(.c) Init_for_hostResult;
 /// Entrypoint: respond_for_host!
 pub extern fn roc_respond_for_host(arg0: __AnonStruct_28781edfe447a702, arg1: RocBox) callconv(.c) __AnonStruct_a14cd3b7d5755441;
 
+/// Entrypoint: hole_for_host
+pub extern fn roc_hole_for_host(arg0: RocBox) callconv(.c) RocStr;
+
