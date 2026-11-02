@@ -36,7 +36,7 @@ pub fn is_pascal(name: []const u8) bool {
 /// Types a query module sees without declaring them, which a row type so
 /// named would shadow (roc then misreads every use): the pinned nightly's
 /// auto-imported builtins (src/canonicalize/CIR.zig's `builtin_type_specs`,
-/// bad769b), and `Sqlite`, which each query module imports.
+/// f6c6cfb), and `Sqlite`, which each query module imports.
 const reserved_types = [_][]const u8{
     "Bool",        "Try",          "Dict",         "Set",    "Str",      "Hasher",
     "Iter",        "Stream",       "List",         "Box",    "Encoding", "Json",
