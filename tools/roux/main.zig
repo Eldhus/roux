@@ -37,7 +37,7 @@ const pipeline = @import("pipeline.zig");
 const dev = @import("dev.zig");
 
 const usage =
-    \\usage: roux build [--dev] [--output=PATH] [--roc=PATH] APP.roc
+    \\usage: roux build [--dev] [--output=PATH] [--roc=PATH [--roc-unchecked]] APP.roc
     \\       roux dev [--port=N] [--roc=PATH] APP.roc
     \\       roux lsp
     \\       roux load --port N [--path /] [--connections N] [--threads N] [--seconds N]
@@ -50,6 +50,8 @@ const Flags = struct {
     dev: bool = false,
     output: ?[]const u8 = null,
     roc: []const u8 = options.roc,
+    /// `--roc-unchecked`: the compiler at `--roc` whatever it reports.
+    roc_unchecked: bool = false,
     port: ?[]const u8 = null,
 };
 
@@ -99,8 +101,8 @@ pub fn main(init: std.process.Init) !void {
     const flags = parse(args[2 .. args.len - 1], building) orelse return usage_exit(stderr);
     const file = args[args.len - 1];
     if (!std.mem.endsWith(u8, file, ".roc")) return usage_exit(stderr);
-    try check_roc(arena, io, flags.roc, stderr);
-    const app: pipeline.App = try .of(arena, file, flags.output, flags.roc);
+    const roc_version = try check_roc(arena, io, flags.roc, flags.roc_unchecked, stderr);
+    const app: pipeline.App = try .of(arena, file, flags.output, flags.roc, roc_version);
     const result = if (building)
         pipeline.build(arena, io, app, if (flags.dev) .dev else .release, stderr)
     else
@@ -124,8 +126,17 @@ pub fn main(init: std.process.Init) !void {
 
 /// The roc roux will run is the nightly roux was made for, or roux says
 /// which it needs and stops: another nightly's compiler lays records out
-/// and names builtins its own way, and fails late and obscurely.
-fn check_roc(arena: std.mem.Allocator, io: Io, roc: []const u8, stderr: *Io.Writer) !void {
+/// and names builtins its own way, and fails late and obscurely. Returns
+/// the version roux generates for. `unchecked` (a compiler built from
+/// source, to try): whatever runs at `roc` is taken, its own version
+/// keying what roux generates with it, and a mismatch fails late.
+fn check_roc(
+    arena: std.mem.Allocator,
+    io: Io,
+    roc: []const u8,
+    unchecked: bool,
+    stderr: *Io.Writer,
+) ![]const u8 {
     // Roc's installer gives the newest nightly it knows, not this one: the
     // nightly's own page is named too.
     const install =
@@ -146,11 +157,19 @@ fn check_roc(arena: std.mem.Allocator, io: Io, roc: []const u8, stderr: *Io.Writ
         std.process.exit(1);
     };
     const said = std.mem.trim(u8, ran.stdout, " \n");
-    if (std.mem.eql(u8, said, want)) return;
+    if (std.mem.eql(u8, said, want)) return options.roc_version;
     const found = if (std.mem.startsWith(u8, said, "Roc compiler version "))
         said["Roc compiler version ".len..]
     else
         said;
+    if (unchecked) {
+        if (found.len == 0) {
+            try stderr.print("roux: `{s} version` said nothing.\n", .{roc});
+            try stderr.flush();
+            std.process.exit(1);
+        }
+        return found;
+    }
     try stderr.print(
         "roux {s} needs roc {s}; `{s}` is {s}.\n" ++ install,
         .{ options.version, options.roc_version, roc, found, options.roc_version },
@@ -167,6 +186,8 @@ fn parse(arguments: []const []const u8, building: bool) ?Flags {
             flags.roc = flag["--roc=".len..];
         } else if (building and std.mem.eql(u8, flag, "--dev")) {
             flags.dev = true;
+        } else if (building and std.mem.eql(u8, flag, "--roc-unchecked")) {
+            flags.roc_unchecked = true;
         } else if (building and std.mem.startsWith(u8, flag, "--output=")) {
             flags.output = flag["--output=".len..];
         } else if (!building and std.mem.startsWith(u8, flag, "--port=")) {

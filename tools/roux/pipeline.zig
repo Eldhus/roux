@@ -9,7 +9,6 @@ const assert = std.debug.assert;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const rocstache = @import("rocstache");
-const roux_options = @import("roux_options");
 
 pub const App = struct {
     /// The directory holding the app's `.roc` and its templates.
@@ -22,9 +21,19 @@ pub const App = struct {
     output: []const u8,
     /// The roc to build with.
     roc: []const u8,
+    /// Its version, which keys what roux generates for it: the nightly's,
+    /// or what an unchecked compiler reports.
+    roc_version: []const u8,
 
-    pub fn of(arena: Allocator, file: []const u8, output: ?[]const u8, roc: []const u8) !App {
+    pub fn of(
+        arena: Allocator,
+        file: []const u8,
+        output: ?[]const u8,
+        roc: []const u8,
+        roc_version: []const u8,
+    ) !App {
         assert(std.mem.endsWith(u8, file, ".roc"));
+        assert(roc_version.len > 0);
         const dir = std.fs.path.dirname(file) orelse ".";
         const name = std.fs.path.stem(file);
         return .{
@@ -33,6 +42,7 @@ pub const App = struct {
             .name = name,
             .output = output orelse try std.fs.path.join(arena, &.{ dir, name }),
             .roc = roc,
+            .roc_version = roc_version,
         };
     }
 };
@@ -154,7 +164,7 @@ pub fn begin(
         .app = try std.fs.path.join(arena, &.{ app.dir, rocstache.generate.templates_dir }),
         .build = paths.out_path,
         .roc = app.roc,
-        .roc_version = roux_options.roc_version,
+        .roc_version = app.roc_version,
         .changed = changed,
     }, cache, stderr);
 }
