@@ -498,7 +498,15 @@ const Vm = struct {
                     const ref = code[pc + 1];
                     sink.run(ref);
                     const string: *const abi.RocStr = @ptrFromInt(at);
-                    sink.string(string.asSlice(), @fromBackingInt(@intCast(ref >> mode_shift)));
+                    const mode: Mode = @fromBackingInt(@intCast(ref >> mode_shift));
+                    // A small Str (most fields) is written inline from its
+                    // own 24 bytes, as a hole's is; a big one out of line.
+                    if (string.isSmallStr()) {
+                        assert(mode == .escaped or mode == .raw);
+                        sink.small(string.*, mode == .raw);
+                    } else {
+                        sink.string(string.asSlice(), mode);
+                    }
                     pc += 2;
                 },
                 .int => {
