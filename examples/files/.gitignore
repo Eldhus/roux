@@ -1,8 +1,8 @@
 # roux build's working files, and the app it builds (named after main.roc).
 .roux/
 main
-# Made by roux build, and its layouts hash keys the path roc is installed at:
-# a committed copy is wrong on any other machine. The build writes it first.
+# Made by roux build: every template of the app, as one tag union, and the
+# layouts they were compiled for. The build writes it first.
 templates/Templates.roc
 # Made by roux build: the holes' Roc, which changes with every hole edit. A
 # template's own module changes only when what it takes does.
