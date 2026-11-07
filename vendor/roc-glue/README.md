@@ -1,9 +1,9 @@
 # roc's Zig glue spec
 
 `ZigGlue.roc`, verbatim from roc-lang/roc at the commit of the pinned nightly (`.roc-version`):
-`src/glue/src/ZigGlue.roc` at `f6c6cfb` (nightly-2026-10-24-f6c6cfb), from
-`https://raw.githubusercontent.com/roc-lang/roc/f6c6cfb3d22265fced1ddf473a18dfadf3f1c706/src/glue/src/ZigGlue.roc`
-on 2026-10-24 (unchanged since `130536d`).
+`src/glue/src/ZigGlue.roc` at `ad3a5d2` (nightly-2026-11-07-ad3a5d2), from
+`https://raw.githubusercontent.com/roc-lang/roc/ad3a5d2830b94fdac878ce1aaa73c64e7c57720f/src/glue/src/ZigGlue.roc`
+on 2026-11-07 (unchanged since `130536d`).
 
 sha256 `ff18757f6f1f360903bf581720fd1f7348a68d89719ed2a6633df33e3e323733`
 
