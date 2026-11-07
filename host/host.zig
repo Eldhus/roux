@@ -1690,9 +1690,11 @@ const port_options: fourneau.server.Options = .{
     .listen_backlog = Evented.listenBacklog,
     .wake_read = Evented.wakeRead,
     .wake_both = Evented.wakeBoth,
+    .wake_chain = Evented.wakeChain,
     .current_fiber = Evented.currentFiber,
     .receive = Evented.receive,
     .send = Evented.send,
+    .retire = Evented.retire,
     .accept = Evented.acceptDirect,
     .set_option = Evented.setSocketOption,
 };
