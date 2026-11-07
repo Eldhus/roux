@@ -1773,6 +1773,7 @@ fn run() !void {
     dev_listen_start(port);
     assert(shards >= 1);
     assert(shards <= shards_max);
+    const connections_per_shard = try connections_fitting(shards);
 
     // HTTPS is the deployment's to say, as the address is: a certificate,
     // or a CA to obtain one from now, before any shard (https.zig).
@@ -1799,6 +1800,7 @@ fn run() !void {
     try serve(&app, .{
         .port = port,
         .shards = shards,
+        .connections_per_shard = connections_per_shard,
         .tls = tls,
         .https = https_options,
         .stop = &stop.requested,
@@ -1832,6 +1834,8 @@ fn serve(app: *App, listen: Listen, stop: *fourneau.stop.Stop) !void {
 const Listen = struct {
     port: u16,
     shards: u32,
+    /// Sized to the descriptor limit (`connections_fitting`).
+    connections_per_shard: u32,
     tls: ?*const fourneau.tls.Context,
     https: fourneau.https.Options,
     /// Set by SIGTERM or SIGINT in production: every shard drains.
@@ -2014,6 +2018,54 @@ fn shard_count() u32 {
     return @max(1, @min(count, wanted, shards_max));
 }
 
+/// Descriptors that are no connection, as a sum: stdio; a ring and a
+/// listener a shard; SQLite's file, journal and shared memory for the
+/// writer and for each shard's readers (`Limits.readers_per_shard`); the
+/// development listener and its pipes; and a margin for what a library
+/// opens.
+fn descriptors_reserved(shards: u32) u32 {
+    assert(shards <= shards_max);
+    const limits: database_module.Limits = .{};
+    const sqlite_files = 3;
+    return 3 + 2 * shards + sqlite_files * (1 + limits.readers_per_shard * shards) + 8 + 64;
+}
+
+/// Connections a shard holds: `connections_max` in all, as the descriptor
+/// limit allows (raised to its hard limit first: a connection is a
+/// descriptor). Fewer than one a shard fit: the environment cannot run the
+/// server, said with the way out.
+fn connections_fitting(shards: u32) !u32 {
+    assert(shards >= 1);
+    assert(shards <= shards_max);
+    const descriptors = fourneau.listen.descriptor_limit_raise();
+    const reserved = descriptors_reserved(shards);
+    var buffer: [192]u8 = undefined;
+    const fitting = fourneau.listen.connections_fitting(.{
+        .descriptors = descriptors,
+        .reserved = reserved,
+        .wanted = connections_max,
+        .minimum = shards,
+    }) orelse {
+        write_line(2, std.fmt.bufPrint(&buffer, "roux: the descriptor limit, {d}, leaves no " ++
+            "connection a shard past the {d} reserved: raise it (ulimit -n; LimitNOFILE= " ++
+            "under systemd)", .{ descriptors, reserved }) catch "roux: the descriptor limit");
+        return error.DescriptorLimit;
+    };
+    if (fitting < connections_max) {
+        write_line(2, std.fmt.bufPrint(&buffer, "roux: {d} connections, not {d}: the " ++
+            "descriptor limit is {d}, {d} of them reserved", .{
+            fitting,
+            connections_max,
+            descriptors,
+            reserved,
+        }) catch "roux: fewer connections than wanted");
+    }
+    const per_shard = fitting / shards;
+    assert(per_shard >= 1);
+    assert(per_shard * shards <= fitting);
+    return per_shard;
+}
+
 /// A shard failed to start: the first says why (the others fail alike).
 var shard_failed: std.atomic.Value(bool) = .init(false);
 
@@ -2038,9 +2090,9 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     assert(requests_in_flight == 0);
     assert(serving);
     const gpa = std.heap.page_allocator;
-    const connections_per_shard: u32 = @max(1, connections_max / listen.shards);
+    assert(listen.connections_per_shard >= 1); // `run` sized it
     const config: fourneau.server.Config = .{
-        .connections_max = connections_per_shard,
+        .connections_max = listen.connections_per_shard,
         .tls = listen.tls,
         .stop = listen.stop,
         // Browsers: one connection, every request and event stream on it
