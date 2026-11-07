@@ -1693,6 +1693,8 @@ const port_options: fourneau.server.Options = .{
     .current_fiber = Evented.currentFiber,
     .receive = Evented.receive,
     .send = Evented.send,
+    .accept = Evented.acceptDirect,
+    .set_option = Evented.setSocketOption,
 };
 
 const Server = fourneau.server.ServerType(App, port_options);
@@ -1789,9 +1791,8 @@ fn run() !void {
     // or a CA to obtain one from now, before any shard (https.zig).
     var https_options = https_from_environment();
     try https_options.check();
-    const redirect = https_options.redirect_port != null;
-    const connections_per_shard = try connections_fitting(shards, redirect);
-    try check_descriptors_reserved(shards, redirect);
+    const connections_per_shard: u32 = @max(1, connections_max / shards);
+    try descriptors_ready(shards, https_options.redirect_port != null);
     const tls = try fourneau.https.context(std.heap.page_allocator, startup_io, https_options);
     const static_dir = started.static_dir.asSlice();
     dev_static_tell(static_dir);
@@ -1847,7 +1848,7 @@ fn serve(app: *App, listen: Listen, stop: *fourneau.stop.Stop) !void {
 const Listen = struct {
     port: u16,
     shards: u32,
-    /// Sized to the descriptor limit (`connections_fitting`).
+    /// `connections_max` over the shards: slots in the ring's file table.
     connections_per_shard: u32,
     tls: ?*const fourneau.tls.Context,
     https: fourneau.https.Options,
@@ -2031,73 +2032,44 @@ fn shard_count() u32 {
     return @max(1, @min(count, wanted, shards_max));
 }
 
-/// A shard holds at least these (`connections_max` over `shards_max`);
-/// below them the server does not start.
-const connections_per_shard_min = connections_max / shards_max;
-
-/// Descriptors that are no connection, as a sum: stdio (3); a ring and a
-/// listener a shard; with a redirect, each shard's redirect listener and
-/// its connections (`Redirect.config`); SQLite's file, journal and shared
-/// memory (3) for the writer and for each shard's readers
-/// (`Limits.readers_per_shard`); the inherited development listener (1); a
-/// backup's second database (3); and a margin for SQLite's temporary files
-/// and what a library opens (64). What is open before the shards start is
-/// checked against it (`check_descriptors_reserved`); what opens later is
-/// in the sum by count.
+/// The process's descriptors, as a sum (a connection is none: a slot in
+/// its shard's ring file table, `Evented.acceptDirect`): stdio (3); a ring
+/// and a listener a shard; with a redirect, its listener a shard; SQLite's
+/// file, journal and shared memory (3) for the writer and for each shard's
+/// readers (`Limits.readers_per_shard`); the inherited development
+/// listener (1); a backup's second database (3); and a margin for SQLite's
+/// temporary files and what a library opens (64). What is open before the
+/// shards start is checked against it (`descriptors_ready`); what opens
+/// later is in the sum by count.
 fn descriptors_reserved(shards: u32, redirect: bool) u32 {
     assert(shards <= shards_max);
     const limits: database_module.Limits = .{};
     const sqlite_files = 3;
-    const redirects: u32 = if (redirect) shards * (1 + Redirect.config.connections_max) else 0;
+    const redirects: u32 = if (redirect) shards else 0;
     return 3 + 2 * shards + redirects + sqlite_files * (1 + limits.readers_per_shard * shards) +
         1 + 3 + 64;
 }
 
-/// Connections a shard holds: `connections_max` in all, as the descriptor
-/// limit allows. A connection is a descriptor, so the soft limit is first
-/// raised to what the host needs: the connections and the reserve for
-/// everything else. Fewer than `connections_per_shard_min` a shard fit:
-/// the environment cannot run the server, said with the number to set.
-fn connections_fitting(shards: u32, redirect: bool) !u32 {
+/// The process's descriptors, ready: the soft limit raised to the reserve
+/// (1,024 by default under systemd, which the reserve is under until
+/// about 60 shards), and what is open before the shards start checked
+/// against the reserve, or the host refuses with the counts and the
+/// number to set, instead of running short of descriptors under load.
+fn descriptors_ready(shards: u32, redirect: bool) !void {
     assert(shards >= 1);
     assert(shards <= shards_max);
     const reserved = descriptors_reserved(shards, redirect);
-    const need: u64 = @as(u64, reserved) + connections_max;
-    const descriptors = fourneau.listen.descriptor_limit_raise(need);
+    const limit = fourneau.listen.descriptor_limit_raise(reserved);
     var buffer: [256]u8 = undefined;
-    const fitting = fourneau.listen.connections_fitting(.{
-        .descriptors = descriptors,
-        .reserved = reserved,
-        .wanted = connections_max,
-        .minimum = connections_per_shard_min * shards,
-    }) orelse {
+    if (limit < reserved) {
         write_line(2, std.fmt.bufPrint(&buffer, "roux: the descriptor limit is {d}; {d} " ++
-            "connections need {d} with {d} reserved: set it to {d} (ulimit -n {d}; " ++
-            "LimitNOFILE={d} under systemd)", .{
-            descriptors, connections_max, need, reserved, need, need, need,
+            "shards need {d}: set it to {d} (ulimit -n {d}; LimitNOFILE={d} under systemd)", .{
+            limit, shards, reserved, reserved, reserved, reserved,
         }) catch "roux: the descriptor limit is too low");
         return error.DescriptorLimit;
-    };
-    if (fitting < connections_max) {
-        write_line(2, std.fmt.bufPrint(&buffer, "roux: {d} connections, not {d}: the " ++
-            "descriptor limit is {d}, {d} of them reserved; set it to {d} for all", .{
-            fitting, connections_max, descriptors, reserved, need,
-        }) catch "roux: fewer connections than wanted");
     }
-    const per_shard = fitting / shards;
-    assert(per_shard >= connections_per_shard_min);
-    assert(per_shard * shards <= fitting);
-    return per_shard;
-}
-
-/// What the process holds open just before its shards start, plus each
-/// shard's ring and listener, fits the reserve, or the host refuses with
-/// the counts instead of running short of descriptors under load.
-fn check_descriptors_reserved(shards: u32, redirect: bool) !void {
     const open = fourneau.listen.descriptors_open() orelse return; // no /proc: unchecked
-    const reserved = descriptors_reserved(shards, redirect);
     if (open + 2 * shards > reserved) {
-        var buffer: [192]u8 = undefined;
         write_line(2, std.fmt.bufPrint(&buffer, "roux: {d} descriptors open before {d} shards " ++
             "start, past the {d} reserved for them: inherited descriptors, or the reserve's " ++
             "sum is short", .{ open, shards, reserved }) catch "roux: the descriptor reserve");
@@ -2149,8 +2121,12 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
     // The shard's fibers, all mapped now: its server's, and the redirect's.
     const fibers_max = config.fibers_max() +
         if (listen.https.redirect_port != null) Redirect.fibers_max else 0;
+    // Each server's slots in the ring's file table, and the one it accepts
+    // while all are held.
+    const direct_sockets_max = config.connections_max + 1 +
+        if (listen.https.redirect_port != null) Redirect.config.connections_max + 1 else 0;
     var runtime: Evented = undefined;
-    try runtime_init(&runtime, gpa, fibers_max);
+    try runtime_init(&runtime, gpa, fibers_max, direct_sockets_max);
     defer runtime.deinit();
 
     const io = runtime.io();
@@ -2182,13 +2158,19 @@ fn run_shard_or_fail(app: *App, listen: Listen) !void {
 /// The shard's runtime and its ring: fourneau's `listen.runtime_init`
 /// waits out a restart's locked memory (the old process's rings not yet
 /// freed), two seconds at most; past that, said plainly.
-fn runtime_init(runtime: *Evented, gpa: std.mem.Allocator, fibers_max: u32) !void {
+fn runtime_init(
+    runtime: *Evented,
+    gpa: std.mem.Allocator,
+    fibers_max: u32,
+    direct_sockets_max: u32,
+) !void {
     fourneau.listen.runtime_init(Evented, runtime, gpa, .{
         .thread_limit = 0, // this thread only
         // Not the default 8: with hundreds of connections the queues
         // overflowed, costing ~3,000 kernel cycles a request.
         .log2_ring_entries = 12,
         .fibers_max = fibers_max,
+        .direct_sockets_max = direct_sockets_max,
     }) catch |err| {
         switch (err) {
             error.SystemResources => write_line(2, "roux: no locked memory for the " ++

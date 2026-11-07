@@ -107,6 +107,8 @@ const Server = fourneau.server.ServerType(App, .{
     .current_fiber = Evented.currentFiber,
     .receive = Evented.receive,
     .send = Evented.send,
+    .accept = Evented.acceptDirect,
+    .set_option = Evented.setSocketOption,
 });
 
 const RouteError = error{ NotFound, BadRequest, Failed, NoSpaceLeft };
@@ -310,6 +312,7 @@ fn run_shard_or_fail(port: u16, shards: u32) !void {
         .thread_limit = 0,
         .log2_ring_entries = 12,
         .fibers_max = config.fibers_max(),
+        .direct_sockets_max = config.connections_max + 1,
     });
     defer runtime.deinit();
     const io = runtime.io();
