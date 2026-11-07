@@ -1774,6 +1774,7 @@ fn run() !void {
     assert(shards >= 1);
     assert(shards <= shards_max);
     const connections_per_shard = try connections_fitting(shards);
+    assert_descriptors_reserved(shards);
 
     // HTTPS is the deployment's to say, as the address is: a certificate,
     // or a CA to obtain one from now, before any shard (https.zig).
@@ -2018,52 +2019,71 @@ fn shard_count() u32 {
     return @max(1, @min(count, wanted, shards_max));
 }
 
-/// Descriptors that are no connection, as a sum: stdio; a ring and a
-/// listener a shard; SQLite's file, journal and shared memory for the
+/// A shard holds at least these (`connections_max` over `shards_max`);
+/// below them the server does not start.
+const connections_per_shard_min = connections_max / shards_max;
+
+/// Descriptors that are no connection, as a sum: stdio (3); a ring and a
+/// listener a shard; SQLite's file, journal and shared memory (3) for the
 /// writer and for each shard's readers (`Limits.readers_per_shard`); the
-/// development listener and its pipes; and a margin for what a library
-/// opens.
+/// inherited development listener (1); a backup's second database (3); and
+/// a margin for SQLite's temporary files and what a library opens (64).
+/// What is open before the shards start is checked against it
+/// (`assert_descriptors_reserved`).
 fn descriptors_reserved(shards: u32) u32 {
     assert(shards <= shards_max);
     const limits: database_module.Limits = .{};
     const sqlite_files = 3;
-    return 3 + 2 * shards + sqlite_files * (1 + limits.readers_per_shard * shards) + 8 + 64;
+    return 3 + 2 * shards + sqlite_files * (1 + limits.readers_per_shard * shards) + 1 + 3 + 64;
 }
 
 /// Connections a shard holds: `connections_max` in all, as the descriptor
-/// limit allows (raised to its hard limit first: a connection is a
-/// descriptor). Fewer than one a shard fit: the environment cannot run the
-/// server, said with the way out.
+/// limit allows. A connection is a descriptor, so the soft limit is first
+/// raised to what the host needs: the connections and the reserve for
+/// everything else. Fewer than `connections_per_shard_min` a shard fit:
+/// the environment cannot run the server, said with the number to set.
 fn connections_fitting(shards: u32) !u32 {
     assert(shards >= 1);
     assert(shards <= shards_max);
-    const descriptors = fourneau.listen.descriptor_limit_raise();
     const reserved = descriptors_reserved(shards);
-    var buffer: [192]u8 = undefined;
+    const need: u64 = @as(u64, reserved) + connections_max;
+    const descriptors = fourneau.listen.descriptor_limit_raise(need);
+    var buffer: [256]u8 = undefined;
     const fitting = fourneau.listen.connections_fitting(.{
         .descriptors = descriptors,
         .reserved = reserved,
         .wanted = connections_max,
-        .minimum = shards,
+        .minimum = connections_per_shard_min * shards,
     }) orelse {
-        write_line(2, std.fmt.bufPrint(&buffer, "roux: the descriptor limit, {d}, leaves no " ++
-            "connection a shard past the {d} reserved: raise it (ulimit -n; LimitNOFILE= " ++
-            "under systemd)", .{ descriptors, reserved }) catch "roux: the descriptor limit");
+        write_line(2, std.fmt.bufPrint(&buffer, "roux: the descriptor limit is {d}; {d} " ++
+            "connections need {d} with {d} reserved: set it to {d} (ulimit -n {d}; " ++
+            "LimitNOFILE={d} under systemd)", .{
+            descriptors, connections_max, need, reserved, need, need, need,
+        }) catch "roux: the descriptor limit is too low");
         return error.DescriptorLimit;
     };
     if (fitting < connections_max) {
         write_line(2, std.fmt.bufPrint(&buffer, "roux: {d} connections, not {d}: the " ++
-            "descriptor limit is {d}, {d} of them reserved", .{
-            fitting,
-            connections_max,
-            descriptors,
-            reserved,
+            "descriptor limit is {d}, {d} of them reserved; set it to {d} for all", .{
+            fitting, connections_max, descriptors, reserved, need,
         }) catch "roux: fewer connections than wanted");
     }
     const per_shard = fitting / shards;
-    assert(per_shard >= 1);
+    assert(per_shard >= connections_per_shard_min);
     assert(per_shard * shards <= fitting);
     return per_shard;
+}
+
+/// The reserve is a sum, not a guess: what the process holds open just
+/// before its shards start, plus each shard's ring and listener, fits it,
+/// or the sum is wrong and the host says so instead of running short.
+fn assert_descriptors_reserved(shards: u32) void {
+    const open = fourneau.listen.descriptors_open() orelse return; // no /proc: unchecked
+    const reserved = descriptors_reserved(shards);
+    if (open + 2 * shards > reserved) {
+        std.debug.panic("roux: {d} descriptors open before {d} shards, past the {d} reserved: " ++
+            "descriptors_reserved is wrong", .{ open, shards, reserved });
+    }
 }
 
 /// A shard failed to start: the first says why (the others fail alike).
