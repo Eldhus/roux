@@ -527,7 +527,7 @@ const outside = "reads outside its fragment, which renders alone with its own sc
 
 /// Names a fragment may not have: nested in its page's module, it would
 /// hide the page's `Ctx` or a type Roc's builtins expose (Builtin.roc of
-/// nightly-2026-11-04; the Roc bump re-reads its top-level types).
+/// nightly-2026-10-24; the Roc bump re-reads its top-level types).
 const reserved = [_][]const u8{
     "Ctx",    "Bool", "Box",    "Crypto", "Dec", "Dict", "Encoding", "F32",  "F64",
     "Hasher", "I8",   "I16",    "I32",    "I64", "I128", "Iter",     "List", "Num",
