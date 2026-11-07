@@ -1684,16 +1684,21 @@ const App = struct {
     }
 };
 
-const Server = fourneau.server.ServerType(App, .{
+/// What fourneau's port of Evented offers the server beyond `std.Io`.
+const port_options: fourneau.server.Options = .{
     .send_then_receive = Evented.sendThenReceive,
     .listen_backlog = Evented.listenBacklog,
-});
+    .wake_read = Evented.wakeRead,
+    .wake_both = Evented.wakeBoth,
+    .current_fiber = Evented.currentFiber,
+    .receive = Evented.receive,
+    .send = Evented.send,
+};
+
+const Server = fourneau.server.ServerType(App, port_options);
 
 /// Plain HTTP beside HTTPS: redirects (fourneau's https.zig).
-const Redirect = fourneau.https.RedirectType(.{
-    .send_then_receive = Evented.sendThenReceive,
-    .listen_backlog = Evented.listenBacklog,
-});
+const Redirect = fourneau.https.RedirectType(port_options);
 
 fn run_redirect(redirect_server: *Redirect.Server) void {
     redirect_server.run() catch |err| {
