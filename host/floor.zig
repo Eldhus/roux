@@ -99,7 +99,10 @@ const App = struct {
     }
 };
 
-const Server = fourneau.server.ServerType(App, .{ .send_then_receive = Evented.sendThenReceive });
+const Server = fourneau.server.ServerType(App, .{
+    .send_then_receive = Evented.sendThenReceive,
+    .listen_backlog = Evented.listenBacklog,
+});
 
 const RouteError = error{ NotFound, BadRequest, Failed, NoSpaceLeft };
 

@@ -1684,10 +1684,16 @@ const App = struct {
     }
 };
 
-const Server = fourneau.server.ServerType(App, .{ .send_then_receive = Evented.sendThenReceive });
+const Server = fourneau.server.ServerType(App, .{
+    .send_then_receive = Evented.sendThenReceive,
+    .listen_backlog = Evented.listenBacklog,
+});
 
 /// Plain HTTP beside HTTPS: redirects (fourneau's https.zig).
-const Redirect = fourneau.https.RedirectType(.{ .send_then_receive = Evented.sendThenReceive });
+const Redirect = fourneau.https.RedirectType(.{
+    .send_then_receive = Evented.sendThenReceive,
+    .listen_backlog = Evented.listenBacklog,
+});
 
 fn run_redirect(redirect_server: *Redirect.Server) void {
     redirect_server.run() catch |err| {
@@ -1773,13 +1779,14 @@ fn run() !void {
     dev_listen_start(port);
     assert(shards >= 1);
     assert(shards <= shards_max);
-    const connections_per_shard = try connections_fitting(shards);
-    assert_descriptors_reserved(shards);
 
     // HTTPS is the deployment's to say, as the address is: a certificate,
     // or a CA to obtain one from now, before any shard (https.zig).
     var https_options = https_from_environment();
     try https_options.check();
+    const redirect = https_options.redirect_port != null;
+    const connections_per_shard = try connections_fitting(shards, redirect);
+    try check_descriptors_reserved(shards, redirect);
     const tls = try fourneau.https.context(std.heap.page_allocator, startup_io, https_options);
     const static_dir = started.static_dir.asSlice();
     dev_static_tell(static_dir);
@@ -2024,17 +2031,21 @@ fn shard_count() u32 {
 const connections_per_shard_min = connections_max / shards_max;
 
 /// Descriptors that are no connection, as a sum: stdio (3); a ring and a
-/// listener a shard; SQLite's file, journal and shared memory (3) for the
-/// writer and for each shard's readers (`Limits.readers_per_shard`); the
-/// inherited development listener (1); a backup's second database (3); and
-/// a margin for SQLite's temporary files and what a library opens (64).
-/// What is open before the shards start is checked against it
-/// (`assert_descriptors_reserved`).
-fn descriptors_reserved(shards: u32) u32 {
+/// listener a shard; with a redirect, each shard's redirect listener and
+/// its connections (`Redirect.config`); SQLite's file, journal and shared
+/// memory (3) for the writer and for each shard's readers
+/// (`Limits.readers_per_shard`); the inherited development listener (1); a
+/// backup's second database (3); and a margin for SQLite's temporary files
+/// and what a library opens (64). What is open before the shards start is
+/// checked against it (`check_descriptors_reserved`); what opens later is
+/// in the sum by count.
+fn descriptors_reserved(shards: u32, redirect: bool) u32 {
     assert(shards <= shards_max);
     const limits: database_module.Limits = .{};
     const sqlite_files = 3;
-    return 3 + 2 * shards + sqlite_files * (1 + limits.readers_per_shard * shards) + 1 + 3 + 64;
+    const redirects: u32 = if (redirect) shards * (1 + Redirect.config.connections_max) else 0;
+    return 3 + 2 * shards + redirects + sqlite_files * (1 + limits.readers_per_shard * shards) +
+        1 + 3 + 64;
 }
 
 /// Connections a shard holds: `connections_max` in all, as the descriptor
@@ -2042,10 +2053,10 @@ fn descriptors_reserved(shards: u32) u32 {
 /// raised to what the host needs: the connections and the reserve for
 /// everything else. Fewer than `connections_per_shard_min` a shard fit:
 /// the environment cannot run the server, said with the number to set.
-fn connections_fitting(shards: u32) !u32 {
+fn connections_fitting(shards: u32, redirect: bool) !u32 {
     assert(shards >= 1);
     assert(shards <= shards_max);
-    const reserved = descriptors_reserved(shards);
+    const reserved = descriptors_reserved(shards, redirect);
     const need: u64 = @as(u64, reserved) + connections_max;
     const descriptors = fourneau.listen.descriptor_limit_raise(need);
     var buffer: [256]u8 = undefined;
@@ -2074,15 +2085,18 @@ fn connections_fitting(shards: u32) !u32 {
     return per_shard;
 }
 
-/// The reserve is a sum, not a guess: what the process holds open just
-/// before its shards start, plus each shard's ring and listener, fits it,
-/// or the sum is wrong and the host says so instead of running short.
-fn assert_descriptors_reserved(shards: u32) void {
+/// What the process holds open just before its shards start, plus each
+/// shard's ring and listener, fits the reserve, or the host refuses with
+/// the counts instead of running short of descriptors under load.
+fn check_descriptors_reserved(shards: u32, redirect: bool) !void {
     const open = fourneau.listen.descriptors_open() orelse return; // no /proc: unchecked
-    const reserved = descriptors_reserved(shards);
+    const reserved = descriptors_reserved(shards, redirect);
     if (open + 2 * shards > reserved) {
-        std.debug.panic("roux: {d} descriptors open before {d} shards, past the {d} reserved: " ++
-            "descriptors_reserved is wrong", .{ open, shards, reserved });
+        var buffer: [192]u8 = undefined;
+        write_line(2, std.fmt.bufPrint(&buffer, "roux: {d} descriptors open before {d} shards " ++
+            "start, past the {d} reserved for them: inherited descriptors, or the reserve's " ++
+            "sum is short", .{ open, shards, reserved }) catch "roux: the descriptor reserve");
+        return error.DescriptorsReserved;
     }
 }
 
