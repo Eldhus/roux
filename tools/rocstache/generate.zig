@@ -843,8 +843,10 @@ const Glue = union(enum) {
 /// started on it with layout.zig's spec when what it lays out changed (or
 /// its output is missing); else the kept layouts. What glue reads is
 /// written on every generation (microseconds; an unchanged file costs a
-/// hash), so its identity is the one key. `--no-cache`: glue's cache runs
-/// whichever spec it compiled first (roc-lang/roc#12139).
+/// hash), so its identity is the one key. Glue compiles its spec on every
+/// run (about 1.2 s on nightly-2026-11-04, cache or no cache: the compiler
+/// has no specialization cache since roc-lang/roc 68b7453a1f), so a hole
+/// edit costs a glue run whenever it changes what is laid out.
 fn glue_start(
     gpa: Allocator,
     io: Io,
@@ -966,7 +968,6 @@ fn spawn_glue(
         .argv = &.{
             options.roc,
             "glue",
-            "--no-cache",
             "glue/Layout.roc",
             "glue/out",
             "glue/main.roc",
