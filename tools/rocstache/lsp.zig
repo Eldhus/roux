@@ -19,6 +19,7 @@ const generate = @import("generate.zig");
 const analysis = @import("analysis.zig");
 const assist = @import("assist.zig");
 const markup = @import("markup.zig");
+const pages = @import("pages.zig");
 
 pub const documents_max = generate.templates_max;
 /// A source's bytes, escaped in JSON (`\u0001` is six bytes for one).
@@ -326,7 +327,11 @@ const Server = struct {
                 .source = text,
                 .buffers = open,
             });
-            const html = try markup.check(arena, text);
+            const html = try pages.check(arena, server.io, .{
+                .path = document.path,
+                .source = text,
+                .buffers = open,
+            });
             var diagnostics: std.ArrayList(Diagnostic) = .empty;
             try diagnostics.ensureTotalCapacityPrecise(arena, 1 + html.len);
             if (result.problem) |problem| diagnostics.appendAssumeCapacity(.{

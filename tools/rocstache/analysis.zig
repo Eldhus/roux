@@ -205,14 +205,14 @@ fn reach(
     return null;
 }
 
-const Loaded = union(enum) {
+pub const Loaded = union(enum) {
     source: []const u8,
     missing,
     unreadable: Io.Dir.ReadFileAllocError,
 };
 
 /// The partial `name`, beside the template: the editor's buffer, else the file.
-fn load(arena: Allocator, io: Io, options: Options, name: []const u8) Allocator.Error!Loaded {
+pub fn load(arena: Allocator, io: Io, options: Options, name: []const u8) Allocator.Error!Loaded {
     assert(parse.is_type_name(name));
     const dir = std.fs.path.dirname(options.path) orelse ".";
     const path = try std.mem.concat(arena, u8, &.{ dir, "/", name, ".rocstache" });

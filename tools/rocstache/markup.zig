@@ -54,18 +54,29 @@ pub const Problem = struct {
 
 /// The markup's problems, less any on a tag: SuperHTML sees a tag as
 /// spaces, so what it says of one (an attribute's value "cannot be
-/// empty") is about what roux fills in, which it cannot judge.
+/// empty") is about what roux fills in, which it cannot judge. The
+/// template alone; pages.zig checks it as the pages that render it.
 pub fn check(arena: Allocator, source: []const u8) Allocator.Error![]const Problem {
     const blanked = try arena.alloc(u8, source.len);
     blank(source, blanked);
-    const ast = try superhtml.html.Ast.init(arena, blanked, .html, false);
     var problems: std.ArrayList(Problem) = .empty;
-    for (ast.errors) |err| {
-        if (problems.items.len == problems_max) break;
+    for (try problems_in(arena, blanked)) |problem| {
+        const end = problem.offset + problem.length;
+        if (!on_tag(source, problem.offset, end)) try problems.append(arena, problem);
+    }
+    return problems.items;
+}
+
+/// SuperHTML's problems in markup whose tags are blanked (a template's,
+/// or a page's with its partials in place), at most `problems_max`.
+pub fn problems_in(arena: Allocator, blanked: []const u8) Allocator.Error![]const Problem {
+    const ast = try superhtml.html.Ast.init(arena, blanked, .html, false);
+    const count = @min(ast.errors.len, problems_max);
+    const problems = try arena.alloc(Problem, count);
+    for (ast.errors[0..count], problems) |err, *problem| {
         const location = err.main_location;
-        assert(location.start <= location.end and location.end <= source.len);
-        if (on_tag(source, location.start, location.end)) continue;
-        try problems.append(arena, .{
+        assert(location.start <= location.end and location.end <= blanked.len);
+        problem.* = .{
             .offset = location.start,
             .length = location.end - location.start,
             .message = try std.fmt.allocPrint(arena, "{f}", .{err.tag.fmt(blanked)}),
@@ -73,13 +84,13 @@ pub fn check(arena: Allocator, source: []const u8) Allocator.Error![]const Probl
                 .unsupported_doctype, .duplicate_class => true,
                 else => false,
             },
-        });
+        };
     }
-    return problems.items;
+    return problems;
 }
 
 /// Whether `start..end` (a point when empty) touches a tag or the block.
-fn on_tag(source: []const u8, start: u32, end: u32) bool {
+pub fn on_tag(source: []const u8, start: u32, end: u32) bool {
     var tags: parse.Tags = .{ .source = source };
     while (tags.next()) |found| {
         const tag_end: u32 = found.span.end orelse @intCast(source.len);
