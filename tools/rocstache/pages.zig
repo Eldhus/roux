@@ -34,28 +34,88 @@ const Template = struct {
     tree: ?*const parse.Tree,
 };
 
-/// The markup's problems in the template `options.path`.
+/// The markup's problems in the template `options.path`, alone in its
+/// session (`Session` checks every open template, sharing their pages).
 pub fn check(arena: Allocator, io: Io, options: analysis.Options) Allocator.Error![]const Problem {
-    const templates = try gather(arena, io, options);
-    assert(templates.len >= 1);
-    if (templates[0].tree == null) return markup.check(arena, options.source);
-    var pages: std.ArrayList(u16) = .empty;
-    for (templates[1..], 1..) |t, index| {
-        if (t.tree == null or included(templates, @intCast(index))) continue;
-        if (reaches(templates, @intCast(index), 0)) try pages.append(arena, @intCast(index));
-    }
-    if (pages.items.len == 0) return as_page(arena, templates);
-    return in_pages(arena, templates, pages.items);
+    const open = for (options.buffers) |buffer| {
+        if (std.mem.eql(u8, buffer.path, options.path)) break options.buffers;
+    } else open: {
+        const with = try arena.alloc(analysis.Buffer, options.buffers.len + 1);
+        @memcpy(with[0..options.buffers.len], options.buffers);
+        with[options.buffers.len] = .{ .path = options.path, .text = options.source };
+        break :open with;
+    };
+    var session: Session = .{ .arena = arena, .io = io, .buffers = open };
+    return session.check(options.path, options.source);
 }
 
-/// The checked template first, then the others beside it: the editor's
-/// buffers there (what is typed, saved or not), then the directory's
-/// files, each once.
-fn gather(arena: Allocator, io: Io, options: analysis.Options) Allocator.Error![]const Template {
-    const directory = std.fs.path.dirname(options.path) orelse ".";
+/// One check of the open templates, all in one arena: each directory's
+/// templates gathered once, and each page's problems found once, for every
+/// template it renders. Every template checked must be among `buffers`.
+pub const Session = struct {
+    arena: Allocator,
+    io: Io,
+    /// Every document open in the editor.
+    buffers: []const analysis.Buffer,
+    directories: std.ArrayList(Directory) = .empty,
+
+    const Directory = struct {
+        path: []const u8,
+        templates: []const Template,
+        /// Each template's problems as a page, once found: null inside
+        /// when it is longer than a page may be.
+        pages: []?(?[]const Placed),
+    };
+
+    /// The markup's problems in the open template `path`, holding `source`.
+    pub fn check(
+        session: *Session,
+        path: []const u8,
+        source: []const u8,
+    ) Allocator.Error![]const Problem {
+        const arena = session.arena;
+        const directory = try session.gathered(std.fs.path.dirname(path) orelse ".");
+        const templates = directory.templates;
+        const self = find(templates, std.fs.path.stem(path)) orelse
+            return markup.check(arena, source);
+        assert(std.mem.eql(u8, templates[self].source, source));
+        if (templates[self].tree == null) return markup.check(arena, source);
+        var pages: std.ArrayList(u16) = .empty;
+        for (templates, 0..) |t, index| {
+            if (index == self or t.tree == null or included(templates, @intCast(index))) continue;
+            if (reaches(templates, @intCast(index), self)) try pages.append(arena, @intCast(index));
+        }
+        if (pages.items.len == 0) return as_page(arena, directory, self);
+        return in_pages(arena, directory, self, pages.items);
+    }
+
+    /// The directory `path`, its templates gathered the first time.
+    fn gathered(session: *Session, path: []const u8) Allocator.Error!*Directory {
+        for (session.directories.items) |*known| {
+            if (std.mem.eql(u8, known.path, path)) return known;
+        }
+        const templates = try gather(session.arena, session.io, session.buffers, path);
+        const pages = try session.arena.alloc(?(?[]const Placed), templates.len);
+        @memset(pages, null);
+        try session.directories.append(session.arena, .{
+            .path = path,
+            .templates = templates,
+            .pages = pages,
+        });
+        return &session.directories.items[session.directories.items.len - 1];
+    }
+};
+
+/// The templates in `directory`: the editor's buffers there (what is
+/// typed, saved or not), then the directory's files, each once.
+fn gather(
+    arena: Allocator,
+    io: Io,
+    buffers: []const analysis.Buffer,
+    directory: []const u8,
+) Allocator.Error![]const Template {
     var names: std.ArrayList([]const u8) = .empty;
-    try names.append(arena, std.fs.path.stem(options.path));
-    for (options.buffers) |buffer| {
+    for (buffers) |buffer| {
         const beside = std.mem.eql(u8, std.fs.path.dirname(buffer.path) orelse ".", directory);
         if (!beside or !std.mem.endsWith(u8, buffer.path, ".rocstache")) continue;
         try add_name(arena, &names, std.fs.path.stem(buffer.path));
@@ -72,12 +132,10 @@ fn gather(arena: Allocator, io: Io, options: analysis.Options) Allocator.Error![
     } else |_| {} // no directory: the buffers only
     var templates: std.ArrayList(Template) = .empty;
     try templates.ensureTotalCapacityPrecise(arena, names.items.len);
-    templates.appendAssumeCapacity(.{
-        .name = names.items[0],
-        .source = options.source,
-        .tree = try parsed(arena, options.source),
-    });
-    for (names.items[1..]) |name| {
+    for (names.items) |name| {
+        // `load` finds the partial `name` beside this path.
+        const beside = try std.mem.concat(arena, u8, &.{ directory, "/", name, ".rocstache" });
+        const options: analysis.Options = .{ .path = beside, .source = "", .buffers = buffers };
         const source = switch (try analysis.load(arena, io, options, name)) {
             .source => |source| source,
             .missing, .unreadable => continue,
@@ -158,9 +216,14 @@ fn find(templates: []const Template, name: []const u8) ?u16 {
 
 /// The checked template as a page: its problems, and its partials' on
 /// the tags that reach them.
-fn as_page(arena: Allocator, templates: []const Template) Allocator.Error![]const Problem {
-    const found = try page_problems(arena, templates, 0) orelse
-        return markup.check(arena, templates[0].source);
+fn as_page(
+    arena: Allocator,
+    directory: *Session.Directory,
+    self: u16,
+) Allocator.Error![]const Problem {
+    const templates = directory.templates;
+    const found = try page_problems(arena, directory, self) orelse
+        return markup.check(arena, templates[self].source);
     var problems: std.ArrayList(Problem) = .empty;
     for (found) |placed| {
         const problem = placed.problem;
@@ -193,17 +256,19 @@ fn as_page(arena: Allocator, templates: []const Template) Allocator.Error![]cons
 /// found in only some of them names those.
 fn in_pages(
     arena: Allocator,
-    templates: []const Template,
+    directory: *Session.Directory,
+    self: u16,
     pages: []const u16,
 ) Allocator.Error![]const Problem {
+    const templates = directory.templates;
     const Seen = struct { problem: Problem, pages: std.ArrayList(u16) };
     var seen: std.ArrayList(Seen) = .empty;
     var composed: u32 = 0;
     for (pages) |index| {
-        const found = try page_problems(arena, templates, index) orelse continue;
+        const found = try page_problems(arena, directory, index) orelse continue;
         composed += 1;
         for (found) |placed| {
-            if (placed.segment.template != 0) continue;
+            if (placed.segment.template != self) continue;
             const same = for (seen.items) |*known| {
                 if (same_problem(known.problem, placed.problem)) break known;
             } else null;
@@ -216,7 +281,7 @@ fn in_pages(
             if (last == null or last.? != index) try entry.pages.append(arena, index);
         }
     }
-    if (composed == 0) return markup.check(arena, templates[0].source);
+    if (composed == 0) return markup.check(arena, templates[self].source);
     const problems = try arena.alloc(Problem, seen.items.len);
     for (seen.items, problems) |entry, *problem| {
         problem.* = entry.problem;
@@ -238,8 +303,19 @@ fn same_problem(a: Problem, b: Problem) bool {
 
 /// What SuperHTML finds in the page `index`, put back in its templates,
 /// over each way it may render (markup.Branches), each problem once; null
-/// when the page is longer than a page may be.
+/// when the page is longer than a page may be. Found once a session.
 fn page_problems(
+    arena: Allocator,
+    directory: *Session.Directory,
+    index: u16,
+) Allocator.Error!?[]const Placed {
+    if (directory.pages[index]) |known| return known;
+    const found = try page_problems_found(arena, directory.templates, index);
+    directory.pages[index] = found;
+    return found;
+}
+
+fn page_problems_found(
     arena: Allocator,
     templates: []const Template,
     index: u16,

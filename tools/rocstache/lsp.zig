@@ -320,6 +320,8 @@ const Server = struct {
     /// roux's problem first, then the markup's, by SuperHTML's rules.
     fn publish(server: *Server, arena: Allocator) Error!void {
         const open = try server.buffers(arena);
+        // The open templates share their pages: each checked once.
+        var session: pages.Session = .{ .arena = arena, .io = server.io, .buffers = open };
         for (server.documents.items) |document| {
             const text = document.text;
             const result = try analysis.analyze(arena, server.io, .{
@@ -327,11 +329,7 @@ const Server = struct {
                 .source = text,
                 .buffers = open,
             });
-            const html = try pages.check(arena, server.io, .{
-                .path = document.path,
-                .source = text,
-                .buffers = open,
-            });
+            const html = try session.check(document.path, text);
             var diagnostics: std.ArrayList(Diagnostic) = .empty;
             try diagnostics.ensureTotalCapacityPrecise(arena, 1 + html.len);
             if (result.problem) |problem| diagnostics.appendAssumeCapacity(.{
