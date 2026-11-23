@@ -8,7 +8,7 @@
 //!
 //! What comes from the editor is validated, never asserted: a message it
 //! cannot frame ends the server; one it can frame but not read is skipped.
-//! Each message is handled in an arena of its own, freed after it.
+//! Each message is handled in one arena, emptied after it (its memory kept).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -42,10 +42,13 @@ pub const Error = Allocator.Error || Io.Writer.Error || Io.Reader.Error ||
 pub fn run(gpa: Allocator, io: Io, options: Options) Error!u8 {
     var server: Server = .{ .gpa = gpa, .io = io, .output = options.output, .log = options.log };
     defer server.deinit();
+    // One arena, emptied after each message but its memory kept: a change
+    // parses every template beside it, and fresh memory each time faults.
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
     // Not bounded: it serves for as long as the editor runs.
     while (true) {
-        var arena_state = std.heap.ArenaAllocator.init(gpa);
-        defer arena_state.deinit();
+        defer _ = arena_state.reset(.retain_capacity);
         const arena = arena_state.allocator();
         const body = try read_message(arena, options.input, options.log) orelse return 1;
         if (try server.handle(arena, body)) |status| return status;
