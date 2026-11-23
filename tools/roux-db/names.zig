@@ -34,24 +34,11 @@ pub fn is_pascal(name: []const u8) bool {
 }
 
 /// Types a query module sees without declaring them, which a row type so
-/// named would shadow (roc then misreads every use): the pinned Roc's
-/// auto-imported builtins (src/canonicalize/CIR.zig's `builtin_type_specs`,
-/// 0.1.0_RC1, 15177e9), and `Sqlite`, which each query module imports.
-const reserved_types = [_][]const u8{
-    "Bool",        "Try",          "Dict",         "Set",    "Str",      "Hasher",
-    "Iter",        "Stream",       "List",         "Box",    "Encoding", "Json",
-    "Utf8Problem", "Utf16Problem", "Utf32Problem", "Range",  "U8",       "I8",
-    "U16",         "I16",          "U32",          "I32",    "U64",      "I64",
-    "U128",        "I128",         "Dec",          "F32",    "F64",      "U8x16",
-    "I8x16",       "U16x8",        "I16x8",        "U32x4",  "I32x4",    "U64x2",
-    "I64x2",       "Numeral",      "Crypto",       "Sqlite",
-};
-
+/// named would shadow (roc then misreads every use): Roc's auto-imported
+/// builtins (the template compiler's list, so the two never differ), and
+/// `Sqlite`, which each query module imports.
 pub fn is_reserved_type(name: []const u8) bool {
-    for (reserved_types) |reserved| {
-        if (std.mem.eql(u8, reserved, name)) return true;
-    }
-    return false;
+    return rocstache.parse.is_builtin_type(name) or std.mem.eql(u8, name, "Sqlite");
 }
 
 /// Words Roc reserves; a field or function so named would not parse. The

@@ -552,6 +552,25 @@ const keywords = [_][]const u8{
 
 pub const keyword_message = "is a Roc keyword, which cannot name a field";
 
+/// The types every module sees without importing them: the pinned Roc's
+/// auto-imported builtins (src/canonicalize/CIR.zig's `builtin_type_specs`
+/// at 0.1.0_RC1, 15177e9). A type nested under one of these names gets
+/// "builtin type shadowed", a warning, which fails `roc build`.
+pub const builtin_types = [_][]const u8{
+    "Bool",        "Try",          "Dict",         "Set",   "Str",      "Hasher",
+    "Iter",        "Stream",       "List",         "Box",   "Encoding", "Json",
+    "Utf8Problem", "Utf16Problem", "Utf32Problem", "Range", "U8",       "I8",
+    "U16",         "I16",          "U32",          "I32",   "U64",      "I64",
+    "U128",        "I128",         "Dec",          "F32",   "F64",      "U8x16",
+    "I8x16",       "U16x8",        "I16x8",        "U32x4", "I32x4",    "U64x2",
+    "I64x2",       "Numeral",      "Crypto",
+};
+
+pub fn is_builtin_type(s: []const u8) bool {
+    for (builtin_types) |t| if (std.mem.eql(u8, t, s)) return true;
+    return false;
+}
+
 pub fn is_keyword(s: []const u8) bool {
     for (keywords) |k| if (std.mem.eql(u8, k, s)) return true;
     return false;

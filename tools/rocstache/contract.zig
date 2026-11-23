@@ -525,14 +525,11 @@ pub fn new_field(contract: *Contract, record: u16, name: []const u8, child: u16)
 
 const outside = "reads outside its fragment, which renders alone with its own scope only";
 
-/// Names a fragment may not have: nested in its page's module, it would
-/// hide the page's `Ctx` or a type Roc's builtins expose (Builtin.roc of
-/// 0.1.0_RC1; the Roc bump re-reads its top-level types).
-const reserved = [_][]const u8{
-    "Ctx",    "Bool", "Box",    "Crypto", "Dec", "Dict", "Encoding", "F32",  "F64",
-    "Hasher", "I8",   "I16",    "I32",    "I64", "I128", "Iter",     "List", "Num",
-    "Set",    "Str",  "Stream", "Try",    "U8",  "U16",  "U32",      "U64",  "U128",
-};
+/// A name a fragment may not have: nested in its page's module, it would
+/// hide the page's `Ctx` or shadow one of Roc's auto-imported types.
+fn is_reserved(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Ctx") or parse.is_builtin_type(name);
+}
 
 const Walker = struct {
     contract: *Contract,
@@ -1002,10 +999,8 @@ const Walker = struct {
         if (std.mem.eql(u8, template.name, node.text)) {
             return walker.fail_at(node, "is its page's name: the page's module would nest itself");
         }
-        for (reserved) |name| {
-            if (std.mem.eql(u8, name, node.text)) {
-                return walker.fail_at(node, "is a name Roc's own types or the page's Ctx have");
-            }
+        if (is_reserved(node.text)) {
+            return walker.fail_at(node, "is a name Roc's own types or the page's Ctx have");
         }
         if (contract.fragments_len == fragments_max) {
             return walker.fail_at(node, "the template has too many fragments");
@@ -1694,6 +1689,9 @@ test "contract: a fragment's refusals" {
         .{ "{{$Ctx}}x{{/Ctx}}", "Ctx", "is a name Roc's own types" },
         .{ "{{$Str}}x{{/Str}}", "Str", "is a name Roc's own types" },
         .{ "{{$Iter}}x{{/Iter}}", "Iter", "is a name Roc's own types" },
+        .{ "{{$Json}}x{{/Json}}", "Json", "is a name Roc's own types" },
+        .{ "{{$Range}}x{{/Range}}", "Range", "is a name Roc's own types" },
+        .{ "{{$Utf8Problem}}x{{/Utf8Problem}}", "Utf8Problem", "is a name Roc's own types" },
         .{ "{{$Page}}x{{/Page}}", "Page", "is its page's name" },
         .{
             "{{#tags |tag|}}{{$Row}}{{ tag }}{{/Row}}{{/tags}}",
