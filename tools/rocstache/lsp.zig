@@ -18,6 +18,7 @@ const parse = @import("parse.zig");
 const generate = @import("generate.zig");
 const analysis = @import("analysis.zig");
 const assist = @import("assist.zig");
+const markup = @import("markup.zig");
 
 pub const documents_max = generate.templates_max;
 /// A source's bytes, escaped in JSON (`\u0001` is six bytes for one).
@@ -141,9 +142,13 @@ const Server = struct {
             .textDocumentSync = .{ .openClose = true, .change = 1 },
             .hoverProvider = true,
             // A tag opening, a path's dot, a pipe, a partial, a section,
-            // `../`: where a list helps before a word is typed.
+            // `../`: where a list helps before a word is typed. Then the
+            // markup's, as SuperHTML's server asks for them: an element
+            // opening or closing, an attribute's name, its value.
             .completionProvider = .{
-                .triggerCharacters = [_][]const u8{ "{", ".", "|", ">", "#", "^", "?", "/" },
+                .triggerCharacters = [_][]const u8{
+                    "{", ".", "|", ">", "#", "^", "?", "/", "<", " ", "'", "\"", "=", ",", "-",
+                },
             },
         },
         .serverInfo = .{ .name = "roux lsp" },
@@ -165,7 +170,8 @@ const Server = struct {
         return .{ .document = document, .offset = offset_of(document.text, request.position) };
     }
 
-    /// Markdown about the point a hover request names, or null.
+    /// Markdown about the point a hover request names, or null: roux's
+    /// inside a tag, SuperHTML's on the markup outside one.
     fn hover(server: *Server, arena: Allocator, params: std.json.Value) Error!?[]const u8 {
         const point = server.at(arena, params) orelse return null;
         const result = try analysis.analyze(arena, server.io, .{
@@ -173,17 +179,24 @@ const Server = struct {
             .source = point.document.text,
             .buffers = try server.buffers(arena),
         });
-        return assist.hover(arena, result, point.offset);
+        if (try assist.hover(arena, result, point.offset)) |text| return text;
+        return markup.describe(arena, point.document.text, point.offset);
     }
 
     const Completion = struct {
         label: []const u8,
-        /// The protocol's CompletionItemKind: Field 5, Function 3, File 17.
+        /// The protocol's CompletionItemKind: Field 5, Function 3, File 17,
+        /// Property 10 (an attribute), Class 7 (an element).
         kind: u8,
-        detail: []const u8,
+        detail: ?[]const u8 = null,
+        documentation: ?struct { kind: []const u8, value: []const u8 } = null,
+        insertText: ?[]const u8 = null,
+        /// The protocol's InsertTextFormat: Snippet 2.
+        insertTextFormat: ?u8 = null,
     };
 
-    /// What may be typed at the point a completion request names.
+    /// What may be typed at the point a completion request names: roux's
+    /// items, then SuperHTML's (none inside a tag).
     fn completion(
         server: *Server,
         arena: Allocator,
@@ -195,13 +208,26 @@ const Server = struct {
             .source = point.document.text,
             .buffers = try server.buffers(arena),
         }, point.offset);
-        const result = try arena.alloc(Completion, items.len);
-        for (items, result) |item, *entry| {
+        const html = try markup.complete(arena, point.document.text, point.offset);
+        const result = try arena.alloc(Completion, items.len + html.len);
+        for (items, result[0..items.len]) |item, *entry| {
             const kind: u8 = switch (item.kind) {
                 .field => 5,
                 .template => 17,
             };
             entry.* = .{ .label = item.label, .kind = kind, .detail = item.detail };
+        }
+        for (html, result[items.len..]) |item, *entry| {
+            entry.* = .{
+                .label = item.label,
+                .kind = if (item.element) 7 else 10,
+                .documentation = if (item.description.len == 0) null else .{
+                    .kind = "markdown",
+                    .value = item.description,
+                },
+                .insertText = item.insert,
+                .insertTextFormat = if (item.snippet) 2 else null,
+            };
         }
         return result;
     }
@@ -345,7 +371,9 @@ const Server = struct {
     /// `value` as JSON, framed.
     fn send(server: *Server, arena: Allocator, value: anytype) Error!void {
         var body: Io.Writer.Allocating = .init(arena);
-        std.json.Stringify.value(value, .{}, &body.writer) catch return error.OutOfMemory;
+        // A field with nothing to say is left out, not sent as null.
+        const options: std.json.Stringify.Options = .{ .emit_null_optional_fields = false };
+        std.json.Stringify.value(value, options, &body.writer) catch return error.OutOfMemory;
         try server.output.print("Content-Length: {d}\r\n\r\n", .{body.written().len});
         try server.output.writeAll(body.written());
         try server.output.flush();
@@ -561,6 +589,47 @@ test "lsp: a session: opened, wrong, fixed through a partial, shut down" {
     // Top's `a`, in Page's scope: the tag being typed is not counted.
     const completed = "\"id\":5,\"result\":[{\"label\":\"a\",\"kind\":5,\"detail\":\"Str\"}]";
     try testing.expect(std.mem.indexOf(u8, written, completed) != null);
+}
+
+test "lsp: the markup outside a tag completed and described by SuperHTML" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const page = "file:///app/templates/Page.rocstache";
+    const messages = [_][]const u8{
+        \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+        ,
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":
+        ++ "{\"uri\":\"" ++ page ++ "\",\"languageId\":\"rocstache\",\"version\":1," ++
+            "\"text\":\"<p class=\\\"{{ a }}\\\" hid>x</p>\"}}}",
+        // After `hid`: an attribute's name.
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":
+        ++ "{\"uri\":\"" ++ page ++ "\"},\"position\":{\"line\":0,\"character\":22}}}",
+        // On `p`: the element.
+        \\{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":
+        ++ "{\"uri\":\"" ++ page ++ "\"},\"position\":{\"line\":0,\"character\":1}}}",
+        \\{"jsonrpc":"2.0","id":4,"method":"shutdown"}
+        ,
+        \\{"jsonrpc":"2.0","method":"exit"}
+        ,
+    };
+    var input_bytes: std.ArrayList(u8) = .empty;
+    for (messages) |message| try input_bytes.appendSlice(arena, try frame(arena, message));
+    var input: Io.Reader = .fixed(input_bytes.items);
+    var output: Io.Writer.Allocating = .init(arena);
+    var log: Io.Writer.Allocating = .init(arena);
+    const status = try run(testing.allocator, testing.io, .{
+        .input = &input,
+        .output = &output.writer,
+        .log = &log.writer,
+    });
+    try testing.expectEqual(@as(u8, 0), status);
+    const written = output.written();
+    const completed = std.mem.indexOf(u8, written, "\"id\":2,\"result\":[").?;
+    const hidden = "{\"label\":\"hidden\",\"kind\":10,";
+    try testing.expect(std.mem.indexOfPos(u8, written, completed, hidden) != null);
+    const hovered = "\"id\":3,\"result\":{\"contents\":{\"kind\":\"markdown\",\"value\":\"";
+    try testing.expect(std.mem.indexOf(u8, written, hovered) != null);
 }
 
 test "lsp: the pipe closing without exit is status 1; a non-JSON message is skipped" {

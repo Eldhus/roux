@@ -70,11 +70,7 @@ pub fn build(b: *std.Build) void {
                     .optimize = .debug,
                     .pic = null,
                 }) },
-                .{ .name = "rocstache", .module = b.createModule(.{
-                    .root_source_file = b.path("tools/rocstache/root.zig"),
-                    .target = target,
-                    .optimize = .debug,
-                }) },
+                .{ .name = "rocstache", .module = rocstache_module(b, target, .debug) },
             },
         }),
     });
@@ -84,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/rocstache/tests.zig"),
         .target = target,
         .optimize = .debug,
+        .imports = &.{.{ .name = "superhtml", .module = superhtml_module(b, target, .debug) }},
     }) });
     test_step.dependOn(&b.addRunArtifact(rocstache_tests).step);
     // The compiler and the host's VM together, against an oracle.
@@ -92,11 +89,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .debug,
         .imports = &.{
-            .{ .name = "rocstache", .module = b.createModule(.{
-                .root_source_file = b.path("tools/rocstache/root.zig"),
-                .target = target,
-                .optimize = .debug,
-            }) },
+            .{ .name = "rocstache", .module = rocstache_module(b, target, .debug) },
             .{ .name = "fourneau", .module = fourneau.module("fourneau") },
         },
     }) });
@@ -130,11 +123,7 @@ fn migrations_step(b: *std.Build, target: std.Build.ResolvedTarget, roux: *std.B
                     .optimize = .debug,
                     .imports = &.{
                         .{ .name = "sqlite", .module = sqlite },
-                        .{ .name = "rocstache", .module = b.createModule(.{
-                            .root_source_file = b.path("tools/rocstache/root.zig"),
-                            .target = target,
-                            .optimize = .debug,
-                        }) },
+                        .{ .name = "rocstache", .module = rocstache_module(b, target, .debug) },
                     },
                 }) },
             },
@@ -244,6 +233,71 @@ fn add_sqlite_c(b: *std.Build, module: *std.Build.Module) void {
 
 const sqlite_options = @import("sqlite/options.zig");
 
+/// The `rocstache` module (tools/rocstache): the template compiler and
+/// `roux lsp`, which answers the markup through SuperHTML.
+fn rocstache_module(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("tools/rocstache/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "superhtml", .module = superhtml_module(b, target, optimize) }},
+    });
+}
+
+/// SuperHTML's library (vendor/superhtml, v0.7.1): HTML's elements and
+/// attributes, their completions and descriptions. With scripty and tracy
+/// (vendor/scripty, vendor/tracy) at the commits its build.zig.zon pins,
+/// wired as its build.zig wires them, tracy off. Updated by copying a new
+/// release's `src/` (less `cli/`, `main.zig`, `wasm.zig`) and those two.
+fn superhtml_module(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+) *std.Build.Module {
+    const tracy_options = b.addOptions();
+    tracy_options.addOption(bool, "enable_tracy", false);
+    tracy_options.addOption(bool, "enable_tracy_allocation", false);
+    tracy_options.addOption(bool, "enable_tracy_callstack", true);
+    tracy_options.addOption(usize, "tracy_callstack_depth", 10);
+    const tracy = b.createModule(.{
+        .root_source_file = b.path("vendor/tracy/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tracy.addOptions("options", tracy_options);
+    const scripty = b.createModule(.{
+        .root_source_file = b.path("vendor/scripty/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "tracy", .module = tracy }},
+    });
+    // The IANA language subtag registry, parsed at build time into ZON.
+    const registry_parser = b.addExecutable(.{
+        .name = "language-tag-parser",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("vendor/superhtml/src/html/language_tag/parse.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const registry = b.addRunArtifact(registry_parser).addOutputFileArg("registry.zon");
+    return b.createModule(.{
+        .root_source_file = b.path("vendor/superhtml/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "scripty", .module = scripty },
+            .{ .name = "tracy", .module = tracy },
+            .{ .name = "language-tag-registry", .module = b.createModule(.{
+                .root_source_file = registry,
+            }) },
+        },
+    });
+}
+
 /// The examples' database directories, each compiled by roux-db.
 const example_databases = [_][]const u8{
     "examples/sqlite/db",
@@ -267,11 +321,7 @@ fn tools_step(
     roux_options.addOption([]const u8, "roc", roc orelse roc_path(b));
     roux_options.addOption([]const u8, "roc_version", roc_version(b));
     roux_options.addOption([]const u8, "version", roux_version);
-    const rocstache = b.createModule(.{
-        .root_source_file = b.path("tools/rocstache/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const rocstache = rocstache_module(b, target, optimize);
     const roux_module = b.createModule(.{
         .root_source_file = b.path("tools/roux/main.zig"),
         .target = target,

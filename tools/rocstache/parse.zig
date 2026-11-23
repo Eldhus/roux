@@ -173,25 +173,62 @@ pub const Span = struct { start: u32, end: ?u32 };
 pub fn tag_at(source: []const u8, offset: u32) ?Span {
     assert(offset <= source.len);
     if (source.len > source_bytes_max) return null;
-    var at: usize = 0;
-    if (std.mem.startsWith(u8, source, "{{%")) {
-        const block_end = std.mem.indexOfPos(u8, source, 3, "%}}") orelse return null;
-        at = block_end + 3;
-        if (offset < at) return null;
-    }
-    while (std.mem.indexOfPos(u8, source, at, "{{")) |start| {
-        if (start >= offset) return null;
-        const triple = std.mem.startsWith(u8, source[start..], "{{{");
-        const close: []const u8 = if (triple) "}}}" else "}}";
-        const inner_end = std.mem.indexOfPos(u8, source, start + close.len, close) orelse
-            return .{ .start = @intCast(start), .end = null };
-        const end = inner_end + close.len;
-        if (offset <= inner_end) return .{ .start = @intCast(start), .end = @intCast(end) };
-        assert(end > at);
-        at = end;
+    var tags: Tags = .{ .source = source };
+    while (tags.next()) |found| {
+        const end = found.span.end orelse {
+            // A block that never closes is all block; a tag, all tag.
+            if (found.block or found.span.start >= offset) return null;
+            return found.span;
+        };
+        if (found.block) {
+            if (offset < end) return null;
+            continue;
+        }
+        if (found.span.start >= offset) return null;
+        const triple = std.mem.startsWith(u8, source[found.span.start..], "{{{");
+        const close_len: u32 = if (triple) 3 else 2;
+        if (offset <= end - close_len) return found.span;
     }
     return null;
 }
+
+/// The `{{% %}}` block and the tags of a source, in order, found as `parse`
+/// finds them whether or not it parses: the language server reads
+/// templates being typed. The last has no end when it never closes.
+pub const Tags = struct {
+    source: []const u8,
+    at: usize = 0,
+    done: bool = false,
+
+    pub const Found = struct { span: Span, block: bool };
+
+    pub fn next(tags: *Tags) ?Found {
+        if (tags.done) return null;
+        const source = tags.source;
+        if (tags.at == 0 and std.mem.startsWith(u8, source, "{{%")) {
+            const block_end = std.mem.indexOfPos(u8, source, 3, "%}}") orelse {
+                tags.done = true;
+                return .{ .span = .{ .start = 0, .end = null }, .block = true };
+            };
+            tags.at = block_end + 3;
+            return .{ .span = .{ .start = 0, .end = @intCast(tags.at) }, .block = true };
+        }
+        const start = std.mem.indexOfPos(u8, source, tags.at, "{{") orelse {
+            tags.done = true;
+            return null;
+        };
+        const triple = std.mem.startsWith(u8, source[start..], "{{{");
+        const close: []const u8 = if (triple) "}}}" else "}}";
+        const inner_end = std.mem.indexOfPos(u8, source, start + close.len, close) orelse {
+            tags.done = true;
+            return .{ .span = .{ .start = @intCast(start), .end = null }, .block = false };
+        };
+        const end = inner_end + close.len;
+        assert(end > tags.at);
+        tags.at = end;
+        return .{ .span = .{ .start = @intCast(start), .end = @intCast(end) }, .block = false };
+    }
+};
 
 /// Where the section the tag `opener` opens ends: after the closing tag
 /// that pairs with it by nesting, tags found as `parse` finds them. Null

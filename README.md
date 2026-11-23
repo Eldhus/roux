@@ -107,6 +107,8 @@ Report a problem by a private security advisory on GitHub, not an issue; see
 ## License
 
 MIT. `host/roc_platform_abi.zig` and `vendor/roc-glue/` are Roc's (Universal Permissive License);
-`vendor/sqlite/` is SQLite's (public domain); a release carries musl (MIT).
+`vendor/sqlite/` is SQLite's (public domain); `vendor/superhtml/`, `vendor/scripty/` and
+`vendor/tracy/` are Loris Cro's SuperHTML and its two dependencies (MIT); a release carries musl
+(MIT).
 
 Part of [Eldhus](https://github.com/Eldhus).

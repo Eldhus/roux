@@ -15,6 +15,7 @@ test {
     _ = @import("probe.zig");
     _ = @import("analysis.zig");
     _ = @import("assist.zig");
+    _ = @import("markup.zig");
     _ = @import("lsp.zig");
     _ = @import("root.zig");
 }
