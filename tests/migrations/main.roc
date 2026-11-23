@@ -4,6 +4,7 @@ import pf.File
 import pf.Server
 import pf.Sqlite
 import pf.Stderr
+import templates/Holes
 
 ## The migration cases' app (runner.zig runs it in each case's directory):
 ## opens `test.db` with `schema.sql` and the ledger's steps as roux-db split
@@ -13,7 +14,7 @@ import pf.Stderr
 
 Context : {}
 
-program = { init!, respond! }
+program = { init!, respond!, hole: Holes.hole }
 
 init! : () => Try({ config : Server.Config, context : Context }, [Exit(I64)])
 init! = || {

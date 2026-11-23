@@ -97,21 +97,22 @@ pub fn main(init: std.process.Init) !void {
     if (failed > 0) std.process.exit(1);
 }
 
-/// main.roc's app, built once: its path.
-fn build_app(gpa: Allocator, io: Io, roc: []const u8) ![]const u8 {
+/// main.roc's app, built once by `roux build`, as any app is (its
+/// templates/Holes.roc is roux's): its path.
+fn build_app(gpa: Allocator, io: Io, roux: []const u8) ![]const u8 {
     const app = try std.fmt.allocPrint(gpa, "{s}/app", .{work_dir});
     errdefer gpa.free(app);
     const output = try std.fmt.allocPrint(gpa, "--output={s}", .{app});
     defer gpa.free(output);
     const ran = try std.process.run(gpa, io, .{
-        .argv = &.{ roc, "build", "--opt=dev", output, "tests/migrations/main.roc" },
+        .argv = &.{ roux, "build", "--dev", output, "tests/migrations/main.roc" },
         .stdout_limit = .limited(output_bytes_max),
         .stderr_limit = .limited(output_bytes_max),
     });
     defer gpa.free(ran.stdout);
     defer gpa.free(ran.stderr);
     if (!ran.term.success()) {
-        std.debug.print("roc build failed:\n{s}{s}\n", .{ ran.stdout, ran.stderr });
+        std.debug.print("roux build failed:\n{s}{s}\n", .{ ran.stdout, ran.stderr });
         return error.AppBuildFailed;
     }
     return app;

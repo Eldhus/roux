@@ -103,16 +103,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(vm_tests).step);
 
     platform_step(b, fourneau);
-    tools_step(b, target, fourneau, test_step);
+    const roux = tools_step(b, target, fourneau, test_step);
     floor_step(b, target);
     db_floor_step(b, fourneau);
-    migrations_step(b, target);
+    migrations_step(b, target, roux);
 }
 
 /// `zig build migrations`: tests/migrations/runner.zig over every case,
 /// with roux-db's compiler for the schema and the platform for the app
-/// (built with the pinned roc).
-fn migrations_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
+/// (built by `roux`, as any app is, with the pinned roc).
+fn migrations_step(b: *std.Build, target: std.Build.ResolvedTarget, roux: *std.Build.Step.Compile) void {
     const bless = b.option(bool, "bless", "migrations: write what each case printed") orelse false;
     const case = b.option([]const u8, "case", "migrations: only the cases named so");
     const sqlite = sqlite_module(b, .{ .target = target, .optimize = .debug, .pic = null });
@@ -143,7 +143,7 @@ fn migrations_step(b: *std.Build, target: std.Build.ResolvedTarget) void {
     const run = b.addRunArtifact(runner);
     run.setCwd(b.path("."));
     run.has_side_effects = true;
-    run.addArg(roc_path(b));
+    run.addArtifactArg(roux);
     if (bless) run.addArg("--bless");
     if (case) |text| run.addArg(text);
     run.step.dependOn(&b.top_level_steps.get("platform").?.step);
@@ -250,13 +250,13 @@ const example_databases = [_][]const u8{
 };
 
 /// `zig build tools`: roux, which builds apps (zig-out/bin/roux build),
-/// roux-db and roux-load. roux's own tests join `test_step`.
+/// roux-db and roux-load. roux's own tests join `test_step`. Returns roux.
 fn tools_step(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     fourneau: *std.Build.Dependency,
     test_step: *std.Build.Step,
-) void {
+) *std.Build.Step.Compile {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
     // roux runs the pinned Roc `.roc-version` names: here, where Roc's
     // builds are installed side by side; in a release (`-Droc=roc`), the
@@ -333,6 +333,7 @@ fn tools_step(
         run.has_side_effects = true;
         examples.dependOn(&run.step);
     }
+    return roux;
 }
 
 /// roux's version, set in build.zig.zon only: a release's tag (`v1.2.3`)

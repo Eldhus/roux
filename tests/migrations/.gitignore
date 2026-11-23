@@ -1,0 +1,4 @@
+# roux build's working files, and what it makes (the runner builds the app
+# into .zig-cache/migrations).
+.roux/
+templates/
