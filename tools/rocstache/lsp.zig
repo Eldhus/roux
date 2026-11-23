@@ -178,13 +178,17 @@ const Server = struct {
     /// inside a tag, SuperHTML's on the markup outside one.
     fn hover(server: *Server, arena: Allocator, params: std.json.Value) Error!?[]const u8 {
         const point = server.at(arena, params) orelse return null;
+        const text = point.document.text;
+        // roux answers on a tag alone: elsewhere its check is not needed.
+        if (!markup.on_tag(text, point.offset, point.offset)) {
+            return markup.describe(arena, text, point.offset);
+        }
         const result = try analysis.analyze(arena, server.io, .{
             .path = point.document.path,
-            .source = point.document.text,
+            .source = text,
             .buffers = try server.buffers(arena),
         });
-        if (try assist.hover(arena, result, point.offset)) |text| return text;
-        return markup.describe(arena, point.document.text, point.offset);
+        return assist.hover(arena, result, point.offset);
     }
 
     const Completion = struct {
