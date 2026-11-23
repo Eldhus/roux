@@ -649,6 +649,90 @@ test "lsp: the markup outside a tag completed and described by SuperHTML" {
     try testing.expect(std.mem.indexOf(u8, written, hovered) != null);
 }
 
+test "lsp: sessions made at random: served to the end, nothing leaked" {
+    const Prng = pages.Prng;
+    const uris = [_][]const u8{
+        "file:///nowhere/t/A.rocstache", "file:///nowhere/t/P.rocstache",
+        "untitled:1",                    "file:///nowhere/t/%zz.rocstache",
+    };
+    // Each message's start, and a document's.
+    const rpc = "{{\"jsonrpc\":\"2.0\",";
+    const document = "\"params\":{{\"textDocument\":{{\"uri\":\"{s}\"";
+    const garbage = [_][]const u8{
+        "not json",
+        "{}",
+        "[]",
+        "{\"method\":5}",
+        "{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"textDocument/hover\",\"params\":null}",
+        "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/definition\"}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":" ++
+            "{\"textDocument\":{\"uri\":\"file:///nowhere/t/A.rocstache\"}," ++
+            "\"contentChanges\":[]}}",
+    };
+    const seeds = 200;
+    // Counted, so a message made wrong (skipped, unread) fails the test.
+    var published: u32 = 0;
+    var answered: u32 = 0;
+    for (0..seeds) |seed| {
+        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var prng: Prng = .init(seed);
+        var input_bytes: std.ArrayList(u8) = .empty;
+        const initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+        try input_bytes.appendSlice(arena, try frame(arena, initialize));
+        for (0..prng.int_less_than(u32, 12)) |n| {
+            const uri = uris[prng.int_less_than(usize, uris.len)];
+            var text_json: Io.Writer.Allocating = .init(arena);
+            const template = try pages.random_template(arena, &prng);
+            try std.json.Stringify.value(template, .{}, &text_json.writer);
+            const text = text_json.written();
+            const line = prng.int_less_than(u32, 4);
+            const character = prng.int_less_than(u32, 120);
+            const message = switch (prng.int_less_than(u8, 6)) {
+                0, 1 => try arena.print(rpc ++ "\"method\":\"textDocument/didOpen\"," ++
+                    document ++ ",\"text\":{s}}}}}}}", .{ uri, text }),
+                2 => try arena.print(rpc ++ "\"method\":\"textDocument/didChange\"," ++
+                    document ++ "}},\"contentChanges\":[{{\"text\":{s}}}]}}}}", .{ uri, text }),
+                3 => try arena.print(rpc ++ "\"method\":\"textDocument/didClose\"," ++
+                    document ++ "}}}}}}", .{uri}),
+                4 => try arena.print(rpc ++ "\"id\":{d},\"method\":\"textDocument/{s}\"," ++
+                    document ++ "}},\"position\":{{\"line\":{d},\"character\":{d}}}}}}}", .{
+                    n + 2,
+                    if (prng.boolean()) "hover" else "completion",
+                    uri,
+                    line,
+                    character,
+                }),
+                else => garbage[prng.int_less_than(usize, garbage.len)],
+            };
+            try input_bytes.appendSlice(arena, try frame(arena, message));
+        }
+        if (prng.boolean()) {
+            const shutdown = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"shutdown\"}";
+            try input_bytes.appendSlice(arena, try frame(arena, shutdown));
+            const exit = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}";
+            try input_bytes.appendSlice(arena, try frame(arena, exit));
+        }
+        var input: Io.Reader = .fixed(input_bytes.items);
+        var output: Io.Writer.Allocating = .init(arena);
+        var log: Io.Writer.Allocating = .init(arena);
+        // The documents are kept in testing's allocator: a leak fails the test.
+        const status = try run(testing.allocator, testing.io, .{
+            .input = &input,
+            .output = &output.writer,
+            .log = &log.writer,
+        });
+        try testing.expect(status <= 1);
+        const written = output.written();
+        published += @intCast(std.mem.count(u8, written, "textDocument/publishDiagnostics"));
+        // Past initialize's: hovers' and completions' answers.
+        answered += @intCast(std.mem.count(u8, written, "\"result\":") -| 1);
+    }
+    try testing.expect(published > seeds);
+    try testing.expect(answered > seeds / 2);
+}
+
 test "lsp: the pipe closing without exit is status 1; a non-JSON message is skipped" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

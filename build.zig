@@ -75,12 +75,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(roux_db_tests).step);
-    // The template compiler's tests (tools/rocstache).
+    // The template compiler's tests (tools/rocstache): fourneau's prng for
+    // the language server's templates made at random.
     const rocstache_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("tools/rocstache/tests.zig"),
         .target = target,
         .optimize = .debug,
-        .imports = &.{.{ .name = "superhtml", .module = superhtml_module(b, target, .debug) }},
+        .imports = &.{
+            .{ .name = "superhtml", .module = superhtml_module(b, target, .debug) },
+            .{ .name = "fourneau", .module = fourneau.module("fourneau") },
+        },
     }) });
     test_step.dependOn(&b.addRunArtifact(rocstache_tests).step);
     // The compiler and the host's VM together, against an oracle.

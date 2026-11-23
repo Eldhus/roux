@@ -159,11 +159,11 @@ fn find(templates: []const Template, name: []const u8) ?u16 {
 /// The checked template as a page: its problems, and its partials' on
 /// the tags that reach them.
 fn as_page(arena: Allocator, templates: []const Template) Allocator.Error![]const Problem {
-    const page = try compose(arena, templates, 0) orelse
+    const found = try page_problems(arena, templates, 0) orelse
         return markup.check(arena, templates[0].source);
     var problems: std.ArrayList(Problem) = .empty;
-    for (try markup.problems_in(arena, page.markup)) |problem| {
-        const placed = place(templates, page, problem) orelse continue;
+    for (found) |placed| {
+        const problem = placed.problem;
         const via = placed.segment.via orelse {
             try problems.append(arena, placed.problem);
             continue;
@@ -200,10 +200,9 @@ fn in_pages(
     var seen: std.ArrayList(Seen) = .empty;
     var composed: u32 = 0;
     for (pages) |index| {
-        const page = try compose(arena, templates, index) orelse continue;
+        const found = try page_problems(arena, templates, index) orelse continue;
         composed += 1;
-        for (try markup.problems_in(arena, page.markup)) |problem| {
-            const placed = place(templates, page, problem) orelse continue;
+        for (found) |placed| {
             if (placed.segment.template != 0) continue;
             const same = for (seen.items) |*known| {
                 if (same_problem(known.problem, placed.problem)) break known;
@@ -237,6 +236,56 @@ fn same_problem(a: Problem, b: Problem) bool {
     return a.offset == b.offset and a.length == b.length and std.mem.eql(u8, a.message, b.message);
 }
 
+/// What SuperHTML finds in the page `index`, put back in its templates,
+/// over each way it may render (markup.Branches), each problem once; null
+/// when the page is longer than a page may be.
+fn page_problems(
+    arena: Allocator,
+    templates: []const Template,
+    index: u16,
+) Allocator.Error!?[]const Placed {
+    const paths = try markup.forks(arena, try trees_in(arena, templates, index));
+    assert(paths.len <= markup.forks_max);
+    var found: std.ArrayList(Placed) = .empty;
+    const renderings = @as(u32, 1) << @intCast(paths.len);
+    for (0..renderings) |taken| {
+        const branches: markup.Branches = .{ .paths = paths, .taken = @intCast(taken) };
+        const page = try compose(arena, templates, index, branches) orelse return null;
+        for (try markup.problems_in(arena, page.markup)) |problem| {
+            const placed = place(templates, page, problem) orelse continue;
+            const known = for (found.items) |other| {
+                if (same_placed(other, placed)) break true;
+            } else false;
+            if (known or found.items.len == markup.problems_max) continue;
+            try found.append(arena, placed);
+        }
+    }
+    return found.items;
+}
+
+fn same_placed(a: Placed, b: Placed) bool {
+    if (a.segment.template != b.segment.template) return false;
+    const a_via: ?u32 = if (a.segment.via) |via| via.offset else null;
+    const b_via: ?u32 = if (b.segment.via) |via| via.offset else null;
+    return a_via == b_via and same_problem(a.problem, b.problem);
+}
+
+/// The trees of the template `index` and of every partial it reaches.
+fn trees_in(
+    arena: Allocator,
+    templates: []const Template,
+    index: u16,
+) Allocator.Error![]const *const parse.Tree {
+    var trees: std.ArrayList(*const parse.Tree) = .empty;
+    for (templates, 0..) |t, other| {
+        const tree = t.tree orelse continue;
+        if (other == index or reaches(templates, index, @intCast(other))) {
+            try trees.append(arena, tree);
+        }
+    }
+    return trees.items;
+}
+
 /// A stretch of a page's markup, from one template.
 const Segment = struct {
     /// Where it starts in the page's markup.
@@ -258,9 +307,15 @@ const Page = struct {
     segments: []const Segment,
 };
 
-/// The template `index` as a page; null when it is longer than a page may be.
-fn compose(arena: Allocator, templates: []const Template, index: u16) Allocator.Error!?Page {
-    var composer: Composer = .{ .arena = arena, .templates = templates };
+/// The template `index` as a page, rendering on `branches`; null when it
+/// is longer than a page may be.
+fn compose(
+    arena: Allocator,
+    templates: []const Template,
+    index: u16,
+    branches: markup.Branches,
+) Allocator.Error!?Page {
+    var composer: Composer = .{ .arena = arena, .templates = templates, .branches = branches };
     composer.emit(index, null) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.TooLong => return null,
@@ -271,6 +326,7 @@ fn compose(arena: Allocator, templates: []const Template, index: u16) Allocator.
 const Composer = struct {
     arena: Allocator,
     templates: []const Template,
+    branches: markup.Branches,
     markup: std.ArrayList(u8) = .empty,
     segments: std.ArrayList(Segment) = .empty,
     /// The templates being emitted, outermost first: a partial already on
@@ -284,7 +340,7 @@ const Composer = struct {
         assert(composer.stack_len < parse.depth_max);
         const t = composer.templates[index];
         const blanked = try composer.arena.alloc(u8, t.source.len);
-        markup.blank(t.source, blanked);
+        markup.blank_taking(t.source, t.tree, composer.branches, blanked);
         composer.stack[composer.stack_len] = index;
         composer.stack_len += 1;
         defer composer.stack_len -= 1;
@@ -348,12 +404,11 @@ fn place(templates: []const Template, page: Page, problem: Problem) ?Placed {
     const into = problem.offset - segment.start;
     const length = @min(problem.length, segment.length -| into);
     const offset = segment.offset + @min(into, segment.length);
-    const source = templates[segment.template].source;
-    if (markup.on_tag(source, offset, offset + length)) return null;
-    var placed = problem;
-    placed.offset = offset;
-    placed.length = length;
-    return .{ .segment = segment, .problem = placed };
+    var moved = problem;
+    moved.offset = offset;
+    moved.length = length;
+    const said = markup.about_tags(templates[segment.template].source, moved) orelse return null;
+    return .{ .segment = segment, .problem = said };
 }
 
 const testing = std.testing;
@@ -422,4 +477,81 @@ test "pages: a template that does not parse, or partials in a loop, still checke
     try testing.expectEqualStrings("missing end tag", page[0].message);
     // A and B include each other: no page reaches them, each is one.
     try testing.expectEqual(@as(usize, 0), (try check_with(arena, "A", &buffers)).len);
+}
+
+test "pages: markup split across a section and its inverse is whole on each branch" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const split = "{{?x}}<div class=\"a\">{{/x}}{{^x}}<div class=\"b\">{{/x}}x</div>";
+    const buffers = [_]analysis.Buffer{
+        .{ .path = "/nowhere/templates/Page.rocstache", .text = split },
+        // Through a partial too, and still caught where a branch is wrong.
+        .{ .path = "/nowhere/templates/Open.rocstache", .text = "{{?x}}<p>{{/x}}{{^x}}<p>{{/x}}" },
+        .{ .path = "/nowhere/templates/Lists.rocstache", .text = "{{> Open}}{{?x}}</p>{{/x}}" },
+    };
+    try testing.expectEqual(@as(usize, 0), (try check_with(arena, "Page", &buffers)).len);
+    // With `x` false, Open's `<p>` is never closed: said once, on the tag.
+    const lists = try check_with(arena, "Lists", &buffers);
+    try testing.expectEqual(@as(usize, 1), lists.len);
+    try testing.expectEqualStrings("in Open.rocstache:1:22: missing end tag", lists[0].message);
+}
+
+/// Pieces of templates, markup and tags, right and wrong, for `random_template`.
+const pieces = [_][]const u8{
+    "<div>",   "</div>",        "<p class=\"a\">", "</p>",       "<dvi>",       "<ul>",
+    "</ul>",   "<li>",          "</li>",           "<",          ">",           "\"",
+    "=",       "<!--",          "-->",             "<script>",   "</script>",   "text ",
+    "\u{e9}",  "\r\n",          "\n",              " ",          "<img src=\"", "<br>",
+    "{{ x }}", "{{{ y }}}",     "{{#xs |x|}}",     "{{/xs}}",    "{{?c}}",      "{{^c}}",
+    "{{/c}}",  "{{! note }}",   "{{> P}}",         "{{> Page}}", "{{> Gone}}",  "{{",
+    "}}",      "class={{ v }}",
+};
+
+pub const Prng = @import("fourneau").prng.Prng;
+
+/// A template made at random from `pieces`, for this file's tests and
+/// the language server's (lsp.zig).
+pub fn random_template(arena: Allocator, prng: *Prng) ![]const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    if (prng.int_less_than(u8, 8) == 0) try text.appendSlice(arena, "{{% m %}}\n");
+    const count = prng.int_less_than(u32, 40);
+    for (0..count) |_| try text.appendSlice(arena, pieces[prng.int_less_than(usize, pieces.len)]);
+    return text.items;
+}
+
+test "pages: templates made at random: no crash, every problem in its template, none on a tag" {
+    const seeds = 300;
+    for (0..seeds) |seed| {
+        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var prng: Prng = .init(seed);
+        const buffers = [_]analysis.Buffer{
+            .{ .path = "/nowhere/t/Page.rocstache", .text = try random_template(arena, &prng) },
+            .{ .path = "/nowhere/t/P.rocstache", .text = try random_template(arena, &prng) },
+        };
+        for (buffers) |buffer| {
+            const source = buffer.text;
+            const options: analysis.Options = .{
+                .path = buffer.path,
+                .source = source,
+                .buffers = &buffers,
+            };
+            for (try check(arena, testing.io, options)) |problem| {
+                const end = problem.offset + problem.length;
+                try testing.expect(end <= source.len);
+                // A partial's problem is on the tag that reaches it.
+                if (std.mem.startsWith(u8, problem.message, "in ")) continue;
+                if (!markup.on_tag(source, problem.offset, end)) continue;
+                const message = problem.message;
+                std.debug.print("seed {d}: `{s}` on a tag in:\n{s}\n", .{ seed, message, source });
+                return error.TestUnexpectedResult;
+            }
+            for (0..source.len + 1) |offset| {
+                _ = try markup.complete(arena, source, @intCast(offset));
+                _ = try markup.describe(arena, source, @intCast(offset));
+            }
+        }
+    }
 }
