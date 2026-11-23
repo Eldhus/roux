@@ -169,19 +169,21 @@ pub fn write_holes(holes: []const Hole, imports: []const []const u8, writer: *Wr
 /// Generated Roc stays within this many columns where it can (a tab is 4).
 const columns_max = 100;
 
-/// A fragment's `template` takes any record with the fields it reads, as
+/// A fragment's `fragment` takes any record with the fields it reads, as
 /// Roc's `|{ name, .. }|` does, and keeps those: a handler passes the
-/// element or the page it has. Laid out as `roc fmt` keeps it.
+/// element or the page it has. Laid out as `roc fmt` keeps it. Not named
+/// `template`, as the page's is: nested in the page's module, it would
+/// shadow the page's, which Roc warns about (since 0.1.0_RC1).
 fn write_fragment_template(f: Fragment, writer: *Writer) Writer.Error!void {
     const contract = f.contract;
     const result = " -> Rocstache.Template(Templates.Template)";
     var line_buffer: [columns_max]u8 = undefined;
     var line: Writer = .fixed(&line_buffer);
     const fits = if (write_open_record(contract, &line)) |_|
-        8 + "template : ".len + line.buffered().len + result.len <= columns_max
+        8 + "fragment : ".len + line.buffered().len + result.len <= columns_max
     else |_|
         false;
-    try writer.writeAll("\n\n\t\ttemplate : ");
+    try writer.writeAll("\n\n\t\tfragment : ");
     if (fits) {
         try writer.writeAll(line.buffered());
     } else {
@@ -194,10 +196,10 @@ fn write_fragment_template(f: Fragment, writer: *Writer) Writer.Error!void {
         }
         try writer.writeAll("\t\t\t..,\n\t\t}");
     }
-    try writer.print("{s}\n\t\ttemplate = |", .{result});
+    try writer.print("{s}\n\t\tfragment = |", .{result});
     line = .fixed(&line_buffer);
     const body_fits = if (write_body(f, &line)) |_|
-        8 + "template = |".len + names_width(contract) + "| ".len + line.buffered().len <=
+        8 + "fragment = |".len + names_width(contract) + "| ".len + line.buffered().len <=
             columns_max
     else |_|
         false;
@@ -381,25 +383,25 @@ test "roc: a page's module nests its fragments, each taking any record with its 
             "\t## The `{{$Hello}}` fragment of `Page.rocstache`: what it reads of\n" ++
             "\t## its scope there, rendered alone.\n" ++
             "\tHello :: [].{\n\t\tCtx : {}\n\n" ++
-            "\t\ttemplate : { .. }" ++ result ++
-            "\t\ttemplate = |_| { layouts: Templates.layouts, template: PageHello({}) }\n\t}\n\n" ++
+            "\t\tfragment : { .. }" ++ result ++
+            "\t\tfragment = |_| { layouts: Templates.layouts, template: PageHello({}) }\n\t}\n\n" ++
             "\t## The `{{$One}}` fragment of `Page.rocstache`: what it reads of\n" ++
             "\t## its scope there, rendered alone.\n" ++
             "\tOne :: [].{\n\t\tCtx : { a : Str }\n\n" ++
-            "\t\ttemplate : { a : Str, .. }" ++ result ++
-            "\t\ttemplate = |{ a, .. }| " ++
+            "\t\tfragment : { a : Str, .. }" ++ result ++
+            "\t\tfragment = |{ a, .. }| " ++
             "{ layouts: Templates.layouts, template: PageOne({ a: a }) }\n\t}\n\n" ++
             "\t## The `{{$Two}}` fragment of `Page.rocstache`: what it reads of\n" ++
             "\t## its scope there, rendered alone.\n" ++
             "\tTwo :: [].{\n\t\tCtx : { a : Str, b : U64 }\n\n" ++
-            "\t\ttemplate : { a : Str, b : U64, .. }" ++ result ++
-            "\t\ttemplate = |{ a, b, .. }| " ++
+            "\t\tfragment : { a : Str, b : U64, .. }" ++ result ++
+            "\t\tfragment = |{ a, b, .. }| " ++
             "{ layouts: Templates.layouts, template: PageTwo({ a, b }) }\n\t}\n\n" ++
             "\t## The `{{$Row}}` fragment of `Page.rocstache`: what it reads of\n" ++
             "\t## its scope there, rendered alone.\n" ++
             "\tRow :: [].{\n\t\tCtx : { id : U64, name : Str }\n\n" ++
-            "\t\ttemplate : { id : U64, name : Str, .. }" ++ result ++
-            "\t\ttemplate = |{ id, name, .. }|\n" ++
+            "\t\tfragment : { id : U64, name : Str, .. }" ++ result ++
+            "\t\tfragment = |{ id, name, .. }|\n" ++
             "\t\t\t{ layouts: Templates.layouts, template: PageRow({ id, name }) }\n\t}\n\n" ++
             "\t## What `Page.rocstache` reads, inferred from its tags.\n" ++
             "\tCtx : { a : Str, b : U64, items : List({ id : U64, name : Str }) }\n\n" ++

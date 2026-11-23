@@ -152,11 +152,11 @@ moving it to a file of its own:
 ```
 
 ```roc
-"/row" => Ok(Rocstache.html(Menu.Row.template(dish)))
+"/row" => Ok(Rocstache.html(Menu.Row.fragment(dish)))
 ```
 
 Its contract is what it reads of its scope: here `Menu.Row.Ctx` is `{ id : U64, name : Str,
-price : U32 }`, and `Menu.Row.template` takes any record with those fields. Its name is a type
+price : U32 }`, and `Menu.Row.fragment` takes any record with those fields. Its name is a type
 name, and it may not read outside its own scope, since alone it has nothing else. A piece that
 renders alone and also stands inside a section is a fragment of that page.
 

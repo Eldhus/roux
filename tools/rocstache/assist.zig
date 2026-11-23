@@ -118,7 +118,7 @@ fn fragment_text(
     contract_.write_line(contract, contract.root, &line.writer) catch return error.OutOfMemory;
     const name = result.templates[0].name;
     return try arena.print("The fragment `{0s}.{1s}`: rendered here, and alone by " ++
-        "`{0s}.{1s}.template`, from what it reads:\n```roc\n{0s}.{1s}.Ctx : {2s}\n```", .{
+        "`{0s}.{1s}.fragment`, from what it reads:\n```roc\n{0s}.{1s}.Ctx : {2s}\n```", .{
         name, node.text, line.written(),
     });
 }
@@ -444,7 +444,7 @@ test "assist: hover shows the segment's type, a partial, a fragment" {
         .{
             .on = "$Row",
             .expected = "The fragment `Page.Row`: rendered here, and alone by " ++
-                "`Page.Row.template`, from what it reads:\n" ++
+                "`Page.Row.fragment`, from what it reads:\n" ++
                 "```roc\nPage.Row.Ctx : { name : { first : Str } }\n```",
         },
     };
