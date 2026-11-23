@@ -121,17 +121,20 @@ pub fn problems_in(arena: Allocator, blanked: []const u8) Allocator.Error![]cons
     return problems;
 }
 
-/// The paths a template may take either way, varied one rendering at a
-/// time: at most this many, so at most 16 renderings are checked.
-pub const forks_max = 4;
+/// The paths a template may take either way, at most this many.
+pub const forks_max = 64;
 
-/// One way the templates may render: each forked path taken or not.
+/// One way the templates may render: every forked path taken, or none.
+/// The two show every section's body between them, and each path's two
+/// branches apart, so markup split across a section and its inverse is
+/// whole in each; what is missed is a mix (`x` taken, `y` not), which
+/// would take a rendering for every combination, 2^paths.
 pub const Branches = struct {
     /// Paths with a section of each kind, `{{#x}}` or `{{?x}}`, and
     /// `{{^x}}`: only one of the two renders.
     paths: []const []const u8 = &.{},
-    /// Bit i: `paths[i]` is taken (non-empty, true, present).
-    taken: u32 = 0,
+    /// The paths are taken (non-empty, true, present), or none is.
+    taken: bool = true,
 
     /// Whether the section `node` renders, as far as these branches say.
     fn shows(branches: Branches, node: parse.Node) bool {
@@ -140,10 +143,8 @@ pub const Branches = struct {
             .inverted => true,
             else => return true,
         };
-        for (branches.paths, 0..) |path, i| {
-            if (!std.mem.eql(u8, path, node.text)) continue;
-            const taken = branches.taken & (@as(u32, 1) << @intCast(i)) != 0;
-            return taken != inverted;
+        for (branches.paths) |path| {
+            if (std.mem.eql(u8, path, node.text)) return branches.taken != inverted;
         }
         return true;
     }

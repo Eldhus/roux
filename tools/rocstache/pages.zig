@@ -247,9 +247,10 @@ fn page_problems(
     const paths = try markup.forks(arena, try trees_in(arena, templates, index));
     assert(paths.len <= markup.forks_max);
     var found: std.ArrayList(Placed) = .empty;
-    const renderings = @as(u32, 1) << @intCast(paths.len);
-    for (0..renderings) |taken| {
-        const branches: markup.Branches = .{ .paths = paths, .taken = @intCast(taken) };
+    // Every path taken, then none: one rendering when nothing forks.
+    const renderings: []const bool = if (paths.len == 0) &.{true} else &.{ true, false };
+    for (renderings) |taken| {
+        const branches: markup.Branches = .{ .paths = paths, .taken = taken };
         const page = try compose(arena, templates, index, branches) orelse return null;
         for (try markup.problems_in(arena, page.markup)) |problem| {
             const placed = place(templates, page, problem) orelse continue;
