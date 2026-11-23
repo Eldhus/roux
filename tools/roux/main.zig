@@ -124,8 +124,8 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
-/// The roc roux will run is the nightly roux was made for, or roux says
-/// which it needs and stops: another nightly's compiler lays records out
+/// The roc roux will run is the one roux was made for, or roux says
+/// which it needs and stops: another build's compiler lays records out
 /// and names builtins its own way, and fails late and obscurely. Returns
 /// the version roux generates for. `unchecked` (a compiler built from
 /// source, to try): whatever runs at `roc` is taken, its own version
@@ -137,10 +137,14 @@ fn check_roc(
     unchecked: bool,
     stderr: *Io.Writer,
 ) ![]const u8 {
-    // Roc's installer gives the newest nightly it knows, not this one: the
-    // nightly's own page is named too.
+    // Roc's installer gives the newest build it knows, not this one: the
+    // build's own page is named too, a nightly's or a release's.
+    const releases = comptime if (std.mem.startsWith(u8, options.roc_version, "nightly-"))
+        "https://github.com/roc-lang/nightlies/releases/tag/"
+    else
+        "https://github.com/roc-lang/roc/releases/tag/";
     const install =
-        "Get it at https://github.com/roc-lang/nightlies/releases/tag/{s}\n" ++
+        "Get it at " ++ releases ++ "{s}\n" ++
         "(how to install Roc: https://www.roc-lang.org/install), put its `roc` on\n" ++
         "PATH, or name it: --roc=PATH.\n";
     const want = "Roc compiler version " ++ options.roc_version;

@@ -14,7 +14,7 @@ A *roux* (said "roo") is the base every sauce starts from.
 Start from [roux-tutor](https://github.com/Eldhus/roux-tutor): clone it and run `./roux dev
 main.roc`; it fetches roux and the Roc compiler it needs. By hand, take `roux` from the
 [latest release](https://github.com/Eldhus/roux/releases/latest) (`roux version` names the Roc
-nightly it needs); its notes give the line that names the platform in your app's header.
+it needs); its notes give the line that names the platform in your app's header.
 
 ```sh
 roux dev main.roc     # served, rebuilt as you save; a request during a restart waits for it
@@ -82,21 +82,20 @@ zig build platform tools   # the host and roux
 zig build test             # tidy and every test
 ```
 
-To build an app against the checkout, the platform also needs musl's `crt1.o` and `libc.a`, from
-Roc's source at the commit `toolchain.json` pins, each checked against its SHA-256 there:
+To build an app against the checkout, the platform also needs musl's `libc.a`, from Roc's source
+at the commit `toolchain.json` pins, checked against its SHA-256 there (`zig build platform` makes
+the start code, `rcrt1.o`, from the musl Zig ships):
 
 ```sh
 c=$(jq -r .roc_musl.commit toolchain.json)
 mkdir -p platform/targets/x64musl
-for f in crt1.o libc.a; do
-    curl -fsSL -o platform/targets/x64musl/$f \
-        https://raw.githubusercontent.com/roc-lang/roc/$c/test/fx/platform/targets/x64musl/$f
-done
+curl -fsSL -o platform/targets/x64musl/libc.a \
+    https://raw.githubusercontent.com/roc-lang/roc/$c/test/fx/platform/targets/x64musl/libc.a
 jq -r '.roc_musl.files | to_entries[] | "\(.value)  platform/targets/x64musl/\(.key | split("/") | last)"' \
     toolchain.json | sha256sum -c
 ```
 
-Zig and the Roc nightly are pinned in `.zig-version`, `.roc-version` and `toolchain.json`.
+Zig and Roc (a nightly or a release) are pinned in `.zig-version`, `.roc-version` and `toolchain.json`.
 
 
 ## Security

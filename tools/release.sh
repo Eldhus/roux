@@ -15,7 +15,10 @@ set -eu
 cd "$(dirname "$0")/.."
 zig=$HOME/.local/share/zig/zig-x86_64-linux-$(cat .zig-version)/zig
 roc_version=$(cat .roc-version)
-roc=$HOME/.local/share/roc-nightly/roc_nightly-linux_x86_64-${roc_version#nightly-}/roc
+case $roc_version in
+nightly-*) roc=$HOME/.local/share/roc-nightly/roc_nightly-linux_x86_64-${roc_version#nightly-}/roc ;;
+*) roc=$HOME/.local/share/roc-nightly/roc-linux_x86_64-$roc_version/roc ;;
+esac
 
 rm -rf dist
 mkdir -p dist/stage/platform/targets/x64musl dist/tools
@@ -28,7 +31,7 @@ version=$(dist/tools/bin/roux version 2>&1 | sed -n 's/^roux \([^,]*\),.*/\1/p')
 # The platform: its Roc modules, the host without debug information, musl.
 "$zig" build platform -Dhost-strip=true
 cp platform/*.roc dist/stage/platform/
-cp platform/targets/x64musl/libhost.a platform/targets/x64musl/crt1.o \
+cp platform/targets/x64musl/libhost.a platform/targets/x64musl/rcrt1.o \
 	dist/stage/platform/targets/x64musl/
 strip --strip-debug -o dist/stage/platform/targets/x64musl/libc.a \
 	platform/targets/x64musl/libc.a

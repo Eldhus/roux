@@ -27,7 +27,7 @@ jobs:
           path: fourneau
       # toolchain.json's downloads, each checked by SHA-256, unpacked where
       # a developer's machine keeps them, so build.zig and tools/release.sh
-      # find them as there; musl's two files into platform/targets.
+      # find them as there; musl's libc.a into platform/targets.
       - name: The toolchain
         run: |
           pins=roux/toolchain.json
@@ -46,7 +46,11 @@ jobs:
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C ~/.local/share/zig
           fetch roc roc.tar.gz
           tar -xzf "$RUNNER_TEMP/roc.tar.gz" -C ~/.local/share/roc-nightly
-          echo "$HOME/.local/share/roc-nightly/roc_nightly-linux_x86_64-${roc_version#nightly-}" >> "$GITHUB_PATH"
+          case $roc_version in
+          nightly-*) roc_dir=roc_nightly-linux_x86_64-${roc_version#nightly-} ;;
+          *) roc_dir=roc-linux_x86_64-$roc_version ;;
+          esac
+          echo "$HOME/.local/share/roc-nightly/$roc_dir" >> "$GITHUB_PATH"
           curl -fsSL --retry 5 -o "$RUNNER_TEMP/roc-source.tar.gz" "$(jq -r .roc_musl.url $pins)"
           mkdir -p "$RUNNER_TEMP/roc-source" roux/platform/targets/x64musl
           jq -r '.roc_musl.files | keys[] | "*/" + .' $pins |

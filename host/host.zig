@@ -1,7 +1,8 @@
 //! The roux host: fourneau running a Roc application.
 //!
 //! `roc build` links this library (libhost.a) with the compiled app and
-//! musl into one static executable; musl's crt1.o calls our `main`.
+//! musl into one static position-independent executable; musl's rcrt1.o
+//! relocates it and calls our `main`.
 //!
 //! Each request runs on its own fiber (its connection's, or an HTTP/2
 //! stream's): the host builds the

@@ -47,7 +47,7 @@ pub const Options = struct {
     build: []const u8,
     /// The pinned `roc`, for glue.
     roc: []const u8,
-    /// The pinned nightly's name (`nightly-2026-11-07-ad3a5d2`), which roux
+    /// The pinned Roc's version (`0.1.0_RC1`), which roux
     /// checks `roc` is: part of the layouts' identity, the same wherever roc
     /// lives, so two machines generate the same `Templates.roc`.
     roc_version: []const u8,

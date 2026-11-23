@@ -34,9 +34,9 @@ pub fn is_pascal(name: []const u8) bool {
 }
 
 /// Types a query module sees without declaring them, which a row type so
-/// named would shadow (roc then misreads every use): the pinned nightly's
+/// named would shadow (roc then misreads every use): the pinned Roc's
 /// auto-imported builtins (src/canonicalize/CIR.zig's `builtin_type_specs`,
-/// ad3a5d2), and `Sqlite`, which each query module imports.
+/// 0.1.0_RC1, 15177e9), and `Sqlite`, which each query module imports.
 const reserved_types = [_][]const u8{
     "Bool",        "Try",          "Dict",         "Set",    "Str",      "Hasher",
     "Iter",        "Stream",       "List",         "Box",    "Encoding", "Json",
@@ -55,7 +55,7 @@ pub fn is_reserved_type(name: []const u8) bool {
 }
 
 /// Words Roc reserves; a field or function so named would not parse. The
-/// template compiler's list, the pinned nightly's, so the two never differ.
+/// template compiler's list, the pinned Roc's, so the two never differ.
 pub fn is_roc_keyword(name: []const u8) bool {
     return rocstache.parse.is_keyword(name);
 }

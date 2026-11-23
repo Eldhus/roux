@@ -537,7 +537,7 @@ pub fn is_field_name(s: []const u8) bool {
 }
 
 /// Roc's keywords (src/parse/tokenize.zig's `keywords` at the pinned
-/// nightly, ad3a5d2): none can name a record's field, so a contract that
+/// Roc, 0.1.0_RC1, 15177e9): none can name a record's field, so a contract that
 /// had one would reach roc as a syntax error in a generated file. Each
 /// checked on the pinned roc as a field in a type, a literal and an
 /// access.

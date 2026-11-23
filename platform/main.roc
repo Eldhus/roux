@@ -41,7 +41,7 @@ platform "roux"
 	# templates' program after it.
 	targets: {
 		inputs_dir: "targets/",
-		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
+		x64musl: { inputs: ["rcrt1.o", "libhost.a", app, "libc.a"] },
 	}
 
 import Host

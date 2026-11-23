@@ -47,7 +47,7 @@ Server := [].{
 		headers,
 		body: match body {
 			Bytes(bytes) => bytes
-			Text(text) => Str.to_utf8(text)
+			Text(plain) => Str.to_utf8(plain)
 			Html(made) => Host.template_render!(made.layouts, Box.box(made.template)).bytes
 		},
 	}

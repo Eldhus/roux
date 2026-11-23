@@ -96,11 +96,11 @@ Sse := [].{
 		## line breaks too). A type with a line break would start another
 		## field: refused.
 		named : Str, Str -> Try(Event, [InvalidEventName])
-		named = |name, data|
+		named = |name, text|
 			if Str.contains(name, "\n") or Str.contains(name, "\r") {
 				Err(InvalidEventName)
 			} else {
-				Ok(Event({ name, data }))
+				Ok(Event({ name, data: text }))
 			}
 
 		## Data alone: the client's `message` event.

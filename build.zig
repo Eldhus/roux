@@ -258,11 +258,11 @@ fn tools_step(
     test_step: *std.Build.Step,
 ) void {
     const optimize = b.option(std.builtin.Optimize, "tools-optimize", "The tools' mode (default safe)") orelse .safe;
-    // roux runs the pinned Roc nightly `.roc-version` names: here, where
-    // nightlies are installed side by side; in a release (`-Droc=roc`), the
+    // roux runs the pinned Roc `.roc-version` names: here, where Roc's
+    // builds are installed side by side; in a release (`-Droc=roc`), the
     // `roc` on PATH. `--roc` overrides either, and roux checks the version.
     // No Zig: roc links.
-    const roc = b.option([]const u8, "roc", "The roc roux runs (default: the pinned nightly's)");
+    const roc = b.option([]const u8, "roc", "The roc roux runs (default: the pinned one's)");
     const roux_options = b.addOptions();
     roux_options.addOption([]const u8, "roc", roc orelse roc_path(b));
     roux_options.addOption([]const u8, "roc_version", roc_version(b));
@@ -339,9 +339,10 @@ fn tools_step(
 /// without the `v`.
 const roux_version = @import("build.zig.zon").version;
 
-/// `.roc-version`: `nightly-<date>-<commit>`. Declared as the configure
-/// step's input: Zig caches the configured graph, so a moved pin would
-/// otherwise keep building against the old nightly.
+/// `.roc-version`: a nightly (`nightly-<date>-<commit>`) or a release
+/// (`0.1.0_RC1`). Declared as the configure step's input: Zig caches the
+/// configured graph, so a moved pin would otherwise keep building against
+/// the old compiler.
 fn roc_version(b: *std.Build) []const u8 {
     b.dependOnFileContents(b.path(".roc-version"));
     const pin_path = b.root.joinString(b.allocator, ".roc-version") catch @panic("OOM");
@@ -350,15 +351,18 @@ fn roc_version(b: *std.Build) []const u8 {
     return std.mem.trim(u8, pin, " \n");
 }
 
-/// The pinned Roc nightly's `roc`: `.roc-version` names it
-/// (`nightly-<date>-<commit>`), installed under
-/// `~/.local/share/roc-nightly/roc_nightly-linux_x86_64-<date>-<commit>/`.
+/// The pinned Roc's `roc`, unpacked under `~/.local/share/roc-nightly/` in
+/// the directory its archive holds: `roc_nightly-linux_x86_64-<date>-<commit>/`
+/// for a nightly, `roc-linux_x86_64-<version>/` for a release.
 fn roc_path(b: *std.Build) []const u8 {
     const version = roc_version(b);
-    const prefix = "nightly-";
-    if (!std.mem.startsWith(u8, version, prefix)) @panic(".roc-version is not nightly-<date>-<commit>");
+    std.debug.assert(version.len > 0);
     const home = b.graph.environ_map.get("HOME") orelse @panic("HOME is not set");
-    return b.fmt("{s}/.local/share/roc-nightly/roc_nightly-linux_x86_64-{s}/roc", .{ home, version[prefix.len..] });
+    const nightly = "nightly-";
+    if (std.mem.startsWith(u8, version, nightly)) {
+        return b.fmt("{s}/.local/share/roc-nightly/roc_nightly-linux_x86_64-{s}/roc", .{ home, version[nightly.len..] });
+    }
+    return b.fmt("{s}/.local/share/roc-nightly/roc-linux_x86_64-{s}/roc", .{ home, version });
 }
 
 /// The host's target: x86_64 Linux musl at the CPU level `roc build` gives
@@ -416,7 +420,7 @@ fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
             .optimize = optimize,
             .pic = true,
             .strip = strip,
-            // Fibers run on threads; without Zig's start code (musl's crt1.o
+            // Fibers run on threads; without Zig's start code (musl's rcrt1.o
             // starts the program), musl's pthreads set up thread-local storage.
             .link_libc = true,
             .imports = &.{
@@ -448,5 +452,36 @@ fn platform_step(b: *std.Build, fourneau_package: *std.Build.Dependency) void {
     const pad = b.addRunArtifact(pad_archive);
     pad.addArg(archive);
     pad.step.dependOn(&copy.step);
-    b.step("platform", "Build the roux host (libhost.a) for roc build").dependOn(&pad.step);
+    copy.addCopyFileToSource(static_pie_startup(b, target), "platform/targets/x64musl/rcrt1.o");
+    b.step("platform", "Build the roux host (libhost.a) and rcrt1.o for roc build").dependOn(&pad.step);
+}
+
+/// musl's start code for a static PIE, rcrt1.o, from the musl sources Zig
+/// ships: roc links the app `-pie` (since 0.1.0_RC1), and only rcrt1
+/// applies the executable's own relocations before anything runs; with
+/// crt1.o every pointer in static data stays unrelocated (SQLite's malloc
+/// methods were null). Roc's build makes its test platforms' the same way.
+fn static_pie_startup(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.LazyPath {
+    const arch = @tagName(target.result.cpu.arch);
+    const startup = b.addObject(.{
+        .name = "rcrt1",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = .small,
+            .pic = true,
+            .link_libc = true,
+            .stack_protector = false,
+        }),
+    });
+    startup.root_module.addCSourceFile(.{
+        .file = std.Build.LazyPath.zig_lib.path(b, "libc/musl/crt/rcrt1.c"),
+        .flags = &.{ "-std=c99", "-D_GNU_SOURCE", "-ffreestanding", "-fno-builtin", "-fvisibility=hidden" },
+    });
+    for ([_][]const u8{
+        b.fmt("libc/musl/arch/{s}", .{arch}),
+        "libc/musl/arch/generic",
+        "libc/musl/src/internal",
+        "libc/musl/src/include",
+    }) |path| startup.root_module.addIncludePath(std.Build.LazyPath.zig_lib.path(b, path));
+    return startup.getEmittedBin();
 }
