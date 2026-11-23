@@ -315,32 +315,44 @@ const Server = struct {
         server.gpa.free(document.text);
     }
 
-    /// Every open template checked, and what is wrong in each published.
+    /// Every open template checked, and what is wrong in each published:
+    /// roux's problem first, then the markup's, by SuperHTML's rules.
     fn publish(server: *Server, arena: Allocator) Error!void {
         const open = try server.buffers(arena);
         for (server.documents.items) |document| {
+            const text = document.text;
             const result = try analysis.analyze(arena, server.io, .{
                 .path = document.path,
-                .source = document.text,
+                .source = text,
                 .buffers = open,
             });
-            const problem = result.problem orelse {
-                try server.notify(arena, document.uri, &.{});
-                continue;
-            };
-            const start = position_of(document.text, problem.offset);
-            const end = position_of(document.text, problem.offset + problem.length);
-            try server.notify(arena, document.uri, &.{.{
-                .range = .{ .start = start, .end = end },
+            const html = try markup.check(arena, text);
+            var diagnostics: std.ArrayList(Diagnostic) = .empty;
+            try diagnostics.ensureTotalCapacityPrecise(arena, 1 + html.len);
+            if (result.problem) |problem| diagnostics.appendAssumeCapacity(.{
+                .range = range_of(text, problem.offset, problem.length),
                 .severity = 1, // an error
                 .source = "roux",
                 .message = problem.message,
-            }});
+            });
+            for (html) |problem| diagnostics.appendAssumeCapacity(.{
+                .range = range_of(text, problem.offset, problem.length),
+                .severity = if (problem.warning) 2 else 1,
+                .source = "html",
+                .message = problem.message,
+            });
+            try server.notify(arena, document.uri, diagnostics.items);
         }
     }
 
+    const Range = struct { start: Position, end: Position };
+
+    fn range_of(text: []const u8, offset: u32, length: u32) Range {
+        return .{ .start = position_of(text, offset), .end = position_of(text, offset + length) };
+    }
+
     const Diagnostic = struct {
-        range: struct { start: Position, end: Position },
+        range: Range,
         severity: u8,
         source: []const u8,
         message: []const u8,

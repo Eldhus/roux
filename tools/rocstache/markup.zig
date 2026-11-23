@@ -39,6 +39,57 @@ pub fn blank(source: []const u8, out: []u8) void {
     }
 }
 
+/// What a template's markup gets wrong, at most this many.
+pub const problems_max = 64;
+
+/// A problem in the markup, by SuperHTML's rules (all of them).
+pub const Problem = struct {
+    offset: u32,
+    length: u32,
+    message: []const u8,
+    /// SuperHTML's warnings (an unsupported doctype, a duplicate class);
+    /// the rest are errors.
+    warning: bool,
+};
+
+/// The markup's problems, less any on a tag: SuperHTML sees a tag as
+/// spaces, so what it says of one (an attribute's value "cannot be
+/// empty") is about what roux fills in, which it cannot judge.
+pub fn check(arena: Allocator, source: []const u8) Allocator.Error![]const Problem {
+    const blanked = try arena.alloc(u8, source.len);
+    blank(source, blanked);
+    const ast = try superhtml.html.Ast.init(arena, blanked, .html, false);
+    var problems: std.ArrayList(Problem) = .empty;
+    for (ast.errors) |err| {
+        if (problems.items.len == problems_max) break;
+        const location = err.main_location;
+        assert(location.start <= location.end and location.end <= source.len);
+        if (on_tag(source, location.start, location.end)) continue;
+        try problems.append(arena, .{
+            .offset = location.start,
+            .length = location.end - location.start,
+            .message = try std.fmt.allocPrint(arena, "{f}", .{err.tag.fmt(blanked)}),
+            .warning = switch (err.tag) {
+                .unsupported_doctype, .duplicate_class => true,
+                else => false,
+            },
+        });
+    }
+    return problems.items;
+}
+
+/// Whether `start..end` (a point when empty) touches a tag or the block.
+fn on_tag(source: []const u8, start: u32, end: u32) bool {
+    var tags: parse.Tags = .{ .source = source };
+    while (tags.next()) |found| {
+        const tag_end: u32 = found.span.end orelse @intCast(source.len);
+        if (start == end) {
+            if (found.span.start <= start and start < tag_end) return true;
+        } else if (start < tag_end and found.span.start < end) return true;
+    }
+    return false;
+}
+
 /// HTML's completions at `offset`, in markup; none in a tag.
 pub fn complete(arena: Allocator, source: []const u8, offset: u32) Allocator.Error![]const Item {
     assert(offset <= source.len);
@@ -116,6 +167,27 @@ test "markup: elements and attributes completed and described, never in a tag" {
     const described = (try describe(arena, attributes, 1)).?;
     try testing.expect(std.mem.indexOf(u8, described, "list") != null);
     try testing.expectEqual(@as(?[]const u8, null), try describe(arena, attributes, in_tag));
+}
+
+test "markup: problems by SuperHTML's rules, none on a tag" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // A value roux fills in is not judged: blanked, it would be empty.
+    const filled = "<img src=\"{{ url }}\" alt=\"\"><p id=\"{{ id }}\">x</p>";
+    try testing.expectEqual(@as(usize, 0), (try check(arena, filled)).len);
+    // An unclosed element, past a tag: on the `<p`.
+    const unclosed = "<div>{{ a }}<p>x</div>";
+    const problems = try check(arena, unclosed);
+    try testing.expectEqual(@as(usize, 1), problems.len);
+    try testing.expectEqual(@as(u32, 13), problems[0].offset);
+    try testing.expectEqualStrings("missing end tag", problems[0].message);
+    try testing.expect(!problems[0].warning);
+    // An element's rules: a required attribute missing.
+    const no_alt = "{{#xs |x|}}<img src=\"/a.png\">{{/xs}}";
+    const missing = try check(arena, no_alt);
+    try testing.expectEqual(@as(usize, 1), missing.len);
+    try testing.expect(std.mem.indexOf(u8, missing[0].message, "alt") != null);
 }
 
 test "markup: an element's snippet, or its name alone before a `>`" {
