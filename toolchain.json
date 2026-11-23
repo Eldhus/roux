@@ -1,9 +1,9 @@
 {
   "comment": "The toolchain's downloads, each checked by SHA-256: what CI installs (.github/workflows/build.yml), and what the drag race builds roux and its competitors with. The versions must equal .zig-version and .roc-version, which CI checks; a bump changes all three.",
   "zig": {
-    "version": "0.17.0",
-    "url": "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
-    "sha256": "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+    "version": "0.17.1",
+    "url": "https://ziglang.org/download/0.17.1/zig-x86_64-linux-0.17.1.tar.xz",
+    "sha256": "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
   },
   "roc": {
     "version": "0.1.0_RC1",

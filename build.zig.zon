@@ -4,7 +4,7 @@
     // and the release's file names, and a release's tag is it with a `v`.
     .version = "0.7.0",
     .fingerprint = 0xaf6f4fab96f74033,
-    .minimum_zig_version = "0.17.0",
+    .minimum_zig_version = "0.17.1",
     .dependencies = .{
         // fourneau, the server the host runs on: the checkout beside this
         // one (../fourneau), so a change there is built here at once. Both
