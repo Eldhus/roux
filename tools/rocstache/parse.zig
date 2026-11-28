@@ -574,7 +574,7 @@ pub fn is_field_name(s: []const u8) bool {
 }
 
 /// Roc's keywords (src/parse/tokenize.zig's `keywords` at the pinned
-/// Roc, 0.1.0_RC1, 15177e9): none can name a record's field, so a contract that
+/// Roc, 0.1.0-RC2, ee83568): none can name a record's field, so a contract that
 /// had one would reach roc as a syntax error in a generated file. Each
 /// checked on the pinned roc as a field in a type, a literal and an
 /// access.
@@ -591,7 +591,7 @@ pub const keyword_message = "is a Roc keyword, which cannot name a field";
 
 /// The types every module sees without importing them: the pinned Roc's
 /// auto-imported builtins (src/canonicalize/CIR.zig's `builtin_type_specs`
-/// at 0.1.0_RC1, 15177e9). A type nested under one of these names gets
+/// at 0.1.0-RC2, ee83568). A type nested under one of these names gets
 /// "builtin type shadowed", a warning, which fails `roc build`.
 pub const builtin_types = [_][]const u8{
     "Bool",        "Try",          "Dict",         "Set",   "Str",      "Hasher",

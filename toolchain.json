@@ -6,14 +6,14 @@
     "sha256": "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
   },
   "roc": {
-    "version": "0.1.0_RC1",
-    "url": "https://github.com/roc-lang/roc/releases/download/0.1.0_RC1/roc-linux_x86_64-0.1.0_RC1.tar.gz",
-    "sha256": "043c426ea85dcdbd427951eaed246f0c10c171d988f2598782233a6dae43379d"
+    "version": "0.1.0-RC2",
+    "url": "https://github.com/roc-lang/roc/releases/download/0.1.0-RC2/roc-linux_x86_64-0.1.0-RC2.tar.gz",
+    "sha256": "12a1b5f2c5b02ad87c8ad2afecf5af2c195baf5b004492bddd40bd5398f8f3bb"
   },
   "roc_musl": {
     "comment": "musl's libc.a for x86_64, from Roc's test platform at the commit roc was built from, into platform/targets/x64musl (rcrt1.o, the start code, is zig build platform's). Each file is pinned, not the archive: GitHub's archives are not byte-stable.",
-    "commit": "15177e91f62cafddf5336c455e00e9f05427ac16",
-    "url": "https://github.com/roc-lang/roc/archive/15177e91f62cafddf5336c455e00e9f05427ac16.tar.gz",
+    "commit": "ee835686f9eae076bee7422c26e7cf8deb20aa0e",
+    "url": "https://github.com/roc-lang/roc/archive/ee835686f9eae076bee7422c26e7cf8deb20aa0e.tar.gz",
     "files": {
       "test/fx/platform/targets/x64musl/libc.a": "85f5eb2316bc6f86be7bd66008488c7d2eca290942b01ad2e86f02f8b5e8c90f"
     }
